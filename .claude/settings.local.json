@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker --version)",
+      "Bash(pip --version)",
+      "Bash(pip install:*)",
+      "Bash(python -c \"from app.main import app; print\\(''Import OK''\\)\")",
+      "Bash(python -c \"from jose import jwt; print\\(''jose OK''\\)\")",
+      "Bash(pip show:*)",
+      "Bash(pip uninstall:*)",
+      "Bash(where python:*)",
+      "Bash(python -c \"import sys; print\\(sys.path\\)\")",
+      "Bash(\"D:\\\\software\\\\python\\\\python3.10.9\\\\python.exe\" -m pip install \"python-jose[cryptography]\")",
+      "Bash(\"D:\\\\software\\\\python\\\\python3.10.9\\\\python.exe\" -c \"from jose import jwt; print\\(''jose OK''\\)\")",
+      "Bash(\"D:\\\\software\\\\python\\\\python3.10.9\\\\python.exe\" -c \"from app.main import app; print\\(''Import OK''\\)\")",
+      "Bash(\"D:\\\\software\\\\python\\\\python3.10.9\\\\python.exe\" -m pip install passlib bcrypt httpx celery redis asyncpg psycopg[binary] python-multipart)"
+    ]
+  }
+}
