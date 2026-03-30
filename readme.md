@@ -110,7 +110,7 @@ uvicorn app.main:app --reload --port 8000
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | SECRET_KEY | JWT密钥 | - |
-| POSTGRES_PASSWORD | 数据库密码 | postgres |
+| POSTGRES_PASSWORD | 数据库密码 | - |
 | SIMPLETEX_API_TOKEN | SimpleTex API Token | - |
 
 ## 模块说明
