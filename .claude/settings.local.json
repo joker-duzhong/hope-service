@@ -13,7 +13,16 @@
       "Bash(\"D:\\\\software\\\\python\\\\python3.10.9\\\\python.exe\" -m pip install \"python-jose[cryptography]\")",
       "Bash(\"D:\\\\software\\\\python\\\\python3.10.9\\\\python.exe\" -c \"from jose import jwt; print\\(''jose OK''\\)\")",
       "Bash(\"D:\\\\software\\\\python\\\\python3.10.9\\\\python.exe\" -c \"from app.main import app; print\\(''Import OK''\\)\")",
-      "Bash(\"D:\\\\software\\\\python\\\\python3.10.9\\\\python.exe\" -m pip install passlib bcrypt httpx celery redis asyncpg psycopg[binary] python-multipart)"
+      "Bash(\"D:\\\\software\\\\python\\\\python3.10.9\\\\python.exe\" -m pip install passlib bcrypt httpx celery redis asyncpg psycopg[binary] python-multipart)",
+      "Bash(.venv/Scripts/python -c \"from core.config import settings; print\\(''config OK:'', settings.APP_NAME\\)\")",
+      "Bash(.venv/Scripts/python -c \"from core.database import Base, get_db; print\\(''database OK''\\)\")",
+      "Bash(.venv/Scripts/python -c \"from core.security import create_access_token, decode_token; print\\(''security OK''\\)\")",
+      "Bash(.venv/Scripts/python -c \"from core.response import ResponseModel; print\\(''response OK''\\)\")",
+      "Bash(.venv/Scripts/python -c \"from core.users.models import User; print\\(''users.models OK:'', User.__tablename__\\)\")",
+      "Bash(.venv/Scripts/python -c \"from core.users.schemas import UserCreate, Token; print\\(''users.schemas OK''\\)\")",
+      "Bash(.venv/Scripts/python -c \"from core.users.services import UserService; print\\(''users.services OK''\\)\")",
+      "Bash(.venv/Scripts/python -c \"from core.users.router import router; print\\(''users.router OK, routes:'', len\\(router.routes\\)\\)\")",
+      "Bash(.venv/Scripts/python -c \"from main import app; print\\(''main.py OK, routes:'', len\\(app.routes\\)\\)\")"
     ]
   }
 }

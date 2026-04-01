@@ -52,7 +52,6 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
-      - SIMPLETEX_API_TOKEN=${SIMPLETEX_API_TOKEN:-}
       - DEBUG=${DEBUG:-false}
     ports:
       - "${APP_PORT:-8000}:8000"
@@ -61,7 +60,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   # Celery Worker
   celery-worker:
@@ -83,7 +82,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: celery -A celery_worker.celery_app worker --loglevel=info
+    command: celery -A worker.celery_app worker --loglevel=info
 
   # Celery Beat (定时任务调度)
   celery-beat:
@@ -105,7 +104,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: celery -A celery_worker.celery_app beat --loglevel=info
+    command: celery -A worker.celery_app beat --loglevel=info
 
 volumes:
   postgres_data:

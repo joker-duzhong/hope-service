@@ -1,38 +1,40 @@
 # Hope Service
 
-统一后端服务中心 - 支持多项目共享的后端服务
+模块化单体后端服务 —— 一个共享底座 (Core) + N 个完全隔离的业务模块 (Apps) + 独立的后台任务 (Worker)。
 
 ## 技术栈
 
-- **Web框架**: FastAPI
-- **数据库**: PostgreSQL + SQLAlchemy ORM
-- **认证**: JWT Token
-- **异步任务**: Celery + Redis
-- **部署**: Docker + Docker Compose
+| 层级 | 技术 |
+|------|------|
+| Web 框架 | FastAPI (async) |
+| ORM | SQLAlchemy 2.0+ (AsyncSession) |
+| 数据验证 | Pydantic V2 |
+| 后台任务 | Celery + Redis |
+| 数据库 | PostgreSQL |
+| 配置管理 | pydantic-settings |
 
 ## 项目结构
 
 ```
 hope-service/
-├── app/
-│   ├── api/v1/              # API路由
-│   │   ├── auth.py          # 认证接口
-│   │   └── tools.py         # 工具集接口
-│   ├── core/                # 核心配置
-│   │   ├── config.py        # 配置管理
-│   │   ├── database.py      # 数据库连接
-│   │   └── security.py      # 安全模块
-│   ├── models/              # 数据库模型
-│   ├── schemas/             # Pydantic数据验证
-│   ├── services/            # 业务服务
-│   │   ├── auth/            # 认证服务
-│   │   ├── tools/           # 工具集（simpletex等）
-│   │   ├── yuzhu/           # 语筑模块（预留）
-│   │   ├── tianqi/          # 天启量化（预留）
-│   │   └── llm/             # 大模型服务（预留）
-│   └── utils/               # 工具函数
-├── celery_worker/           # Celery任务
-├── tests/                   # 测试
+├── core/                        # 🔴 核心底座（全局共享）
+│   ├── config.py                # 环境变量与全局配置
+│   ├── database.py              # 数据库引擎与 Session 依赖
+│   ├── security.py              # 密码哈希、JWT 生成与校验
+│   ├── exceptions.py            # 全局自定义异常拦截
+│   ├── response.py              # 统一响应模型
+│   └── users/                   # 统一用户中心
+│       ├── models.py            # ORM 表 (core_users)
+│       ├── schemas.py           # Pydantic 进出参
+│       ├── services.py          # 业务逻辑
+│       ├── router.py            # API 路由
+│       └── dependencies.py      # get_current_user 等
+├── apps/                        # 🔵 业务模块（独立插槽）
+├── worker/                      # 🟡 任务引擎
+│   ├── celery_app.py            # Celery 实例
+│   └── scheduler.py             # Beat 定时时间表
+├── main.py                      # 🟢 唯一入口
+├── tests/
 ├── docker-compose.yml
 ├── Dockerfile
 ├── requirements.txt
@@ -44,82 +46,91 @@ hope-service/
 ### 1. 环境准备
 
 ```bash
-# 复制环境变量配置
 cp .env.example .env
-
-# 编辑 .env 文件，修改必要的配置
+# 编辑 .env，填入数据库密码、JWT 密钥、微信配置等
 ```
 
 ### 2. Docker 部署（推荐）
 
 ```bash
-# 启动所有服务
-docker-compose up -d
+# 启动所有服务（PostgreSQL + Redis + FastAPI + Celery Worker + Celery Beat）
+docker compose up -d
 
 # 查看日志
-docker-compose logs -f app
+docker compose logs -f app
 
-# 停止服务
-docker-compose down
+# 停止
+docker compose down
 ```
 
 ### 3. 本地开发
 
 ```bash
-# 创建虚拟环境
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# 或
-venv\Scripts\activate  # Windows
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# Linux/Mac
+source .venv/bin/activate
 
-# 安装依赖
 pip install -r requirements.txt
 
-# 启动服务
-uvicorn app.main:app --reload --port 8000
+uvicorn main:app --reload --port 8000
 ```
 
 ### 4. 访问服务
 
-- API文档: http://localhost:8000/docs
-- ReDoc文档: http://localhost:8000/redoc
+- Swagger 文档: http://localhost:8000/docs
+- ReDoc 文档: http://localhost:8000/redoc
 - 健康检查: http://localhost:8000/health
 
-## API接口
+## API 接口
 
-### 认证接口
+### 用户授权 `/api/v1/auth`
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | /api/v1/auth/register | 用户注册 |
-| POST | /api/v1/auth/login | 用户登录 |
+| POST | /api/v1/auth/register | 用户名密码注册 |
+| POST | /api/v1/auth/login | 用户名密码登录 |
+| GET  | /api/v1/auth/wechat/url | 获取微信授权 URL |
+| POST | /api/v1/auth/wechat/login | 微信授权登录 |
 | POST | /api/v1/auth/refresh | 刷新令牌 |
-| GET | /api/v1/auth/me | 获取当前用户 |
+| GET  | /api/v1/auth/me | 获取当前用户信息 |
+| PUT  | /api/v1/auth/me | 更新当前用户信息 |
 
-### 工具集接口
+所有接口统一返回格式：
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | /api/v1/tools/formula-ocr | 公式识别（文件上传） |
-| POST | /api/v1/tools/formula-ocr-base64 | 公式识别（Base64） |
+```json
+{
+    "code": 200,
+    "message": "success",
+    "data": { ... }
+}
+```
 
 ## 配置说明
 
-主要环境变量：
-
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| SECRET_KEY | JWT密钥 | - |
-| POSTGRES_PASSWORD | 数据库密码 | - |
-| SIMPLETEX_API_TOKEN | SimpleTex API Token | - |
+| SECRET_KEY | JWT 密钥 | (必填) |
+| POSTGRES_SERVER | 数据库地址 | localhost |
+| POSTGRES_PASSWORD | 数据库密码 | postgres |
+| REDIS_HOST | Redis 地址 | localhost |
+| WECHAT_APP_ID | 微信公众号 AppID | (可选) |
+| WECHAT_APP_SECRET | 微信公众号 Secret | (可选) |
 
-## 模块说明
+## 新增业务模块
 
-### ✅ 已实现
-- 认证系统（注册/登录/JWT）
-- 工具集 - SimpleTex公式识别
+在 `apps/` 下创建新目录，包含以下文件即可：
 
-### ⏸️ 预留模块
-- 语筑 - 爬虫 + 微信公众号
-- 天启量化 - 策略接口
-- 大模型服务 - Claude/OpenAI/国内模型
+```
+apps/your_module/
+├── models.py      # ORM 表 (表名带模块前缀，如 billing_records)
+├── schemas.py     # Pydantic 模型
+├── services.py    # 业务逻辑
+├── router.py      # 路由 (在 main.py 中挂载)
+└── tasks.py       # (可选) Celery 任务
+```
+
+然后在 `main.py` 中挂载路由、在 `worker/scheduler.py` 中配置定时任务。
+
+**严禁跨模块导入**，`apps/module_a` 不得 `import apps/module_b`。
