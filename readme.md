@@ -61,6 +61,9 @@ docker compose logs -f app
 
 # 停止
 docker compose down
+
+# 重新构建并启动
+docker compose up -d --build
 ```
 
 ### 3. 本地开发

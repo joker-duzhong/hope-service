@@ -2,9 +2,9 @@
 Trade Copilot Models
 表名前缀: trade_
 """
+from typing import Optional
 from sqlalchemy import String, Float, Integer, Date, ForeignKey, DateTime
 from sqlalchemy.sql import func
-from sqlalchemy import String, Float, Integer, Date, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import CoreModel
