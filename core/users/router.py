@@ -187,6 +187,12 @@ async def refresh_token(
         )
 
     user_id = payload.get("sub")
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的刷新令牌"
+        )
     user = await UserService.get_by_id(db, user_id)
     if not user or not user.is_active:
         raise HTTPException(

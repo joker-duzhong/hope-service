@@ -19,8 +19,6 @@ from apps.trade_copilot.akshare_client import AkShareClient
 
 logger = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
-
 async def send_feishu_alert(title: str, msg: str = "", card: Optional[dict] = None) -> bool:
     """Task 1.1: 飞书 Webhook 封装"""
     webhook_url = settings.FEISHU_WEBHOOK_URL
@@ -828,7 +826,7 @@ class TradeTransactionService:
             # 过滤掉涨跌幅为 NaN 的数据
             spot = df_spot[~df_spot["涨跌幅"].isna()]
             total_count = len(spot)
-            
+
             advance_count = len(spot[spot["涨跌幅"] > 0])
             decline_count = len(spot[spot["涨跌幅"] < 0])
             flat_count = total_count - advance_count - decline_count
@@ -844,116 +842,34 @@ class TradeTransactionService:
             if total_count > 0:
                 adv_ratio = advance_count / total_count
                 score += (adv_ratio - 0.5) * 50  # -25 to +25
-                
+
                 # 涨跌停加成
                 if limit_up_count + limit_down_count > 0:
                     limit_ratio = limit_up_count / (limit_up_count + limit_down_count)
                     score += (limit_ratio - 0.5) * 50 # -25 to +25
-            
+
             score = max(0, min(100, int(score)))
 
             # 解析板块数据 (前5)
-            # board columns: ["排名", "板块名称", "板块代码", "最新价", "涨跌额", "涨跌幅", "总市值", "换手率", "上涨家数", "下跌家数", "领涨股票", "领涨股票-涨跌幅"]
             top_sectors = []
             if not df_board.empty:
-                # 假设按涨跌幅降序排列，由于原始数据不一定有序，我们排一下
                 df_board_sorted = df_board.sort_values(by="涨跌幅", ascending=False).head(5)
-                from apps.trade_copilot.schemas import SectorBoardItem, MarketThermometerOut
+                from apps.trade_copilot.schemas import SectorItemOut
                 for _, row in df_board_sorted.iterrows():
-                    top_sectors.append(SectorBoardItem(
-                        rank=int(row.get("排名", 0)),
-                        name=str(row.get("板块名称", "")),
-                        code=str(row.get("板块代码", "")),
-                        latest_price=float(row.get("最新价", 0.0)),
-                        pct_change=float(row.get("涨跌幅", 0.0)),
-                        turnover_rate=float(row.get("换手率", 0.0)),
-                        advance_count=int(row.get("上涨家数", 0)),
-                        decline_count=int(row.get("下跌家数", 0)),
-                        top_stock_name=str(row.get("领涨股票", "")),
-                        top_stock_pct=float(row.get("领涨股票-涨跌幅", 0.0))
+                    top_sectors.append(SectorItemOut(
+                        sector_name=str(row.get("板块名称", "")),
+                        pct_change=float(row.get("涨跌幅", 0.0))
                     ))
-            
+
             return MarketThermometerOut(
-                total_count=total_count,
-                advance_count=advance_count,
-                decline_count=decline_count,
+                total_stocks=total_count,
+                up_count=advance_count,
+                down_count=decline_count,
                 flat_count=flat_count,
                 limit_up_count=limit_up_count,
                 limit_down_count=limit_down_count,
+                score=score,
                 median_pct_change=median_pct,
-                profit_effect_score=int(score),
-                top_sectors=top_sectors
-            )
-        except Exception as e:
-            logger.error(f"计算市场温度计异常: {e}")
-            raise
-
-    @classmethod
-    async def get_market_thermometer(cls):
-        """获取市场温度计与板块轮动"""
-        try:
-            data = await AkShareClient.get_market_thermometer_data()
-            df_spot = data["spot"]
-            df_board = data["board"]
-
-            # 计算市场温度
-            # 过滤掉涨跌幅为 NaN 的数据
-            spot = df_spot[~df_spot["涨跌幅"].isna()]
-            total_count = len(spot)
-            
-            advance_count = len(spot[spot["涨跌幅"] > 0])
-            decline_count = len(spot[spot["涨跌幅"] < 0])
-            flat_count = total_count - advance_count - decline_count
-
-            # 估算涨跌停
-            limit_up_count = len(spot[spot["涨跌幅"] >= 9.8])
-            limit_down_count = len(spot[spot["涨跌幅"] <= -9.8])
-
-            median_pct = float(spot["涨跌幅"].median()) if not spot.empty else 0.0
-
-            # 赚钱效应打分 (0-100) 简单模型: 基础分50 + 涨跌比加成 + 涨跌停加成
-            score = 50.0
-            if total_count > 0:
-                adv_ratio = advance_count / total_count
-                score += (adv_ratio - 0.5) * 50  # -25 to +25
-                
-                # 涨跌停加成
-                if limit_up_count + limit_down_count > 0:
-                    limit_ratio = limit_up_count / (limit_up_count + limit_down_count)
-                    score += (limit_ratio - 0.5) * 50 # -25 to +25
-            
-            score = max(0, min(100, int(score)))
-
-            # 解析板块数据 (前5)
-            # board columns: ["排名", "板块名称", "板块代码", "最新价", "涨跌额", "涨跌幅", "总市值", "换手率", "上涨家数", "下跌家数", "领涨股票", "领涨股票-涨跌幅"]
-            top_sectors = []
-            if not df_board.empty:
-                # 假设按涨跌幅降序排列，由于原始数据不一定有序，我们排一下
-                df_board_sorted = df_board.sort_values(by="涨跌幅", ascending=False).head(5)
-                from apps.trade_copilot.schemas import SectorBoardItem, MarketThermometerOut
-                for _, row in df_board_sorted.iterrows():
-                    top_sectors.append(SectorBoardItem(
-                        rank=int(row.get("排名", 0)),
-                        name=str(row.get("板块名称", "")),
-                        code=str(row.get("板块代码", "")),
-                        latest_price=float(row.get("最新价", 0.0)),
-                        pct_change=float(row.get("涨跌幅", 0.0)),
-                        turnover_rate=float(row.get("换手率", 0.0)),
-                        advance_count=int(row.get("上涨家数", 0)),
-                        decline_count=int(row.get("下跌家数", 0)),
-                        top_stock_name=str(row.get("领涨股票", "")),
-                        top_stock_pct=float(row.get("领涨股票-涨跌幅", 0.0))
-                    ))
-            
-            return MarketThermometerOut(
-                total_count=total_count,
-                advance_count=advance_count,
-                decline_count=decline_count,
-                flat_count=flat_count,
-                limit_up_count=limit_up_count,
-                limit_down_count=limit_down_count,
-                median_pct_change=median_pct,
-                profit_effect_score=int(score),
                 top_sectors=top_sectors
             )
         except Exception as e:

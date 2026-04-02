@@ -1,7 +1,7 @@
 """
 用户中心 —— 核心业务逻辑（不含 HTTP 请求处理）
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -142,7 +142,7 @@ class UserService:
             user.nickname = nickname
         if avatar is not None:
             user.avatar = avatar
-        user.updated_at = datetime.utcnow()
+        user.updated_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(user)
         return user

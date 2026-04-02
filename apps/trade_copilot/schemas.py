@@ -71,10 +71,12 @@ class MarketThermometerOut(BaseModel):
     total_stocks: int = Field(..., description="全市场股票总数")
     up_count: int = Field(..., description="上涨家数")
     down_count: int = Field(..., description="下跌家数")
+    flat_count: int = Field(0, description="平盘家数")
     limit_up_count: int = Field(..., description="涨停家数")
     limit_down_count: int = Field(..., description="跌停家数")
     score: int = Field(..., description="赚钱效应打分 0-100")
-    temperature: str = Field(..., description="市场温度描述")
+    temperature: str = Field("", description="市场温度描述")
+    median_pct_change: float = Field(0.0, description="中位数涨跌幅")
     top_sectors: list[SectorItemOut] = Field(default_factory=list, description="领涨板块")
     update_time: datetime = Field(default_factory=datetime.now)
 
@@ -172,7 +174,7 @@ class TradeTransactionOut(TradeTransactionBase):
     class Config:
         from_attributes = True
 
-# --- V2.0 Sector Rotation and Market Thermometer Schemas ---
+# --- V2.0 Sector Rotation Schemas ---
 class SectorBoardItem(BaseModel):
     rank: int = Field(..., description="排名")
     name: str = Field(..., description="板块名称")
@@ -185,14 +187,3 @@ class SectorBoardItem(BaseModel):
     top_stock_name: str = Field(..., description="领涨股票")
     top_stock_pct: float = Field(..., description="领涨股票-涨跌幅")
 
-class MarketThermometerOut(BaseModel):
-    total_count: int = Field(..., description="全市场股票总数")
-    advance_count: int = Field(..., description="上涨家数")
-    decline_count: int = Field(..., description="下跌家数")
-    flat_count: int = Field(..., description="平盘家数")
-    limit_up_count: int = Field(..., description="涨停家数(估算)")
-    limit_down_count: int = Field(..., description="跌停家数(估算)")
-    median_pct_change: float = Field(..., description="中位数涨跌幅")
-    profit_effect_score: int = Field(..., description="赚钱效应打分(0-100)")
-    top_sectors: list[SectorBoardItem] = Field(..., description="领涨前5大板块")
-    update_time: datetime = Field(default_factory=datetime.now)

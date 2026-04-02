@@ -1,7 +1,7 @@
 """
 密码哈希、JWT 生成与校验
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from jose import jwt
@@ -27,7 +27,7 @@ def create_access_token(
     expires_delta: Optional[timedelta] = None,
 ) -> str:
     """创建访问令牌"""
-    expire = datetime.utcnow() + (
+    expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     to_encode = {"exp": expire, "sub": str(subject), "type": "access"}
@@ -36,7 +36,7 @@ def create_access_token(
 
 def create_refresh_token(subject: Any) -> str:
     """创建刷新令牌"""
-    expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode = {"exp": expire, "sub": str(subject), "type": "refresh"}
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
