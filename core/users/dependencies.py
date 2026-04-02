@@ -33,6 +33,10 @@ async def get_current_user(
     user_id: Optional[int] = payload.get("sub")
     if user_id is None:
         raise credentials_exception
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
+        raise credentials_exception
 
     user = await UserService.get_by_id(db, user_id)
     if user is None:
