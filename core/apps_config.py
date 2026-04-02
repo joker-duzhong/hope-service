@@ -23,15 +23,15 @@ REGISTERED_APPS: Dict[str, AppConfig] = {
         description="系统超级管理员与运营人员入口"
     ),
     # 具体业务APP 1
-    "hope_care": AppConfig(
-        key="hope_care",
-        name="Hope Care 产线APP",
+    "hope_nesttalk": AppConfig(
+        key="hope_nesttalk",
+        name="Hope 语筑APP",
         created_at="2026-04-02",
-        description="健康关怀与服务应用"
+        description="语筑APP，提供房源监听、房源分析等功能"
     ),
     # 具体业务APP 2
-    "hope_trade": AppConfig(
-        key="hope_trade",
+    "hope_trade_copilot": AppConfig(
+        key="hope_trade_copilot",
         name="Hope Trade 产线APP",
         created_at="2026-04-02",
         description="交易及分析助手应用"
