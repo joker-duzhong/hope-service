@@ -22,7 +22,12 @@
       "Bash(.venv/Scripts/python -c \"from core.users.schemas import UserCreate, Token; print\\(''users.schemas OK''\\)\")",
       "Bash(.venv/Scripts/python -c \"from core.users.services import UserService; print\\(''users.services OK''\\)\")",
       "Bash(.venv/Scripts/python -c \"from core.users.router import router; print\\(''users.router OK, routes:'', len\\(router.routes\\)\\)\")",
-      "Bash(.venv/Scripts/python -c \"from main import app; print\\(''main.py OK, routes:'', len\\(app.routes\\)\\)\")"
+      "Bash(.venv/Scripts/python -c \"from main import app; print\\(''main.py OK, routes:'', len\\(app.routes\\)\\)\")",
+      "Bash(curl -s -w \"\\\\nHTTP_STATUS: %{http_code}\" \"https://api.lxyy.fun/api/v1/trade-copilot/market/thermometer\")",
+      "Bash(python -c ':*)",
+      "Bash(curl -s -v \"https://api.lxyy.fun/api/v1/trade-copilot/market/thermometer\")",
+      "Bash(curl -s \"https://api.lxyy.fun/docs\" -o /dev/null -w \"HTTP_STATUS: %{http_code}\")",
+      "Bash(curl -s \"https://api.lxyy.fun/api/v1/trade-copilot/market/status\")"
     ]
   }
 }

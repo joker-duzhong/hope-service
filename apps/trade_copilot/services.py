@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
 from core.redis_client import redis_client
+from core.exceptions import AppException
 from apps.trade_copilot.models import Position, Watchlist, TradeStrategy, TradingJournal, UserTradeSettings, TradeTransaction
 from apps.trade_copilot.schemas import (
     PositionCreate, PositionUpdate, MarketStatusOut, STListOut,
@@ -273,61 +274,65 @@ class MarketService:
             except Exception as e:
                 logger.error(f"解析缓存 market_thermometer 失败: {e}")
 
-        # 如果没有缓存，通过 AkShare 获取实时结果
-        data = await AkShareClient.get_market_thermometer_data()
-        df_spot = data['spot']
-        df_board = data['board']
+        try:
+            # 如果没有缓存，通过 AkShare 获取实时结果
+            data = await AkShareClient.get_market_thermometer_data()
+            df_spot = data['spot']
+            df_board = data['board']
 
-        # 统计市场家数（排除退市等无数据的）
-        df_spot = df_spot.dropna(subset=['涨跌幅'])
-        total_stocks = len(df_spot)
-        up_count = len(df_spot[df_spot['涨跌幅'] > 0])
-        down_count = len(df_spot[df_spot['涨跌幅'] < 0])
-        limit_up_count = len(df_spot[df_spot['涨跌幅'] >= 9.8])
-        limit_down_count = len(df_spot[df_spot['涨跌幅'] <= -9.8])
+            # 统计市场家数（排除退市等无数据的）
+            df_spot = df_spot.dropna(subset=['涨跌幅'])
+            total_stocks = len(df_spot)
+            up_count = len(df_spot[df_spot['涨跌幅'] > 0])
+            down_count = len(df_spot[df_spot['涨跌幅'] < 0])
+            limit_up_count = len(df_spot[df_spot['涨跌幅'] >= 9.8])
+            limit_down_count = len(df_spot[df_spot['涨跌幅'] <= -9.8])
 
-        # 按照涨停家数和上涨家数综合打分（一个极其简化的温度计）
-        score = min(100, max(0, int((up_count / max(1, total_stocks)) * 60 + (limit_up_count / 100) * 40)))
-        
-        # 温度标语：冰点 / 分歧 / 弱修复 / 温和 / 高潮
-        if score < 20:
-            temperature = "冰点 (情绪极度低迷，注意杀跌风险)"
-        elif score < 40:
-            temperature = "分歧 (亏钱效应发酵，适合空仓或试错)"
-        elif score < 60:
-            temperature = "弱修复 (局部赚钱效应，控制仓位)"
-        elif score < 80:
-            temperature = "温和 (普涨行情，适宜持股)"
-        else:
-            temperature = "高潮 (情绪亢奋，注意高位落袋或警惕分歧转一致的尾声)"
+            # 按照涨停家数和上涨家数综合打分（一个极其简化的温度计）
+            score = min(100, max(0, int((up_count / max(1, total_stocks)) * 60 + (limit_up_count / 100) * 40)))
 
-        # 板块轮动数据 (取前5)
-        top_sectors = []
-        if not df_board.empty and '板块名称' in df_board.columns and '涨跌幅' in df_board.columns:
-            # AkShare 返回的值大多是字符串或能转成数值型
-            df_board['涨跌幅'] = df_board['涨跌幅'].apply(lambda x: float(x) if x != '-' and x else 0.0)
-            df_board = df_board.sort_values(by='涨跌幅', ascending=False)
-            for _, row in df_board.head(5).iterrows():
-                top_sectors.append(
-                    SectorItemOut(
-                        sector_name=str(row['板块名称']),
-                        pct_change=float(row['涨跌幅'])
+            # 温度标语：冰点 / 分歧 / 弱修复 / 温和 / 高潮
+            if score < 20:
+                temperature = "冰点 (情绪极度低迷，注意杀跌风险)"
+            elif score < 40:
+                temperature = "分歧 (亏钱效应发酵，适合空仓或试错)"
+            elif score < 60:
+                temperature = "弱修复 (局部赚钱效应，控制仓位)"
+            elif score < 80:
+                temperature = "温和 (普涨行情，适宜持股)"
+            else:
+                temperature = "高潮 (情绪亢奋，注意高位落袋或警惕分歧转一致的尾声)"
+
+            # 板块轮动数据 (取前5)
+            top_sectors = []
+            if not df_board.empty and '板块名称' in df_board.columns and '涨跌幅' in df_board.columns:
+                # AkShare 返回的值大多是字符串或能转成数值型
+                df_board['涨跌幅'] = df_board['涨跌幅'].apply(lambda x: float(x) if x != '-' and x else 0.0)
+                df_board = df_board.sort_values(by='涨跌幅', ascending=False)
+                for _, row in df_board.head(5).iterrows():
+                    top_sectors.append(
+                        SectorItemOut(
+                            sector_name=str(row['板块名称']),
+                            pct_change=float(row['涨跌幅'])
+                        )
                     )
-                )
 
-        result = MarketThermometerOut(
-            total_stocks=total_stocks,
-            up_count=up_count,
-            down_count=down_count,
-            limit_up_count=limit_up_count,
-            limit_down_count=limit_down_count,
-            score=score,
-            temperature=temperature,
-            top_sectors=top_sectors
-        )
+            result = MarketThermometerOut(
+                total_stocks=total_stocks,
+                up_count=up_count,
+                down_count=down_count,
+                limit_up_count=limit_up_count,
+                limit_down_count=limit_down_count,
+                score=score,
+                temperature=temperature,
+                top_sectors=top_sectors
+            )
 
-        await redis_client.set(REDIS_KEY, result.model_dump_json(), ex=300)  # 缓存 5 分钟
-        return result
+            await redis_client.set(REDIS_KEY, result.model_dump_json(), ex=300)  # 缓存 5 分钟
+            return result
+        except Exception as e:
+            logger.error(f"获取市场温度计数据异常: {e}")
+            raise AppException(code=503, message="获取市场温度计数据失败，请稍后重试")
 
 class WatchlistService:
     """观察池 CRUD 逻辑"""
