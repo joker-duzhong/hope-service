@@ -53,6 +53,8 @@ services:
       - REDIS_PORT=6379
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
       - DEBUG=${DEBUG:-false}
+      - WECHAT_APPS=${WECHAT_APPS:-}
+      - FEISHU_WEBHOOK_URL=${FEISHU_WEBHOOK_URL:-}
     ports:
       - "${APP_PORT:-8000}:8000"
     depends_on:
@@ -77,6 +79,8 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-hope_service}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - WECHAT_APPS=${WECHAT_APPS:-}
+      - FEISHU_WEBHOOK_URL=${FEISHU_WEBHOOK_URL:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,6 +103,8 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-hope_service}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - WECHAT_APPS=${WECHAT_APPS:-}
+      - FEISHU_WEBHOOK_URL=${FEISHU_WEBHOOK_URL:-}
     depends_on:
       postgres:
         condition: service_healthy
