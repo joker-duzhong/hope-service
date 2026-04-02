@@ -65,6 +65,7 @@ class UsernameLogin(BaseModel):
 
 class WechatLogin(BaseModel):
     """微信授权登录"""
+    appid: str = Field(..., description="微信公众号 AppID")
     code: str = Field(..., description="微信授权码")
 
 

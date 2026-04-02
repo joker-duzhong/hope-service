@@ -90,12 +90,18 @@ async def login(
 @router.get("/wechat/url", response_model=ResponseModel[WechatAuthUrl])
 async def get_wechat_auth_url(
     redirect_uri: str,
+    appid: str,
     state: str = "",
     scope: str = "snsapi_userinfo",
 ):
     """获取微信授权页面URL"""
+    if not settings.get_wechat_secret(appid):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"未配置该公众号: {appid}",
+        )
     params = urllib.parse.urlencode({
-        "appid": settings.WECHAT_APP_ID,
+        "appid": appid,
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": scope,
@@ -111,12 +117,18 @@ async def wechat_login(
     db: AsyncSession = Depends(get_db),
 ):
     """微信授权登录"""
+    secret = settings.get_wechat_secret(login_data.appid)
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"未配置该公众号: {login_data.appid}",
+        )
     async with httpx.AsyncClient() as client:
         token_resp = await client.get(
             "https://api.weixin.qq.com/sns/oauth2/access_token",
             params={
-                "appid": settings.WECHAT_APP_ID,
-                "secret": settings.WECHAT_APP_SECRET,
+                "appid": login_data.appid,
+                "secret": secret,
                 "code": login_data.code,
                 "grant_type": "authorization_code",
             },
