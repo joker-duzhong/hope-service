@@ -63,9 +63,10 @@ backend_universe/
    - 核心系统表：`core_users`, `core_roles`
    - Trade 应用表：`trade_positions`, `trade_logs`
    - 某记账应用表：`billing_records`
-2. **必留审计字段**：所有业务表必须继承基础 BaseModel，包含 `created_at` (创建时间) 和 `updated_at` (更新时间)，并在每次更新时自动刷新。
-3. **禁止物理删除**：对于核心业务数据，严禁使用 `DELETE` 语句，必须使用 `is_deleted = True` 的软删除设计。
-4. **统一用户绑定**：任何需要区分用户的业务表，必须包含 `user_id` 字段，并通过 FastAPI 的 `Depends(get_current_user)` 获取操作人，严禁前端伪造 user_id。
+2. **必留审计字段**：所有业务表必须继承基础 `CoreModel`（位于 `core/database.py` 中），它原生包含 `id`、`created_at` (创建时间)、`updated_at` (更新时间) 以及默认的 `is_deleted`（软删除标识）。
+3. **禁止物理删除**：对于核心业务数据，严禁使用 `DELETE` 语句，必须重置 `is_deleted = True` 以实现逻辑软删除（`CoreModel` 已内置此能力）。
+4. **统一用户绑定**：任何需要区分用户的业务表，必须包含 `user_id` 字段（作为一个独立的索引型标识字段，而通常不强制外键）。所有通过 API 的写入和读取都必须通过 `Depends(get_current_user)`（该依赖位于 `core/users/dependencies.py` 中）获取操作人，严禁前端伪造 `user_id`。不能反向从 Core 依赖任何具体 App 的逻辑。
+5. **外部/三方包客户端存放约束**：如果某个业务强依赖某个外部服务 SDK（如 AkShare 等），相关的带有重试、限流等处理逻辑的客户端文件（如 `akshare_client.py`）应当放置在此应用的目录内共同管理（如 `apps/trade_copilot/`），不应盲目下沉进 `core` 中。但若涉及诸如下游业务**全局**都可能使用到的密钥配置项（例如钉钉/飞书的 Webhook Token、Redis URL等），必须将环境变量统一收口到 `core/config.py` 的全局 `Settings` 中，保证跨模块皆可读取配置。
 
 ## 5. API 路由与接口规范
 
@@ -75,7 +76,7 @@ backend_universe/
    app.include_router(users.router, prefix="/api/v1/auth", tags=["用户授权"])
    app.include_router(trade_router, prefix="/api/v1/trade", tags=["交易助手"])
    ```
-2. **标准响应格式**：无论成功或失败，HTTP 接口必须返回统一的 JSON 结构。严禁直接裸返回字符串或列表：
+2. **标准响应格式**：无论成功或失败，HTTP 接口必须由底层的统一基础类进行返回。在每次 API Controller 层编写完后，必须用 `ResponseModel(data=...)` 或 `PaginatedResponse(data=...)` 进行封装。严禁直接裸返回字符串或列表：
    ```json
    {
        "code": 200,                // 业务状态码 (非 HTTP 状态码)

@@ -10,6 +10,7 @@ from core.config import settings
 from core.database import init_db
 from core.exceptions import register_exception_handlers
 from core.users import router as users_router
+from core.admin import router as admin_router
 
 
 @asynccontextmanager
@@ -49,8 +50,12 @@ def create_app() -> FastAPI:
     # Core: 用户授权
     app.include_router(users_router, prefix=settings.API_V1_PREFIX, tags=["用户授权"])
 
+    # Core: 管理后台
+    app.include_router(admin_router, prefix=settings.API_V1_PREFIX, tags=["管理后台"])
+
     # Apps: 在此挂载各业务模块路由
-    # app.include_router(trade_router, prefix="/api/v1/trade", tags=["交易助手"])
+    from apps.trade_copilot.router import router as trade_copilot_router
+    app.include_router(trade_copilot_router, prefix=f"{settings.API_V1_PREFIX}/trade-copilot", tags=["交易助手"])
 
     # 健康检查
     @app.get("/health", tags=["健康检查"])

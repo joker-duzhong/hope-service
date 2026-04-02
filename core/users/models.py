@@ -3,19 +3,21 @@
 表名前缀: core_
 """
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import Boolean, DateTime, Integer, String, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from core.database import Base
+from core.associations import user_roles_table
+from core.database import CoreModel
+
+if TYPE_CHECKING:
+    from core.roles.models import Role
 
 
-class User(Base):
+class User(CoreModel):
     """用户表"""
     __tablename__ = "core_users"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
 
     # 微信公众号（主要标识）
     openid: Mapped[Optional[str]] = mapped_column(
@@ -45,18 +47,15 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # 软删除
-    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
-
     # 来源标识
     source: Mapped[str] = mapped_column(String(50), default="default")
 
-    # 审计字段
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    # 多对多：用户拥有的角色
+    roles: Mapped[List["Role"]] = relationship(
+        "Role",
+        secondary=user_roles_table,
+        back_populates="users",
+        lazy="selectin",
     )
 
     def __repr__(self) -> str:

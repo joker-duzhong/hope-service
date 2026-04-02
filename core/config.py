@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     # 微信公众号配置
     WECHAT_APP_ID: Optional[str] = None
     WECHAT_APP_SECRET: Optional[str] = None
+    
+    # 飞书 Webhook 配置
+    FEISHU_WEBHOOK_URL: Optional[str] = None
 
     class Config:
         env_file = ".env"

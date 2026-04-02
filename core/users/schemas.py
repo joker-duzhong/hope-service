@@ -2,7 +2,7 @@
 用户相关的 Pydantic 进出参模型
 """
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -30,6 +30,16 @@ class UserUpdate(BaseModel):
     avatar: Optional[str] = Field(None, max_length=500)
 
 
+class RoleInfo(BaseModel):
+    """角色简要信息（嵌入用户响应中）"""
+    id: int
+    name: str
+    code: str
+
+    class Config:
+        from_attributes = True
+
+
 class UserResponse(UserBase):
     """用户响应模型"""
     id: int
@@ -37,6 +47,7 @@ class UserResponse(UserBase):
     phone: Optional[str] = None
     source: str
     is_active: bool
+    roles: List[RoleInfo] = []
     created_at: datetime
     updated_at: datetime
 
