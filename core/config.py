@@ -66,16 +66,18 @@ class Settings(BaseSettings):
     BACKEND_CORS_ORIGINS: List[str] = ["*"]
 
     # 微信公众号配置（多公众号映射）
-    WECHAT_APPS: str = ""  # JSON 格式: {"appid1":"secret1","appid2":"secret2"}
+    WECHAT_APPS: str = ""  # 格式: appid1:secret1,appid2:secret2
 
     def get_wechat_secret(self, appid: str) -> Optional[str]:
         """根据 appid 获取对应的 secret"""
-        import json
-        try:
-            apps = json.loads(self.WECHAT_APPS) if self.WECHAT_APPS else {}
-            return apps.get(appid)
-        except (json.JSONDecodeError, TypeError):
+        if not self.WECHAT_APPS:
             return None
+        for pair in self.WECHAT_APPS.split(","):
+            if ":" in pair:
+                aid, secret = pair.split(":", 1)
+                if aid.strip() == appid:
+                    return secret.strip()
+        return None
     
     # 飞书 Webhook 配置
     FEISHU_WEBHOOK_URL: Optional[str] = None
