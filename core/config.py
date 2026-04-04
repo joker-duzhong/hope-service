@@ -65,16 +65,11 @@ class Settings(BaseSettings):
     # CORS 配置
     BACKEND_CORS_ORIGINS: List[str] = ["*"]
 
-    # 微信公众号配置（单公众号）
-    WECHAT_APP_ID: str = ""
-    WECHAT_APP_SECRET: str = ""
-    WECHAT_TOKEN: str = ""
-
     # 微信公众号配置（多公众号映射）
-    WECHAT_APPS: str = ""  # 格式: appid1:secret1:token1,appid2:secret2:token2
+    WECHAT_APPS: str = ""  # 格式: appid1:secret1:token1:aeskey1,appid2:secret2:token2:aeskey2
 
     def get_wechat_config(self, appid: str) -> Optional[dict]:
-        """根据 appid 获取对应的 secret 和 token"""
+        """根据 appid 获取对应的 secret、token 和 encoding_aes_key"""
         if not self.WECHAT_APPS:
             return None
         for pair in self.WECHAT_APPS.split(","):
@@ -82,7 +77,8 @@ class Settings(BaseSettings):
             if len(parts) >= 2 and parts[0].strip() == appid:
                 secret = parts[1].strip()
                 token = parts[2].strip() if len(parts) >= 3 else None
-                return {"secret": secret, "token": token}
+                encoding_aes_key = parts[3].strip() if len(parts) >= 4 else None
+                return {"secret": secret, "token": token, "encoding_aes_key": encoding_aes_key}
         return None
     
     # 飞书 Webhook 配置

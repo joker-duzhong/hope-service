@@ -118,8 +118,7 @@ uvicorn main:app --reload --port 8000
 | POSTGRES_SERVER | 数据库地址 | localhost |
 | POSTGRES_PASSWORD | 数据库密码 | postgres |
 | REDIS_HOST | Redis 地址 | localhost |
-| WECHAT_APP_ID | 微信公众号 AppID | (可选) |
-| WECHAT_APP_SECRET | 微信公众号 Secret | (可选) |
+| WECHAT_APPS | 微信公众号配置，格式: appid:secret:token:aeskey | (可选) |
 
 ## 新增业务模块
 
