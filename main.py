@@ -53,10 +53,11 @@ def create_app() -> FastAPI:
     # Core: 管理后台
     app.include_router(admin_router, prefix=settings.API_V1_PREFIX, tags=["管理后台"])
 
-    # Apps: 在此挂载各业务模块路由
-    from apps.wechat.router import router as wechat_router
+    # Core: 微信认证服务
+    from core.wechat.router import router as wechat_router
     app.include_router(wechat_router, prefix=f"{settings.API_V1_PREFIX}", tags=["微信认证"])
 
+    # Apps: 在此挂载各业务模块路由
     from apps.trade_copilot.router import router as trade_copilot_router
     app.include_router(trade_copilot_router, prefix=f"{settings.API_V1_PREFIX}/trade-copilot", tags=["交易助手"])
 

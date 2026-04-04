@@ -12,6 +12,7 @@ from core.database import get_db
 from core.response import ResponseModel, PaginatedResponse, PaginatedData
 from core.users.models import User
 from core.users.dependencies import get_current_user
+from core.dependencies import get_app_key
 from core.exceptions import BadRequestException
 
 from apps.just_right.models import Couple
@@ -42,7 +43,8 @@ class PaginatedDataWrapper:
         self.page_size = page_size
         self.total_pages = (total + page_size - 1) // page_size if total > 0 else 0
 
-router = APIRouter()
+# 路由级别依赖：所有接口都必须传入有效的 app header
+router = APIRouter(dependencies=[Depends(get_app_key)])
 
 
 # ==================== 辅助函数 ====================

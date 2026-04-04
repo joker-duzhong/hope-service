@@ -7,6 +7,7 @@ from core.database import get_db
 from core.response import ResponseModel
 from core.users.models import User
 from core.users.dependencies import get_current_user
+from core.dependencies import get_app_key
 
 from apps.trade_copilot.schemas import (
     PositionCreate, PositionUpdate, PositionOut,
@@ -25,7 +26,8 @@ from apps.trade_copilot.services import (
     StockInfoService, send_feishu_alert
 )
 
-router = APIRouter()
+# 路由级别依赖：所有接口都必须传入有效的 app header
+router = APIRouter(dependencies=[Depends(get_app_key)])
 
 @router.post("/feishu-test", response_model=ResponseModel[bool])
 async def test_feishu_webhook(title: str = Query("测试标题", description="标题"), msg: str = Query("测试内容", description="内容")):

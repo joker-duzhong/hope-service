@@ -36,4 +36,11 @@ REGISTERED_APPS: Dict[str, AppConfig] = {
         created_at="2026-04-02",
         description="交易及分析助手应用"
     ),
+    # 具体业务APP 3
+    "hope_just_right": AppConfig(
+        key="hope_just_right",
+        name="Hope 恰好APP",
+        created_at="2026-04-05",
+        description="情侣互动应用，提供备忘录、愿望清单、纪念日等功能"
+    ),
 }
