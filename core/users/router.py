@@ -22,10 +22,66 @@ from core.users.schemas import (
     UsernameLogin,
     WechatAuthUrl,
     WechatLogin,
+    SendSmsRequest,
+    PhoneRegisterRequest,
+    BindPhoneRequest,
 )
 from core.users.services import UserService
+from core.sms import send_sms_code
 
 router = APIRouter(prefix="/auth", tags=["用户授权"])
+
+
+# ==================== 短信 ====================
+
+@router.post("/sms/send", response_model=ResponseModel)
+async def send_sms(req: SendSmsRequest):
+    """发送短信验证码"""
+    success = await send_sms_code(req.phone, req.purpose)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="发送短信失败"
+        )
+    return ResponseModel(msg="发送成功")
+
+@router.post("/phone/register", response_model=ResponseModel[UserResponse])
+async def phone_register(
+    req: PhoneRegisterRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """手机号+验证码注册"""
+    user = await UserService.register_with_phone(
+        db, 
+        phone=req.phone, 
+        code=req.code, 
+        password=req.password,
+        nickname=req.nickname
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="验证码错误或手机号已被注册"
+        )
+    return ResponseModel(data=UserResponse.model_validate(user))
+
+@router.post("/phone/bind", response_model=ResponseModel[UserResponse])
+async def phone_bind(
+    req: BindPhoneRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """绑定手机号"""
+    user = await UserService.bind_phone(
+        db,
+        user=current_user,
+        phone=req.phone,
+        code=req.code
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="验证码错误或手机号已被绑定"
+        )
+    return ResponseModel(data=UserResponse.model_validate(user))
 
 
 # ==================== 注册 ====================

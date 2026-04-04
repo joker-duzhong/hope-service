@@ -86,3 +86,21 @@ class Token(BaseModel):
 class RefreshRequest(BaseModel):
     """刷新令牌请求"""
     refresh_token: str
+
+
+# ==================== 短信与手机验证模型 ====================
+
+class SendSmsRequest(BaseModel):
+    phone: str = Field(..., max_length=20, description="手机号")
+    purpose: str = Field(..., description="用途: register, bind")
+
+class PhoneRegisterRequest(BaseModel):
+    phone: str = Field(..., max_length=20, description="手机号")
+    code: str = Field(..., description="短信验证码")
+    password: Optional[str] = Field(None, description="可选设置密码")
+    nickname: Optional[str] = Field(None, max_length=100)
+    source: str = Field(default="phone", max_length=50)
+
+class BindPhoneRequest(BaseModel):
+    phone: str = Field(..., max_length=20, description="手机号")
+    code: str = Field(..., description="短信验证码")

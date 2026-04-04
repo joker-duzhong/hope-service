@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.security import get_password_hash, verify_password
 from core.users.models import User
 from core.users.schemas import UserCreate
+from core.sms import verify_sms_code
 
 
 class UserService:
@@ -88,6 +89,41 @@ class UserService:
         await db.refresh(user)
         return user
 
+    @staticmethod
+    async def register_with_phone(
+        db: AsyncSession,
+        phone: str,
+        code: str,
+        password: Optional[str] = None,
+        nickname: Optional[str] = None,
+        source: str = "phone",
+    ) -> Optional[User]:
+        # 验证码检查
+        is_valid = await verify_sms_code(phone, "register", code)
+        if not is_valid:
+            return None
+
+        # 检查是否已注册
+        user = await UserService.get_by_phone(db, phone)
+        if user:
+            return None
+
+        # 默认用户名：随机或截取手机号
+        username = f"user_{phone}"
+        hashed_pw = get_password_hash(password) if password else None
+        
+        new_user = User(
+            username=username,
+            hashed_password=hashed_pw,
+            phone=phone,
+            nickname=nickname or f"手机用户{phone[-4:]}",
+            source=source,
+        )
+        db.add(new_user)
+        await db.commit()
+        await db.refresh(new_user)
+        return new_user
+
     # ==================== 认证 ====================
 
     @staticmethod
@@ -142,6 +178,29 @@ class UserService:
             user.nickname = nickname
         if avatar is not None:
             user.avatar = avatar
+        user.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(user)
+        return user
+
+    @staticmethod
+    async def bind_phone(
+        db: AsyncSession,
+        user: User,
+        phone: str,
+        code: str,
+    ) -> Optional[User]:
+        # 验证码检查
+        is_valid = await verify_sms_code(phone, "bind", code)
+        if not is_valid:
+            return None
+
+        # 检查手机号是否已被他人绑定
+        existing = await UserService.get_by_phone(db, phone)
+        if existing and existing.id != user.id:
+            return None
+
+        user.phone = phone
         user.updated_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(user)

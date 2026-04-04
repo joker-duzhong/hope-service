@@ -66,21 +66,31 @@ class Settings(BaseSettings):
     BACKEND_CORS_ORIGINS: List[str] = ["*"]
 
     # 微信公众号配置（多公众号映射）
-    WECHAT_APPS: str = ""  # 格式: appid1:secret1,appid2:secret2
+    WECHAT_APPS: str = ""  # 格式: appid1:secret1:token1,appid2:secret2:token2
 
-    def get_wechat_secret(self, appid: str) -> Optional[str]:
-        """根据 appid 获取对应的 secret"""
+    def get_wechat_config(self, appid: str) -> Optional[dict]:
+        """根据 appid 获取对应的 secret 和 token"""
         if not self.WECHAT_APPS:
             return None
         for pair in self.WECHAT_APPS.split(","):
-            if ":" in pair:
-                aid, secret = pair.split(":", 1)
-                if aid.strip() == appid:
-                    return secret.strip()
+            parts = pair.split(":")
+            if len(parts) >= 2 and parts[0].strip() == appid:
+                secret = parts[1].strip()
+                token = parts[2].strip() if len(parts) >= 3 else None
+                return {"secret": secret, "token": token}
         return None
     
     # 飞书 Webhook 配置
     FEISHU_WEBHOOK_URL: Optional[str] = None
+    
+    # 腾讯云短信配置
+    TENCENT_SMS_SECRET_ID: str = ""
+    TENCENT_SMS_SECRET_KEY: str = ""
+    TENCENT_SMS_APP_ID: str = ""
+    TENCENT_SMS_SIGN_NAME: str = ""
+    TENCENT_SMS_TEMPLATE_ID_REGISTER: str = ""
+    TENCENT_SMS_TEMPLATE_ID_BIND: str = ""
+    TENCENT_SMS_REGION: str = "ap-guangzhou"
 
     class Config:
         env_file = ".env"
@@ -94,3 +104,4 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
