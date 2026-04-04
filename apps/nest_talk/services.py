@@ -164,7 +164,7 @@ class HouseService:
 
         # 分页
         offset = (page - 1) * page_size
-        stmt = stmt.order_by(NestTalkHouse.discount_rate.asc())
+        stmt = stmt.order_by(NestTalkHouse.discount_rate.asc().nulls_last())
         stmt = stmt.offset(offset).limit(page_size)
 
         result = await session.execute(stmt)

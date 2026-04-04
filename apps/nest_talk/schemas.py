@@ -32,23 +32,24 @@ class HouseOut(BaseModel):
     total_price: float
     unit_price: float
     area: float
-    layout: str
-    rooms: int
+    layout: Optional[str] = None
+    rooms: Optional[int] = None
     floor: Optional[int] = None
     total_floors: Optional[int] = None
     orientation: Optional[str] = None
     decoration: Optional[str] = None
-    region_name: str
+    region_name: Optional[str] = None
     community_name: Optional[str] = None
-    source: str
+    source: Optional[str] = None
     url: Optional[str] = None
     image_url: Optional[str] = None
-    is_bargain: bool
+    is_bargain: bool = False
     bargain_reason: Optional[str] = None
     discount_rate: Optional[float] = None
-    status: str
-    created_at: datetime
-    updated_at: datetime
+    community_avg_price: Optional[float] = None
+    status: str = "active"
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

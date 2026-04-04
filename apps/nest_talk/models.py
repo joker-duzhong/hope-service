@@ -45,8 +45,8 @@ class NestTalkHouse(CoreModel):
     total_price: Mapped[float] = mapped_column(Float, comment="总价(万元)")
     unit_price: Mapped[float] = mapped_column(Float, comment="单价(元/㎡)")
     area: Mapped[float] = mapped_column(Float, comment="建筑面积(㎡)")
-    layout: Mapped[str] = mapped_column(String(50), comment="户型(如: 3室2厅)")
-    rooms: Mapped[int] = mapped_column(Integer, comment="居室数")
+    layout: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="户型(如: 3室2厅)")
+    rooms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="居室数")
     floor: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="所在楼层")
     total_floors: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="总楼层")
     orientation: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="朝向")
@@ -55,14 +55,14 @@ class NestTalkHouse(CoreModel):
     region_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("nest_talk_regions.id", ondelete="SET NULL"), nullable=True, comment="所属区域ID"
     )
-    region_name: Mapped[str] = mapped_column(String(50), index=True, comment="区域名称(冗余)")
+    region_name: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True, comment="区域名称(冗余)")
 
     community_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("nest_talk_communities.id", ondelete="SET NULL"), nullable=True, comment="所属小区ID"
     )
     community_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True, comment="小区名称(冗余)")
 
-    source: Mapped[str] = mapped_column(String(50), default="beike", comment="来源平台")
+    source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, default="beike", comment="来源平台")
     url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True, comment="房源链接")
     image_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True, comment="房源图片")
 

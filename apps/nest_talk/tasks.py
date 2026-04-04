@@ -47,7 +47,7 @@ async def _detect_bargain_houses_async() -> Dict[str, Any]:
             ).where(
                 NestTalkHouse.is_deleted == False,
                 NestTalkHouse.status == "active",
-                NestTalkHouse.community_id != None
+                NestTalkHouse.community_id.is_not(None)
             ).group_by(NestTalkHouse.community_id, NestTalkHouse.community_name)
 
             result = await session.execute(stmt)

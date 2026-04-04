@@ -149,32 +149,53 @@ async def list_bargain_houses(
 
     获取当前标记为捡漏的高性价比房源。
     """
-    houses, total = await HouseService.search_houses(
-        db,
-        HouseSearchRequest(page=page, page_size=page_size)
-    )
-    # 过滤捡漏房源
-    bargain_houses = [h for h in houses if h.is_bargain]
+    houses, total = await HouseService.get_bargain_houses(db, page, page_size)
 
-    total_pages = (len(bargain_houses) + page_size - 1) // page_size
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 1
 
-    # 计算节省金额
+    # 构建返回结果，计算节省金额
     result_houses = []
-    for h in bargain_houses:
-        house_out = BargainHouseOut.model_validate(h)
-        if h.community_avg_price and h.unit_price:
-            # 节省金额 = (小区均价 - 当前单价) * 面积 / 10000 (转换为万元)
+    for h in houses:
+        house_dict = {
+            "id": h.id,
+            "house_id": h.house_id,
+            "title": h.title,
+            "total_price": h.total_price,
+            "unit_price": h.unit_price,
+            "area": h.area,
+            "layout": h.layout,
+            "rooms": h.rooms,
+            "floor": h.floor,
+            "total_floors": h.total_floors,
+            "orientation": h.orientation,
+            "decoration": h.decoration,
+            "region_name": h.region_name,
+            "community_name": h.community_name,
+            "source": h.source,
+            "url": h.url,
+            "image_url": h.image_url,
+            "is_bargain": h.is_bargain,
+            "bargain_reason": h.bargain_reason,
+            "discount_rate": h.discount_rate,
+            "status": h.status,
+            "created_at": h.created_at,
+            "updated_at": h.updated_at,
+            "save_amount": None,
+        }
+        # 计算节省金额
+        if h.community_avg_price and h.unit_price and h.area:
             save_amount = (h.community_avg_price - h.unit_price) * h.area / 10000
-            house_out.save_amount = round(save_amount, 2)
-        result_houses.append(house_out)
+            house_dict["save_amount"] = round(save_amount, 2)
+
+        result_houses.append(BargainHouseOut(**house_dict))
 
     return PaginatedResponse(
         data=PaginatedData(
             items=result_houses,
-            total=len(bargain_houses),
+            total=total,
             page=page,
             page_size=page_size,
-            total_pages=total_pages or 1
+            total_pages=total_pages
         )
     )
 
