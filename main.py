@@ -64,6 +64,9 @@ def create_app() -> FastAPI:
     from apps.just_right.router import router as just_right_router
     app.include_router(just_right_router, prefix=f"{settings.API_V1_PREFIX}/just-right", tags=["恰好"])
 
+    from apps.nest_talk.router import router as nest_talk_router
+    app.include_router(nest_talk_router, prefix=f"{settings.API_V1_PREFIX}/nest-talk", tags=["语筑"])
+
     # 健康检查
     @app.get("/health", tags=["健康检查"])
     async def health_check():

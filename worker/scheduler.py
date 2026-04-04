@@ -31,4 +31,16 @@ celery_app.conf.beat_schedule = {
         # 每天凌晨 1:00 执行一次，同步A股股票基本信息
         "schedule": crontab(minute=0, hour=1),
     },
+
+    # ==================== 语筑 (nest_talk) 定时任务 ====================
+    "nest_talk_detect_bargain": {
+        "task": "apps.nest_talk.tasks.detect_bargain_task",
+        # 每天早上 6:00 执行捡漏检测
+        "schedule": crontab(minute=0, hour=6),
+    },
+    "nest_talk_update_region_prices": {
+        "task": "apps.nest_talk.tasks.update_region_prices_task",
+        # 每天早上 6:30 更新区域均价日志
+        "schedule": crontab(minute=30, hour=6),
+    },
 }

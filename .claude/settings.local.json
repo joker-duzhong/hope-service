@@ -33,7 +33,9 @@
       "Bash(python -c \"from apps.just_right.schemas import CoupleOut, TodoItemCreate, MemoCreate, UserManualOut, RouletteOptionCreate, WishlistItemCreate, AnniversaryCreate, CoupleStateUpdate; print\\('Schemas imported successfully'\\)\")",
       "Bash(python -c \"from apps.just_right.services import CoupleService, TodoService, MemoService, UserManualService, RouletteService, WishlistService, AnniversaryService, CoupleStateService; print\\('Services imported successfully'\\)\")",
       "Bash(python -c \"from main import app; routes = [r.path for r in app.routes]; print\\('Routes:', [r for r in routes if 'just-right' in r or 'couples' in r][:5]\\)\")",
-      "WebSearch"
+      "WebSearch",
+      "Bash(python -c \"from apps.nest_talk import models, schemas, services, router; print\\('All modules imported successfully'\\)\")",
+      "Bash(python -c \"from main import app; print\\('App created successfully'\\); print\\('Routes:', [r.path for r in app.routes if hasattr\\(r, 'path'\\) and '/nest-talk' in str\\(r.path\\)][:5]\\)\")"
     ]
   }
 }
