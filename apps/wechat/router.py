@@ -14,7 +14,7 @@ def get_crypto(appid: str) -> WeChatCrypto:
     """获取加解密实例"""
     config = settings.get_wechat_config(appid)
     if not config or not config.get("token") or not config.get("encoding_aes_key"):
-        raise HTTPException(status_code=500, detail="WeChat crypto config missing")
+        raise HTTPException(status_code=400, detail="WeChat crypto config missing")
     return WeChatCrypto(
         token=config["token"],
         encoding_aes_key=config["encoding_aes_key"],
@@ -24,29 +24,37 @@ def get_crypto(appid: str) -> WeChatCrypto:
 
 @router.get("/auth/wechat/qrcode", summary="获取微信登录二维码")
 async def get_qrcode(appid: str):
-    result = await WeChatService.create_qrcode(appid)
-    return ResponseModel(data=result)
+    try:
+        result = await WeChatService.create_qrcode(appid)
+        return ResponseModel(data=result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        return ResponseModel(code=400, message=str(e))
 
 
 @router.get("/wechat/callback/{appid}", summary="微信 Webhook 回调验证")
 async def verify_wechat_webhook(
     appid: str, signature: str, timestamp: str, nonce: str, echostr: str
 ):
-    # 验证服务器配置时，echostr 始终是明文，直接验证签名后返回
-    config = settings.get_wechat_config(appid)
-    if not config or not config.get("token"):
-        return Response(content="error: token not configured", media_type="text/plain")
+    try:
+        # 验证服务器配置时，echostr 始终是明文，直接验证签名后返回
+        config = settings.get_wechat_config(appid)
+        if not config or not config.get("token"):
+            return Response(content="error: token not configured", media_type="text/plain")
 
-    # 使用 token 验证签名
-    crypto = WeChatCrypto(
-        token=config["token"],
-        encoding_aes_key=config.get("encoding_aes_key", ""),
-        appid=appid,
-    )
-    if crypto.verify_signature(signature, timestamp, nonce):
-        return Response(content=echostr, media_type="text/plain")
+        # 使用 token 验证签名
+        crypto = WeChatCrypto(
+            token=config["token"],
+            encoding_aes_key=config.get("encoding_aes_key", ""),
+            appid=appid,
+        )
+        if crypto.verify_signature(signature, timestamp, nonce):
+            return Response(content=echostr, media_type="text/plain")
 
-    return Response(content="error: signature mismatch", media_type="text/plain")
+        return Response(content="error: signature mismatch", media_type="text/plain")
+    except Exception as e:
+        return Response(content=f"error: {e}", media_type="text/plain")
 
 
 @router.post("/wechat/callback/{appid}", summary="处理微信扫码回调事件")
@@ -93,9 +101,12 @@ async def handle_wechat_event(appid: str, request: Request, msg_signature: str =
 
 @router.get("/auth/wechat/status", summary="查询微信扫码状态")
 async def get_scan_status(scene_id: str):
-    data = await redis_client.get(f"wechat_scan:{scene_id}")
-    if not data:
-        return ResponseModel(data={"status": "EXPIRED"})
+    try:
+        data = await redis_client.get(f"wechat_scan:{scene_id}")
+        if not data:
+            return ResponseModel(data={"status": "EXPIRED"})
 
-    parsed = json.loads(data)
-    return ResponseModel(data=parsed)
+        parsed = json.loads(data)
+        return ResponseModel(data=parsed)
+    except Exception as e:
+        return ResponseModel(code=400, message=str(e))
