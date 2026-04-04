@@ -6,9 +6,7 @@ import base64
 import hashlib
 import socket
 import struct
-import time
 import xml.etree.ElementTree as ET
-from typing import Optional, Tuple
 
 from Crypto.Cipher import AES
 
@@ -36,12 +34,14 @@ class PKCS7Encoder:
 class WeChatCrypto:
     """微信消息加解密"""
 
-    def __init__(self, token: str, encoding_aes_key: str, appid: str):
+    def __init__(self, token: str, encoding_aes_key: str = "", appid: str = ""):
         self.token = token
         self.appid = appid
+        self.aes_key = None
         # EncodingAESKey 长度为 43，补 = 后 base64 解码得到 32 字节 AES Key
-        self.aes_key = base64.b64decode(encoding_aes_key + "=")
-        assert len(self.aes_key) == 32
+        if encoding_aes_key:
+            self.aes_key = base64.b64decode(encoding_aes_key + "=")
+            assert len(self.aes_key) == 32
 
     def verify_signature(self, signature: str, timestamp: str, nonce: str) -> bool:
         """验证签名"""
@@ -63,6 +63,8 @@ class WeChatCrypto:
 
     def decrypt(self, encrypted_msg: str) -> str:
         """解密消息"""
+        if not self.aes_key:
+            raise ValueError("EncodingAESKey not configured")
         cipher = AES.new(self.aes_key, AES.MODE_CBC, iv=self.aes_key[:16])
         decrypted = cipher.decrypt(base64.b64decode(encrypted_msg))
         # 去除 PKCS7 填充
@@ -81,6 +83,8 @@ class WeChatCrypto:
 
     def encrypt(self, msg: str) -> str:
         """加密消息"""
+        if not self.aes_key:
+            raise ValueError("EncodingAESKey not configured")
         # 16 字节随机字符串
         random_str = b"xxxxxxxxxxxxxxxx"
         msg_bytes = msg.encode("utf-8")

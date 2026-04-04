@@ -2,7 +2,6 @@ from fastapi import APIRouter, Request, Response, HTTPException
 from core.response import ResponseModel
 from core.config import settings
 from apps.wechat.services import WeChatService
-from apps.wechat.schemas import WechatQRPollResponse
 from apps.wechat.crypto import WeChatCrypto
 from core.redis_client import redis_client
 import xml.etree.ElementTree as ET
