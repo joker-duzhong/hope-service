@@ -33,23 +33,21 @@ async def get_qrcode(appid: str):
 async def verify_wechat_webhook(
     appid: str, signature: str, timestamp: str, nonce: str, echostr: str
 ):
-    # 安全模式下 echostr 是加密的，需要解密后返回
+    # 验证服务器配置时，echostr 始终是明文，直接验证签名后返回
     config = settings.get_wechat_config(appid)
-    if not config or not config.get("encoding_aes_key"):
-        # 明文模式
-        if WeChatService.verify_signature(appid, signature, timestamp, nonce):
-            return Response(content=echostr, media_type="text/plain")
-    else:
-        # 安全模式
-        crypto = get_crypto(appid)
-        if crypto.verify_signature(signature, timestamp, nonce):
-            # echostr 是 base64 编码的加密数据，解密后返回
-            try:
-                decrypted = crypto.decrypt(echostr)
-                return Response(content=decrypted, media_type="text/plain")
-            except Exception as e:
-                print(f"Failed to decrypt echostr: {e}")
-    return Response(content="error", media_type="text/plain")
+    if not config or not config.get("token"):
+        return Response(content="error: token not configured", media_type="text/plain")
+
+    # 使用 token 验证签名
+    crypto = WeChatCrypto(
+        token=config["token"],
+        encoding_aes_key=config.get("encoding_aes_key", ""),
+        appid=appid,
+    )
+    if crypto.verify_signature(signature, timestamp, nonce):
+        return Response(content=echostr, media_type="text/plain")
+
+    return Response(content="error: signature mismatch", media_type="text/plain")
 
 
 @router.post("/wechat/callback/{appid}", summary="处理微信扫码回调事件")
