@@ -9,6 +9,21 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import CoreModel
 
+
+class StockInfo(CoreModel):
+    """A股股票基本信息表"""
+    __tablename__ = "trade_stock_info"
+
+    symbol: Mapped[str] = mapped_column(String(20), unique=True, index=True, comment="股票代码")
+    name: Mapped[str] = mapped_column(String(100), comment="股票名称")
+    industry: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="所属行业")
+    sector: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="所属板块")
+    list_date: Mapped[Optional[Date]] = mapped_column(Date, nullable=True, comment="上市日期")
+    total_market_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="总市值(元)")
+    circulating_market_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="流通市值(元)")
+    is_st: Mapped[bool] = mapped_column(Integer, default=False, comment="是否ST股票")
+
+
 class TradeStrategy(CoreModel):
     """风控策略配置表 V2.0"""
     __tablename__ = "trade_strategies"

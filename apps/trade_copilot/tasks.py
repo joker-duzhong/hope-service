@@ -395,3 +395,36 @@ def sniper_radar_task(self):
     except Exception as e:
         logger.error(f"狙击雷达任务失败，准备重试: {e}")
         raise self.retry(exc=e)
+
+
+async def run_sync_stock_info() -> str:
+    """同步A股股票基本信息到数据库"""
+    logger.info("开始同步A股股票基本信息...")
+
+    from sqlalchemy.pool import NullPool
+    local_engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
+    local_session_maker = async_sessionmaker(local_engine, expire_on_commit=False)
+
+    try:
+        async with local_session_maker() as session:
+            from apps.trade_copilot.services import StockInfoService
+            count = await StockInfoService.sync_all_stocks(session)
+            logger.info(f"A股股票基本信息同步完成，共同步 {count} 只股票")
+            return f"Synced {count} stocks"
+    except Exception as e:
+        logger.error(f"同步A股股票基本信息失败: {e}")
+        return f"Failed: {str(e)}"
+    finally:
+        await local_engine.dispose()
+
+
+@shared_task(name="apps.trade_copilot.tasks.sync_stock_info_task", bind=True, max_retries=3, default_retry_delay=300)
+def sync_stock_info_task(self):
+    """
+    同步A股股票基本信息任务: 每天凌晨 1:00 执行一次
+    """
+    try:
+        return asyncio.run(run_sync_stock_info())
+    except Exception as e:
+        logger.error(f"同步股票信息任务失败，准备重试: {e}")
+        raise self.retry(exc=e)

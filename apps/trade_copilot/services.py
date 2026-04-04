@@ -3,6 +3,7 @@ from typing import List, Optional
 import json
 from datetime import datetime
 import httpx
+import pandas as pd
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import settings
 from core.redis_client import redis_client
 from core.exceptions import AppException
-from apps.trade_copilot.models import Position, Watchlist, TradeStrategy, TradingJournal, UserTradeSettings, TradeTransaction
+from apps.trade_copilot.models import Position, Watchlist, TradeStrategy, TradingJournal, UserTradeSettings, TradeTransaction, StockInfo
 from apps.trade_copilot.schemas import (
     PositionCreate, PositionUpdate, MarketStatusOut, STListOut,
     MarketThermometerOut, SectorItemOut,
@@ -238,55 +239,92 @@ class MarketService:
     @classmethod
     async def get_st_list(cls) -> STListOut:
         """获取并缓存全市场 ST 股票列表"""
-        cached_data = await redis_client.get(cls.REDIS_KEY_ST_LIST)
-        if cached_data:
-            try:
-                data = json.loads(cached_data)
-                return STListOut(**data)
-            except Exception as e:
-                logger.error(f"解析缓存 st_list 失败: {e}")
+        # 尝试从 Redis 缓存获取
+        try:
+            cached_data = await redis_client.get(cls.REDIS_KEY_ST_LIST)
+            if cached_data:
+                try:
+                    data = json.loads(cached_data)
+                    return STListOut(**data)
+                except Exception as e:
+                    logger.error(f"解析缓存 st_list 失败: {e}")
+        except Exception as e:
+            logger.warning(f"Redis 读取失败，跳过缓存: {e}")
 
         # 如果没有缓存，则调接口查
-        stocks = await AkShareClient.get_all_st_stocks()
+        try:
+            stocks = await AkShareClient.get_all_st_stocks()
+        except Exception as e:
+            logger.error(f"获取 ST 股票列表失败: {e}")
+            # 返回空列表，不影响业务
+            stocks = []
+
         result = STListOut(
             count=len(stocks),
             stocks=stocks,
             update_time=datetime.now()
         )
-        
-        # 同样作为 Miss 后的回源兜底，过期时间设置长一点 (例如一天 86400秒)
-        await redis_client.set(
-            cls.REDIS_KEY_ST_LIST,
-            result.model_dump_json(),
-            ex=86400
-        )
+
+        # 尝试写入缓存
+        try:
+            await redis_client.set(
+                cls.REDIS_KEY_ST_LIST,
+                result.model_dump_json(),
+                ex=86400
+            )
+        except Exception as e:
+            logger.warning(f"Redis 写入失败，跳过缓存: {e}")
+
         return result
 
     @classmethod
     async def get_market_thermometer(cls) -> MarketThermometerOut:
         """获取大盘温度计和板块轮动"""
         REDIS_KEY = "trade_copilot:market_thermometer"
-        cached_data = await redis_client.get(REDIS_KEY)
-        if cached_data:
-            try:
-                data = json.loads(cached_data)
-                return MarketThermometerOut(**data)
-            except Exception as e:
-                logger.error(f"解析缓存 market_thermometer 失败: {e}")
+
+        # 尝试从 Redis 缓存获取
+        try:
+            cached_data = await redis_client.get(REDIS_KEY)
+            if cached_data:
+                try:
+                    data = json.loads(cached_data)
+                    return MarketThermometerOut(**data)
+                except Exception as e:
+                    logger.error(f"解析缓存 market_thermometer 失败: {e}")
+        except Exception as e:
+            logger.warning(f"Redis 读取失败，跳过缓存: {e}")
 
         try:
             # 如果没有缓存，通过 AkShare 获取实时结果
             data = await AkShareClient.get_market_thermometer_data()
-            df_spot = data['spot']
-            df_board = data['board']
+            df_spot = data.get('spot')
+            df_board = data.get('board')
+
+            if df_spot is None or df_spot.empty:
+                raise ValueError("获取全市场个股数据为空")
 
             # 统计市场家数（排除退市等无数据的）
-            df_spot = df_spot.dropna(subset=['涨跌幅'])
+            # 尝试不同的列名（akshare 可能返回不同的列名）
+            pct_col = None
+            for col in ['涨跌幅', 'chg', 'pct_chg', 'pctChange']:
+                if col in df_spot.columns:
+                    pct_col = col
+                    break
+
+            if pct_col is None:
+                logger.error(f"未找到涨跌幅列，可用列: {df_spot.columns.tolist()}")
+                raise ValueError("数据列名不匹配")
+
+            df_spot = df_spot.dropna(subset=[pct_col])
+            # 确保涨跌幅是数值类型
+            df_spot[pct_col] = pd.to_numeric(df_spot[pct_col], errors='coerce')
+            df_spot = df_spot.dropna(subset=[pct_col])
+
             total_stocks = len(df_spot)
-            up_count = len(df_spot[df_spot['涨跌幅'] > 0])
-            down_count = len(df_spot[df_spot['涨跌幅'] < 0])
-            limit_up_count = len(df_spot[df_spot['涨跌幅'] >= 9.8])
-            limit_down_count = len(df_spot[df_spot['涨跌幅'] <= -9.8])
+            up_count = len(df_spot[df_spot[pct_col] > 0])
+            down_count = len(df_spot[df_spot[pct_col] < 0])
+            limit_up_count = len(df_spot[df_spot[pct_col] >= 9.8])
+            limit_down_count = len(df_spot[df_spot[pct_col] <= -9.8])
 
             # 按照涨停家数和上涨家数综合打分（一个极其简化的温度计）
             score = min(100, max(0, int((up_count / max(1, total_stocks)) * 60 + (limit_up_count / 100) * 40)))
@@ -305,17 +343,33 @@ class MarketService:
 
             # 板块轮动数据 (取前5)
             top_sectors = []
-            if not df_board.empty and '板块名称' in df_board.columns and '涨跌幅' in df_board.columns:
-                # AkShare 返回的值大多是字符串或能转成数值型
-                df_board['涨跌幅'] = df_board['涨跌幅'].apply(lambda x: float(x) if x != '-' and x else 0.0)
-                df_board = df_board.sort_values(by='涨跌幅', ascending=False)
-                for _, row in df_board.head(5).iterrows():
-                    top_sectors.append(
-                        SectorItemOut(
-                            sector_name=str(row['板块名称']),
-                            pct_change=float(row['涨跌幅'])
-                        )
-                    )
+            if df_board is not None and not df_board.empty:
+                # 尝试找到板块名称和涨跌幅列
+                board_name_col = None
+                board_pct_col = None
+                for col in ['板块名称', 'name', 'board_name']:
+                    if col in df_board.columns:
+                        board_name_col = col
+                        break
+                for col in ['涨跌幅', 'chg', 'pct_chg', 'pctChange']:
+                    if col in df_board.columns:
+                        board_pct_col = col
+                        break
+
+                if board_name_col and board_pct_col:
+                    try:
+                        df_board[board_pct_col] = pd.to_numeric(df_board[board_pct_col], errors='coerce')
+                        df_board = df_board.dropna(subset=[board_pct_col])
+                        df_board_sorted = df_board.sort_values(by=board_pct_col, ascending=False)
+                        for _, row in df_board_sorted.head(5).iterrows():
+                            top_sectors.append(
+                                SectorItemOut(
+                                    sector_name=str(row[board_name_col]),
+                                    pct_change=float(row[board_pct_col])
+                                )
+                            )
+                    except Exception as e:
+                        logger.warning(f"解析板块数据失败: {e}")
 
             result = MarketThermometerOut(
                 total_stocks=total_stocks,
@@ -328,11 +382,16 @@ class MarketService:
                 top_sectors=top_sectors
             )
 
-            await redis_client.set(REDIS_KEY, result.model_dump_json(), ex=300)  # 缓存 5 分钟
+            # 尝试写入缓存
+            try:
+                await redis_client.set(REDIS_KEY, result.model_dump_json(), ex=300)  # 缓存 5 分钟
+            except Exception as e:
+                logger.warning(f"Redis 写入失败，跳过缓存: {e}")
+
             return result
         except Exception as e:
-            logger.error(f"获取市场温度计数据异常: {e}")
-            raise AppException(code=503, message="获取市场温度计数据失败，请稍后重试")
+            logger.error(f"获取市场温度计数据异常: {e}", exc_info=True)
+            raise AppException(code=503, message=f"获取市场温度计数据失败: {str(e)}")
 
 class WatchlistService:
     """观察池 CRUD 逻辑"""
@@ -880,3 +939,107 @@ class TradeTransactionService:
         except Exception as e:
             logger.error(f"计算市场温度计异常: {e}")
             raise
+
+
+class StockInfoService:
+    """A股股票基本信息服务"""
+
+    @classmethod
+    async def sync_all_stocks(cls, session: AsyncSession) -> int:
+        """
+        同步全A股股票基本信息到数据库
+        返回同步的股票数量
+        """
+        from apps.trade_copilot.models import StockInfo
+
+        # 获取所有A股股票信息
+        stocks = await AkShareClient.get_all_a_stock_info()
+        if not stocks:
+            logger.warning("未获取到股票信息")
+            return 0
+
+        # 获取ST股票列表用于标记
+        st_symbols = set()
+        try:
+            st_data = await MarketService.get_st_list()
+            st_symbols = set(st_data.stocks)
+        except Exception as e:
+            logger.warning(f"获取ST股票列表失败，跳过ST标记: {e}")
+
+        sync_count = 0
+        for stock in stocks:
+            try:
+                # 检查是否已存在
+                stmt = select(StockInfo).where(StockInfo.symbol == stock.symbol)
+                existing = (await session.execute(stmt)).scalars().first()
+
+                is_st = stock.symbol in st_symbols
+
+                if existing:
+                    # 更新现有记录
+                    existing.name = stock.name
+                    existing.is_st = is_st
+                else:
+                    # 新增记录
+                    new_stock = StockInfo(
+                        symbol=stock.symbol,
+                        name=stock.name,
+                        industry=stock.industry,
+                        sector=stock.sector,
+                        list_date=stock.list_date,
+                        total_market_value=stock.total_market_value,
+                        circulating_market_value=stock.circulating_market_value,
+                        is_st=is_st
+                    )
+                    session.add(new_stock)
+                sync_count += 1
+
+                # 每500条提交一次，避免事务过大
+                if sync_count % 500 == 0:
+                    await session.commit()
+
+            except Exception as e:
+                logger.error(f"同步股票 {stock.symbol} 失败: {e}")
+                continue
+
+        await session.commit()
+        logger.info(f"成功同步 {sync_count} 只股票信息")
+        return sync_count
+
+    @classmethod
+    async def search_stocks(
+        cls,
+        session: AsyncSession,
+        keyword: str,
+        limit: int = 20
+    ) -> List:
+        """
+        搜索股票（按代码或名称模糊匹配）
+        """
+        from apps.trade_copilot.models import StockInfo
+
+        keyword = keyword.strip()
+        if not keyword:
+            return []
+
+        stmt = select(StockInfo).where(
+            StockInfo.is_deleted == False,
+            (StockInfo.symbol.ilike(f"%{keyword}%") | StockInfo.name.ilike(f"%{keyword}%"))
+        ).limit(limit)
+
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    async def get_stock_by_symbol(cls, session: AsyncSession, symbol: str):
+        """
+        根据股票代码获取股票信息
+        """
+        from apps.trade_copilot.models import StockInfo
+
+        stmt = select(StockInfo).where(
+            StockInfo.symbol == symbol,
+            StockInfo.is_deleted == False
+        )
+        result = await session.execute(stmt)
+        return result.scalars().first()

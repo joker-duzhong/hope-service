@@ -26,4 +26,9 @@ celery_app.conf.beat_schedule = {
         # 每天尾盘执行两次 (14:50 和 14:55)
         "schedule": crontab(minute="50,55", hour=14, day_of_week="1-5"),
     },
+    "trade_copilot_sync_stock_info": {
+        "task": "apps.trade_copilot.tasks.sync_stock_info_task",
+        # 每天凌晨 1:00 执行一次，同步A股股票基本信息
+        "schedule": crontab(minute=0, hour=1),
+    },
 }

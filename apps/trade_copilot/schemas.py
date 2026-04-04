@@ -1,6 +1,39 @@
-from typing import Optional
+from typing import Optional, List
 from datetime import date, datetime
 from pydantic import BaseModel, Field
+
+
+# --- 股票基本信息 Schemas ---
+class StockInfoBase(BaseModel):
+    symbol: str = Field(..., description="股票代码", max_length=20)
+    name: str = Field(..., description="股票名称", max_length=100)
+    industry: Optional[str] = Field(None, description="所属行业", max_length=100)
+    sector: Optional[str] = Field(None, description="所属板块", max_length=100)
+    list_date: Optional[date] = Field(None, description="上市日期")
+    total_market_value: Optional[float] = Field(None, description="总市值(元)")
+    circulating_market_value: Optional[float] = Field(None, description="流通市值(元)")
+    is_st: bool = Field(False, description="是否ST股票")
+
+
+class StockInfoCreate(StockInfoBase):
+    pass
+
+
+class StockInfoOut(StockInfoBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class StockInfoSearchResult(BaseModel):
+    """股票搜索结果"""
+    symbol: str = Field(..., description="股票代码")
+    name: str = Field(..., description="股票名称")
+    industry: Optional[str] = Field(None, description="所属行业")
+
 
 class PositionBase(BaseModel):
     symbol: str = Field(..., description="股票代码", max_length=20)

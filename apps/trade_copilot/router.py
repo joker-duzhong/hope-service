@@ -15,9 +15,15 @@ from apps.trade_copilot.schemas import (
     TradeStrategyCreate, TradeStrategyUpdate, TradeStrategyOut,
     TradingJournalCreate, TradingJournalUpdate, TradingJournalOut,
     UserTradeSettingsOut, UserTradeSettingsUpdate,
-    TradeTransactionCreate, TradeTransactionOut
+    TradeTransactionCreate, TradeTransactionOut,
+    StockInfoOut, StockInfoSearchResult
 )
-from apps.trade_copilot.services import PositionService, MarketService, WatchlistService, TradeStrategyService, TradingJournalService, UserTradeSettingsService, TradeTransactionService, send_feishu_alert
+from apps.trade_copilot.services import (
+    PositionService, MarketService, WatchlistService,
+    TradeStrategyService, TradingJournalService,
+    UserTradeSettingsService, TradeTransactionService,
+    StockInfoService, send_feishu_alert
+)
 
 router = APIRouter()
 
@@ -276,4 +282,49 @@ async def list_trade_transactions(
     """获取交易流水列表"""
     txns = await TradeTransactionService.get_transactions(db, current_user.id, position_id)
     return ResponseModel(data=txns)
+
+
+# ================= 股票基本信息 =================
+
+@router.get("/stocks/search", response_model=ResponseModel[List[StockInfoSearchResult]])
+async def search_stocks(
+    keyword: str = Query(..., description="搜索关键词(股票代码或名称)"),
+    limit: int = Query(20, ge=1, le=100, description="返回数量限制"),
+    db: AsyncSession = Depends(get_db)
+):
+    """搜索股票（模糊匹配代码或名称）"""
+    stocks = await StockInfoService.search_stocks(db, keyword, limit)
+    results = [
+        StockInfoSearchResult(
+            symbol=stock.symbol,
+            name=stock.name,
+            industry=stock.industry
+        )
+        for stock in stocks
+    ]
+    return ResponseModel(data=results)
+
+
+@router.get("/stocks/{symbol}", response_model=ResponseModel[StockInfoOut])
+async def get_stock_info(
+    symbol: str = Path(..., description="股票代码"),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取单只股票基本信息"""
+    stock = await StockInfoService.get_stock_by_symbol(db, symbol)
+    if not stock:
+        return ResponseModel(code=404, message="股票不存在", data=None)
+    return ResponseModel(data=stock)
+
+
+@router.post("/stocks/sync", response_model=ResponseModel[int])
+async def sync_stocks(
+    db: AsyncSession = Depends(get_db)
+):
+    """同步全A股股票基本信息到数据库（管理员接口）"""
+    try:
+        count = await StockInfoService.sync_all_stocks(db)
+        return ResponseModel(data=count, message=f"成功同步 {count} 只股票信息")
+    except Exception as e:
+        return ResponseModel(code=500, message=f"同步失败: {str(e)}", data=0)
 
