@@ -27,7 +27,12 @@
       "Bash(python -c ':*)",
       "Bash(curl -s -v \"https://api.lxyy.fun/api/v1/trade-copilot/market/thermometer\")",
       "Bash(curl -s \"https://api.lxyy.fun/docs\" -o /dev/null -w \"HTTP_STATUS: %{http_code}\")",
-      "Bash(curl -s \"https://api.lxyy.fun/api/v1/trade-copilot/market/status\")"
+      "Bash(curl -s \"https://api.lxyy.fun/api/v1/trade-copilot/market/status\")",
+      "Bash(python -c \"from apps.just_right.router import router; print\\('Router imported successfully'\\)\")",
+      "Bash(python -c \"from apps.just_right.models import Couple, TodoItem, Memo, UserManual, RouletteOption, WishlistItem, Anniversary, CoupleState; print\\('Models imported successfully'\\)\")",
+      "Bash(python -c \"from apps.just_right.schemas import CoupleOut, TodoItemCreate, MemoCreate, UserManualOut, RouletteOptionCreate, WishlistItemCreate, AnniversaryCreate, CoupleStateUpdate; print\\('Schemas imported successfully'\\)\")",
+      "Bash(python -c \"from apps.just_right.services import CoupleService, TodoService, MemoService, UserManualService, RouletteService, WishlistService, AnniversaryService, CoupleStateService; print\\('Services imported successfully'\\)\")",
+      "Bash(python -c \"from main import app; routes = [r.path for r in app.routes]; print\\('Routes:', [r for r in routes if 'just-right' in r or 'couples' in r][:5]\\)\")"
     ]
   }
 }

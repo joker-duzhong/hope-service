@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     # CORS 配置
     BACKEND_CORS_ORIGINS: List[str] = ["*"]
 
+    # 微信公众号配置（单公众号）
+    WECHAT_APP_ID: str = ""
+    WECHAT_APP_SECRET: str = ""
+    WECHAT_TOKEN: str = ""
+
     # 微信公众号配置（多公众号映射）
     WECHAT_APPS: str = ""  # 格式: appid1:secret1:token1,appid2:secret2:token2
 

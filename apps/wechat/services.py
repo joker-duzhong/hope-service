@@ -7,7 +7,7 @@ import urllib.parse
 from fastapi import HTTPException
 from core.redis_client import redis_client
 from core.config import settings
-from core.database import async_session
+from core.database import async_session_maker
 from core.users.services import UserService
 from core.security import create_access_token
 
@@ -25,7 +25,7 @@ class WeChatService:
         redis_key = f"wechat_access_token:{appid}"
         token = await redis_client.get(redis_key)
         if token:
-            return token.decode('utf-8')
+            return token
             
         url = f"{WECHAT_API_BASE_URL}/token?grant_type=client_credential&appid={appid}&secret={secret}"
         async with httpx.AsyncClient() as client:
@@ -77,7 +77,7 @@ class WeChatService:
 
     @staticmethod
     async def process_scan_event(appid: str, scene_id: str, openid: str, event_type: str = "SCAN"):
-        async with async_session() as db:
+        async with async_session_maker() as db:
             user = await UserService.get_by_openid(db, openid)
             is_new_user = False
             

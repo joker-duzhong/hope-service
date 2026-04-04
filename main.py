@@ -60,6 +60,9 @@ def create_app() -> FastAPI:
     from apps.trade_copilot.router import router as trade_copilot_router
     app.include_router(trade_copilot_router, prefix=f"{settings.API_V1_PREFIX}/trade-copilot", tags=["交易助手"])
 
+    from apps.just_right.router import router as just_right_router
+    app.include_router(just_right_router, prefix=f"{settings.API_V1_PREFIX}/just-right", tags=["恰好"])
+
     # 健康检查
     @app.get("/health", tags=["健康检查"])
     async def health_check():
