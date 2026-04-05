@@ -135,63 +135,7 @@ class WeChatService:
         await WeChatService.send_customer_message(appid, openid, message)
 
     @staticmethod
-    async def login_with_code(appid: str, code: str) -> dict:
-        """使用微信授权码登录或注册"""
-        config = settings.get_wechat_config(appid)
-        if not config:
-            raise HTTPException(status_code=400, detail=f"WeChat config not found for appid: {appid}")
-
-        secret = config.get("secret")
-        if not secret:
-            raise HTTPException(status_code=400, detail=f"WeChat secret not configured for appid: {appid}")
-
-        # 调用微信API获取openid
-        url = f"{WECHAT_API_BASE_URL}/oauth2/access_token?appid={appid}&secret={secret}&code={code}&grant_type=authorization_code"
-
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url)
-            data = resp.json()
-
-            if "errcode" in data:
-                errcode = data.get("errcode")
-                errmsg = data.get("errmsg", "unknown error")
-                print(f"WeChat OAuth error: errcode={errcode}, errmsg={errmsg}, appid={appid}, code={code}")
-                raise HTTPException(status_code=400, detail=f"微信授权失败: {errmsg} (code: {errcode})")
-
-            openid = data.get("openid")
-            if not openid:
-                raise HTTPException(status_code=400, detail="Failed to get openid from WeChat")
-
-        # 在数据库中查找或创建用户
-        async with async_session_maker() as db:
-            user = await UserService.get_by_openid(db, openid)
-            is_new_user = False
-
-            if not user:
-                is_new_user = True
-                user = await UserService.create_by_wechat(
-                    db,
-                    openid=openid,
-                    source="wechat_login"
-                )
-
-        # 生成登录token
-        token = create_access_token(subject=user.id)
-
-        user_info = {
-            "id": user.id,
-            "openid": user.openid,
-            "nickname": user.nickname,
-            "avatar": user.avatar
-        }
-
-        return {
-            "token": token,
-            "userInfo": user_info,
-            "isNewUser": is_new_user
-        }
-
-    @staticmethod
+    async def send_customer_message(appid: str, openid: str, content: str):
         try:
             access_token = await WeChatService.get_access_token(appid)
             url = f"{WECHAT_API_BASE_URL}/message/custom/send?access_token={access_token}"
