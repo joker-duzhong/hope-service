@@ -173,18 +173,20 @@ async def wechat_login(
     db: AsyncSession = Depends(get_db),
 ):
     """微信授权登录"""
-    secret = settings.get_wechat_config(login_data.appid)
-    if not secret:
+    wx_config = settings.get_wechat_config(login_data.appid)
+    if not wx_config or not wx_config.get("secret"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"未配置该公众号: {login_data.appid}",
         )
+        
+    real_secret = wx_config["secret"] 
     async with httpx.AsyncClient() as client:
         token_resp = await client.get(
             "https://api.weixin.qq.com/sns/oauth2/access_token",
             params={
                 "appid": login_data.appid,
-                "secret": secret,
+                "secret": real_secret,
                 "code": login_data.code,
                 "grant_type": "authorization_code",
             },
