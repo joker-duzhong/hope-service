@@ -173,7 +173,7 @@ async def wechat_login(
     db: AsyncSession = Depends(get_db),
 ):
     """微信授权登录"""
-    secret = settings.get_wechat_secret(login_data.appid)
+    secret = settings.get_wechat_config(login_data.appid)
     if not secret:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

@@ -99,6 +99,30 @@ async def handle_wechat_event(appid: str, request: Request, msg_signature: str =
     return Response(content="success", media_type="text/plain")
 
 
+@router.post("/auth/wechat/login", summary="微信登记页面登录")
+async def wechat_login(request: Request):
+    """
+    使用微信授权码登录
+    请求体: {"appid": "xxx", "code": "xxx"}
+    """
+    try:
+        body = await request.json()
+        appid = body.get("appid")
+        code = body.get("code")
+
+        if not appid or not code:
+            return ResponseModel(code=400, message="appid and code are required")
+
+        # 使用微信服务中的登录逻辑
+        result = await WeChatService.login_with_code(appid, code)
+        return ResponseModel(data=result)
+    except HTTPException as e:
+        return ResponseModel(code=e.status_code, message=e.detail)
+    except Exception as e:
+        print(f"WeChat login error: {e}")
+        return ResponseModel(code=500, message=f"Internal server error: {str(e)}")
+
+
 @router.get("/auth/wechat/status", summary="查询微信扫码状态")
 async def get_scan_status(scene_id: str):
     try:
