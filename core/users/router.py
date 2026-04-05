@@ -151,7 +151,7 @@ async def get_wechat_auth_url(
     scope: str = "snsapi_userinfo",
 ):
     """获取微信授权页面URL"""
-    if not settings.get_wechat_secret(appid):
+    if not settings.get_wechat_config(appid):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"未配置该公众号: {appid}",
