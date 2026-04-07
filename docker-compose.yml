@@ -72,7 +72,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       # --- 新增 MinIO 配置 ---
-      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ENDPOINT=116.198.196.55:9000
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_password}
       - MINIO_USE_SSL=false
@@ -108,7 +108,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       # --- 新增 MinIO 配置 ---
-      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ENDPOINT=116.198.196.55:9000
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_password}
       - MINIO_USE_SSL=false
@@ -140,7 +140,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       # --- 新增 MinIO 配置 ---
-      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ENDPOINT=116.198.196.55:9000
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_password}
       - MINIO_USE_SSL=false
