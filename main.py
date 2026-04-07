@@ -53,6 +53,10 @@ def create_app() -> FastAPI:
     # Core: 管理后台
     app.include_router(admin_router, prefix=settings.API_V1_PREFIX, tags=["管理后台"])
 
+    # Core: 资源存储
+    from core.storage.router import router as storage_router
+    app.include_router(storage_router, prefix=settings.API_V1_PREFIX, tags=["资源存储"])
+
     # Core: 微信认证服务
     from core.wechat.router import router as wechat_router
     app.include_router(wechat_router, prefix=f"{settings.API_V1_PREFIX}", tags=["微信认证"])

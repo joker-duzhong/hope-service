@@ -81,6 +81,13 @@ class Settings(BaseSettings):
                 return {"secret": secret, "token": token, "encoding_aes_key": encoding_aes_key}
         return None
     
+    # MinIO 对象存储配置
+    MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_ACCESS_KEY: str = "minioadmin"
+    MINIO_SECRET_KEY: str = "minioadmin"
+    MINIO_BUCKET: str = "hope-service"
+    MINIO_SECURE: bool = False
+
     # 飞书 Webhook 配置
     FEISHU_WEBHOOK_URL: Optional[str] = None
     

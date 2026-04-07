@@ -29,6 +29,7 @@ import core.associations       # noqa: F401
 import apps.just_right.models  # noqa: F401
 import apps.nest_talk.models   # noqa: F401
 import apps.trade_copilot.models  # noqa: F401
+import core.storage.models         # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Alembic Config 对象（读取 alembic.ini）
