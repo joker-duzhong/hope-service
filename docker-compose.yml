@@ -36,6 +36,26 @@ services:
       timeout: 5s
       retries: 5
 
+  # MinIO 对象存储 (新添加)
+  minio:
+    image: minio/minio
+    container_name: hope-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin_password}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
   # FastAPI 应用
   app:
     build:
@@ -51,6 +71,12 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-hope_service}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      # --- 新增 MinIO 配置 ---
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_password}
+      - MINIO_USE_SSL=false
+      # ----------------------
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
       - DEBUG=${DEBUG:-false}
       - WECHAT_APPS=${WECHAT_APPS:-}
@@ -61,6 +87,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
@@ -79,12 +107,20 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-hope_service}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      # --- 新增 MinIO 配置 ---
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_password}
+      - MINIO_USE_SSL=false
+      # ----------------------
       - WECHAT_APPS=${WECHAT_APPS:-}
       - FEISHU_WEBHOOK_URL=${FEISHU_WEBHOOK_URL:-}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     command: celery -A worker.celery_app worker --loglevel=info
 
@@ -103,6 +139,12 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-hope_service}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      # --- 新增 MinIO 配置 ---
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_password}
+      - MINIO_USE_SSL=false
+      # ----------------------
       - WECHAT_APPS=${WECHAT_APPS:-}
       - FEISHU_WEBHOOK_URL=${FEISHU_WEBHOOK_URL:-}
     depends_on:
@@ -110,8 +152,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio:
+        condition: service_healthy
     command: celery -A worker.celery_app beat --loglevel=info
 
 volumes:
   postgres_data:
   redis_data:
+  minio_data:
