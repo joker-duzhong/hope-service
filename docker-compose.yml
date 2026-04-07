@@ -36,7 +36,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # MinIO 对象存储 (新添加)
+  # MinIO 对象存储 (保持不变)
   minio:
     image: minio/minio
     container_name: hope-minio
@@ -63,6 +63,10 @@ services:
       dockerfile: Dockerfile
     container_name: hope-app
     restart: unless-stopped
+    # === 新增这段 DNS 伪装 ===
+    extra_hosts:
+      - "api.lxyy.fun:host-gateway"
+    # =======================
     environment:
       - POSTGRES_SERVER=postgres
       - POSTGRES_PORT=5432
@@ -71,8 +75,8 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-hope_service}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      # --- 新增 MinIO 配置 ---
-      - MINIO_ENDPOINT=116.198.196.55:9000
+      # --- 修改 MinIO Endpoint 为域名 ---
+      - MINIO_ENDPOINT=api.lxyy.fun:9000
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_password}
       - MINIO_USE_SSL=false
@@ -99,6 +103,10 @@ services:
       dockerfile: Dockerfile
     container_name: hope-celery-worker
     restart: unless-stopped
+    # === 新增这段 DNS 伪装 ===
+    extra_hosts:
+      - "api.lxyy.fun:host-gateway"
+    # =======================
     environment:
       - POSTGRES_SERVER=postgres
       - POSTGRES_PORT=5432
@@ -107,8 +115,8 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-hope_service}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      # --- 新增 MinIO 配置 ---
-      - MINIO_ENDPOINT=116.198.196.55:9000
+      # --- 修改 MinIO Endpoint 为域名 ---
+      - MINIO_ENDPOINT=api.lxyy.fun:9000
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_password}
       - MINIO_USE_SSL=false
@@ -131,6 +139,10 @@ services:
       dockerfile: Dockerfile
     container_name: hope-celery-beat
     restart: unless-stopped
+    # === 新增这段 DNS 伪装 ===
+    extra_hosts:
+      - "api.lxyy.fun:host-gateway"
+    # =======================
     environment:
       - POSTGRES_SERVER=postgres
       - POSTGRES_PORT=5432
@@ -139,8 +151,8 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-hope_service}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      # --- 新增 MinIO 配置 ---
-      - MINIO_ENDPOINT=116.198.196.55:9000
+      # --- 修改 MinIO Endpoint 为域名 ---
+      - MINIO_ENDPOINT=api.lxyy.fun:9000
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_password}
       - MINIO_USE_SSL=false
