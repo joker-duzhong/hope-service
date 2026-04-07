@@ -4,6 +4,7 @@ API 路由层
 """
 from datetime import date
 from typing import List, Optional
+from uuid import UUID as PyUUID
 
 from fastapi import APIRouter, Depends, Query, Path
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -234,7 +235,7 @@ async def list_memos(
 
 @router.delete("/memos/{memo_id}", response_model=ResponseModel[bool])
 async def delete_memo(
-    memo_id: int = Path(..., description="备忘录ID"),
+    memo_id: PyUUID = Path(..., description="备忘录ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):

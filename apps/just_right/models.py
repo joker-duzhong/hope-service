@@ -47,7 +47,7 @@ class Memo(CoreModel):
     couple_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("just_right_couples.id"), index=True, comment="情侣ID")
     creator_uid: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), comment="创建者用户ID")
     content: Mapped[str] = mapped_column(Text, comment="备忘录内容")
-    image_urls: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True, comment="图片URL列表")
+    resource_ids: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True, comment="关联资源ID列表")
 
 
 # ==================== 模块二：Ta的说明书 ====================

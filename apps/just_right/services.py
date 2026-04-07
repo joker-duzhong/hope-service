@@ -7,6 +7,7 @@ import random
 import secrets
 from datetime import datetime, timedelta, date
 from typing import List, Optional, Tuple
+from uuid import UUID
 
 from sqlalchemy import select, or_, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +19,7 @@ from apps.just_right.models import (
 )
 from apps.just_right.schemas import (
     TodoItemCreate, TodoItemUpdate,
-    MemoCreate, MemoUpdate,
+    MemoCreate, MemoOut,
     UserManualCreate, UserManualUpdate,
     RouletteOptionCreate, RouletteOptionUpdate,
     WishlistItemCreate, WishlistItemUpdate,
@@ -26,6 +27,8 @@ from apps.just_right.schemas import (
     CoupleStateUpdate, FridgeNoteUpdate,
     CoupleManualsOut, UserManualOut
 )
+from core.storage.models import Resource
+from core.storage.services import StorageService
 
 logger = logging.getLogger(__name__)
 
@@ -227,25 +230,52 @@ class MemoService:
     """备忘录服务"""
 
     @classmethod
+    async def _build_memo_out(cls, session: AsyncSession, memo: Memo) -> MemoOut:
+        """将 ORM Memo 转为 MemoOut，批量签发资源预签名 URL"""
+        resources = []
+        resource_ids = memo.resource_ids or []
+        if resource_ids:
+            parsed_ids = [UUID(r) if isinstance(r, str) else r for r in resource_ids]
+            result = await session.execute(
+                select(Resource).where(
+                    Resource.id.in_(parsed_ids),
+                    Resource.is_deleted == False,
+                )
+            )
+            for r in result.scalars().all():
+                resources.append(await StorageService._build_response(r))
+
+        return MemoOut(
+            id=memo.id,
+            couple_id=memo.couple_id,
+            creator_uid=memo.creator_uid,
+            content=memo.content,
+            resources=resources or None,
+            created_at=memo.created_at,
+            updated_at=memo.updated_at,
+            is_deleted=memo.is_deleted,
+        )
+
+    @classmethod
     async def create_memo(
         cls, session: AsyncSession, couple_id: int, user_id: int, data: MemoCreate
-    ) -> Memo:
+    ) -> MemoOut:
         """创建备忘录"""
         memo = Memo(
             couple_id=couple_id,
             creator_uid=user_id,
             content=data.content,
-            image_urls=data.image_urls
+            resource_ids=[str(rid) for rid in data.resource_ids] if data.resource_ids else None,
         )
         session.add(memo)
         await session.commit()
         await session.refresh(memo)
-        return memo
+        return await cls._build_memo_out(session, memo)
 
     @classmethod
     async def list_memos(
         cls, session: AsyncSession, couple_id: int, page: int = 1, page_size: int = 20
-    ) -> Tuple[List[Memo], int]:
+    ) -> Tuple[List[MemoOut], int]:
         """获取备忘录列表 (分页)"""
         offset = (page - 1) * page_size
 
@@ -262,10 +292,14 @@ class MemoService:
             Memo.is_deleted == False
         ).order_by(Memo.created_at.desc()).offset(offset).limit(page_size)
         result = await session.execute(stmt)
-        return list(result.scalars().all()), total
+        memos = list(result.scalars().all())
+
+        # 批量构建 MemoOut（含资源预签名 URL）
+        memo_outs = [await cls._build_memo_out(session, m) for m in memos]
+        return memo_outs, total
 
     @classmethod
-    async def delete_memo(cls, session: AsyncSession, couple_id: int, memo_id: int) -> bool:
+    async def delete_memo(cls, session: AsyncSession, couple_id: UUID, memo_id: UUID) -> bool:
         """删除备忘录"""
         stmt = select(Memo).where(
             Memo.id == memo_id,

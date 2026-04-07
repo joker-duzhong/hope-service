@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from core.storage.schemas import ResourceResponse
+
 
 # ==================== 通用响应 ====================
 
@@ -93,13 +95,13 @@ class MemoBase(BaseModel):
 
 class MemoCreate(MemoBase):
     """创建备忘录"""
-    image_urls: Optional[List[str]] = Field(None, description="图片URL列表")
+    resource_ids: Optional[List[UUID]] = Field(None, description="关联资源ID列表")
 
 
 class MemoUpdate(BaseModel):
     """更新备忘录"""
     content: Optional[str] = None
-    image_urls: Optional[List[str]] = None
+    resource_ids: Optional[List[UUID]] = None
 
 
 class MemoOut(MemoBase):
@@ -107,13 +109,10 @@ class MemoOut(MemoBase):
     id: UUID
     couple_id: UUID
     creator_uid: UUID
-    image_urls: Optional[List[str]]
+    resources: Optional[List[ResourceResponse]] = None
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
-
-    class Config:
-        from_attributes = True
 
 
 # ==================== 模块二：Ta的说明书 ====================
