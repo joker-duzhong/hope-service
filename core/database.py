@@ -1,10 +1,12 @@
 """
 数据库引擎与 Session 依赖
 """
+import uuid
 from datetime import datetime
 from typing import AsyncGenerator
 
-from sqlalchemy import Boolean, DateTime, Integer, func
+from sqlalchemy import Boolean, DateTime, func
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -38,7 +40,12 @@ class CoreModel(Base):
     """带通用字段的核心业务模型基类"""
     __abstract__ = True
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, autoincrement=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        index=True,
+    )
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

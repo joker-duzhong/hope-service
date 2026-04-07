@@ -2,7 +2,8 @@
 数据库多对多关联表定义
 将关联表单独抽离，避免 models 之间的循环导入
 """
-from sqlalchemy import Column, ForeignKey, Integer, Table
+from sqlalchemy import Column, ForeignKey, Table
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 from core.database import Base
 
@@ -12,13 +13,13 @@ user_roles_table = Table(
     Base.metadata,
     Column(
         "user_id",
-        Integer,
+        PG_UUID(as_uuid=True),
         ForeignKey("core_users.id", ondelete="CASCADE"),
         primary_key=True,
     ),
     Column(
         "role_id",
-        Integer,
+        PG_UUID(as_uuid=True),
         ForeignKey("core_roles.id", ondelete="CASCADE"),
         primary_key=True,
     ),

@@ -3,6 +3,7 @@ Nest Talk Schemas - 语筑智能房产顾问
 """
 from typing import Optional, List
 from datetime import date, datetime
+from uuid import UUID
 from pydantic import BaseModel, Field
 
 
@@ -26,7 +27,7 @@ class HouseSearchRequest(BaseModel):
 
 class HouseOut(BaseModel):
     """房源输出"""
-    id: int
+    id: UUID
     house_id: str
     title: str
     total_price: float
@@ -119,8 +120,8 @@ class UserPreferenceUpdate(BaseModel):
 
 class UserPreferenceOut(UserPreferenceBase):
     """用户偏好输出"""
-    id: int
-    user_id: int
+    id: UUID
+    user_id: UUID
     created_at: datetime
     updated_at: datetime
 
@@ -168,7 +169,7 @@ class ChatClearResponse(BaseModel):
 # ==================== 报表 Schemas ====================
 class DailyReportOut(BaseModel):
     """每日报表输出"""
-    id: int
+    id: UUID
     report_date: date
     region_name: Optional[str] = None
     report_type: str
@@ -189,7 +190,7 @@ class ReportListRequest(BaseModel):
 # ==================== 区域 Schemas ====================
 class RegionOut(BaseModel):
     """区域输出"""
-    id: int
+    id: UUID
     name: str
     code: Optional[str] = None
     is_active: bool
@@ -200,7 +201,7 @@ class RegionOut(BaseModel):
 
 class RegionPriceLogOut(BaseModel):
     """区域均价历史输出"""
-    id: int
+    id: UUID
     region_name: str
     record_date: date
     average_price: float

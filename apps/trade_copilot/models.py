@@ -2,8 +2,10 @@
 Trade Copilot Models
 表名前缀: trade_
 """
+import uuid
 from typing import Optional
-from sqlalchemy import String, Float, Integer, Date, ForeignKey, DateTime
+from sqlalchemy import String, Float, Integer, Date, ForeignKey, DateTime, Boolean
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,14 +23,14 @@ class StockInfo(CoreModel):
     list_date: Mapped[Optional[Date]] = mapped_column(Date, nullable=True, comment="上市日期")
     total_market_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="总市值(元)")
     circulating_market_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="流通市值(元)")
-    is_st: Mapped[bool] = mapped_column(Integer, default=False, comment="是否ST股票")
+    is_st: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否ST股票")
 
 
 class TradeStrategy(CoreModel):
     """风控策略配置表 V2.0"""
     __tablename__ = "trade_strategies"
 
-    user_id: Mapped[int] = mapped_column(Integer, index=True, comment="所属用户ID")
+    user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), index=True, comment="所属用户ID")
     name: Mapped[str] = mapped_column(String(100), comment="策略名称 (如: 妖股激进战法, 白马稳健战法)")
     stop_loss_pct: Mapped[float] = mapped_column(Float, default=-0.05, comment="绝对止损比例 (默认: -5%)")
     take_profit_drawdown_pct: Mapped[float] = mapped_column(Float, default=-0.08, comment="回撤止盈比例 (高位回撤, 默认: -8%)")
@@ -38,7 +40,7 @@ class Position(CoreModel):
     """实盘持仓表"""
     __tablename__ = "trade_positions"
 
-    user_id: Mapped[int] = mapped_column(Integer, index=True, comment="所属用户ID")
+    user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), index=True, comment="所属用户ID")
     symbol: Mapped[str] = mapped_column(String(20), index=True, comment="股票代码")
     name: Mapped[str] = mapped_column(String(100), comment="股票名称")
     buy_date: Mapped[Date] = mapped_column(Date, comment="买入日期")
@@ -50,12 +52,12 @@ class Position(CoreModel):
     status: Mapped[str] = mapped_column(
         String(20), default="holding", index=True, comment="持有状态: holding(持仓), closed(已清仓)"
     )
-    
+
     # V2.0 新增: 关联的风控策略ID (如果为空则使用系统默认兜底值)
-    strategy_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("trade_strategies.id", ondelete="SET NULL"), nullable=True, comment="关联风控策略ID"
+    strategy_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("trade_strategies.id", ondelete="SET NULL"), nullable=True, comment="关联风控策略ID"
     )
-    
+
     # 定义关联关系便于查询时直接获取策略配置
     strategy: Mapped[Optional["TradeStrategy"]] = relationship("TradeStrategy")
 
@@ -63,7 +65,7 @@ class Watchlist(CoreModel):
     """观察池表"""
     __tablename__ = "trade_watchlist"
 
-    user_id: Mapped[int] = mapped_column(Integer, index=True, comment="所属用户ID")
+    user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), index=True, comment="所属用户ID")
     symbol: Mapped[str] = mapped_column(String(20), index=True, comment="股票代码")
     name: Mapped[str] = mapped_column(String(100), comment="股票名称")
     reason: Mapped[Optional[str]] = mapped_column(String(500), nullable=True, comment="加入理由")
@@ -85,7 +87,7 @@ class TradingJournal(CoreModel):
     """交易日记表 (V2.0新增)"""
     __tablename__ = "trade_journals"
 
-    user_id: Mapped[int] = mapped_column(Integer, index=True, comment="所属用户ID")
+    user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), index=True, comment="所属用户ID")
     record_date: Mapped[Date] = mapped_column(Date, index=True, comment="日记归属日期")
     execution_score: Mapped[int] = mapped_column(Integer, comment="执行力打分(1-10分)")
     notes: Mapped[str] = mapped_column(String(2000), comment="今日复盘与操作日记")
@@ -96,7 +98,7 @@ class UserTradeSettings(CoreModel):
     """用户交易配置表 (V2.0新增，用于仓位管理等)"""
     __tablename__ = "trade_user_settings"
 
-    user_id: Mapped[int] = mapped_column(Integer, index=True, unique=True, comment="所属用户ID")
+    user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), index=True, unique=True, comment="所属用户ID")
     total_capital: Mapped[float] = mapped_column(Float, default=100000.0, comment="计划用于量化交易的总资金(本底)")
     # 交易费率
     commission_rate: Mapped[float] = mapped_column(Float, default=0.00025, comment="券商佣金率(如万2.5)")
@@ -107,7 +109,7 @@ class TradeTransaction(CoreModel):
     """交易流水表"""
     __tablename__ = "trade_transactions"
 
-    position_id: Mapped[int] = mapped_column(Integer, ForeignKey("trade_positions.id"), index=True, comment="持仓ID")
+    position_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("trade_positions.id"), index=True, comment="持仓ID")
     action: Mapped[str] = mapped_column(String(10), comment="操作类型: buy 或 sell")
     price: Mapped[float] = mapped_column(Float, comment="交易价格")
     quantity: Mapped[int] = mapped_column(Integer, comment="交易数量")

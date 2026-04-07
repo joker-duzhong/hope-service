@@ -3,6 +3,7 @@
 """
 from datetime import datetime
 from typing import List, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -13,7 +14,7 @@ from core.users.schemas import RoleInfo
 
 class AdminUserListItem(BaseModel):
     """用户列表条目（简洁版）"""
-    id: int
+    id: UUID
     nickname: Optional[str] = None
     username: Optional[str] = None
     phone: Optional[str] = None
@@ -29,7 +30,7 @@ class AdminUserListItem(BaseModel):
 
 class AdminUserDetail(BaseModel):
     """用户详情（完整版）"""
-    id: int
+    id: UUID
     nickname: Optional[str] = None
     avatar: Optional[str] = None
     username: Optional[str] = None
@@ -56,7 +57,7 @@ class AdminFreezeRequest(BaseModel):
 
 class AdminAssignRolesRequest(BaseModel):
     """分配角色请求"""
-    role_ids: List[int] = Field(..., description="角色 ID 列表，传空列表则清除所有角色")
+    role_ids: List[UUID] = Field(..., description="角色 ID 列表，传空列表则清除所有角色")
 
 
 # ==================== 查询参数 ====================

@@ -1,5 +1,6 @@
 from typing import Optional, List
 from datetime import date, datetime
+from uuid import UUID
 from pydantic import BaseModel, Field
 
 
@@ -20,7 +21,7 @@ class StockInfoCreate(StockInfoBase):
 
 
 class StockInfoOut(StockInfoBase):
-    id: int
+    id: UUID
     created_at: datetime
     updated_at: datetime
 
@@ -43,7 +44,7 @@ class PositionBase(BaseModel):
     quantity: int = Field(..., description="买入数量")
     high_water_mark: Optional[float] = Field(None, description="盘后最高价(高水位线)")
     status: str = Field("holding", description="持有状态: holding(持仓), closed(已清仓)", max_length=20)
-    strategy_id: Optional[int] = Field(None, description="关联风控策略ID (V2.0新增)")
+    strategy_id: Optional[UUID] = Field(None, description="关联风控策略ID (V2.0新增)")
 
 class PositionCreate(PositionBase):
     pass
@@ -51,11 +52,11 @@ class PositionCreate(PositionBase):
 class PositionUpdate(BaseModel):
     high_water_mark: Optional[float] = None
     status: Optional[str] = None
-    strategy_id: Optional[int] = None
+    strategy_id: Optional[UUID] = None
 
 class PositionOut(PositionBase):
-    id: int
-    user_id: int
+    id: UUID
+    user_id: UUID
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -80,8 +81,8 @@ class TradeStrategyUpdate(BaseModel):
     description: Optional[str] = Field(None, description="策略描述", max_length=500)
 
 class TradeStrategyOut(TradeStrategyBase):
-    id: int
-    user_id: int
+    id: UUID
+    user_id: UUID
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -136,8 +137,8 @@ class TradingJournalUpdate(BaseModel):
     emotions: Optional[str] = Field(None, description="情绪捕捉", max_length=1000)
 
 class TradingJournalOut(TradingJournalBase):
-    id: int
-    user_id: int
+    id: UUID
+    user_id: UUID
     created_at: datetime
     updated_at: datetime
 
@@ -152,8 +153,8 @@ class UserTradeSettingsUpdate(BaseModel):
     stamp_duty_rate: Optional[float] = Field(None, description="印花税费率(如0.0005代表千0.5)", ge=0.0)
 
 class UserTradeSettingsOut(BaseModel):
-    id: int
-    user_id: int
+    id: UUID
+    user_id: UUID
     total_capital: float
     commission_rate: float
     min_commission: float
@@ -178,8 +179,8 @@ class WatchlistUpdate(BaseModel):
     monitor_status: Optional[str] = None
 
 class WatchlistOut(WatchlistBase):
-    id: int
-    user_id: int
+    id: UUID
+    user_id: UUID
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -198,12 +199,12 @@ class TradeTransactionCreate(TradeTransactionBase):
     pass
 
 class TradeTransactionOut(TradeTransactionBase):
-    id: int
-    position_id: int
+    id: UUID
+    position_id: UUID
     fee: float
     transaction_time: datetime
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 

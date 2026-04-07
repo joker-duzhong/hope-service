@@ -35,7 +35,8 @@
       "Bash(python -c \"from main import app; routes = [r.path for r in app.routes]; print\\('Routes:', [r for r in routes if 'just-right' in r or 'couples' in r][:5]\\)\")",
       "WebSearch",
       "Bash(python -c \"from apps.nest_talk import models, schemas, services, router; print\\('All modules imported successfully'\\)\")",
-      "Bash(python -c \"from main import app; print\\('App created successfully'\\); print\\('Routes:', [r.path for r in app.routes if hasattr\\(r, 'path'\\) and '/nest-talk' in str\\(r.path\\)][:5]\\)\")"
+      "Bash(python -c \"from main import app; print\\('App created successfully'\\); print\\('Routes:', [r.path for r in app.routes if hasattr\\(r, 'path'\\) and '/nest-talk' in str\\(r.path\\)][:5]\\)\")",
+      "Bash(del \"e:\\\\code\\\\hope\\\\hope-service\\\\alembic\\\\versions\\\\0002_logical_fk_int_to_uuid.py\")"
     ]
   }
 }

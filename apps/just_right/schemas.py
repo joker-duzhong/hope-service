@@ -4,6 +4,7 @@ Pydantic 数据验证与序列化模型
 """
 from datetime import date, datetime
 from typing import Optional, List, Any
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -29,9 +30,9 @@ class CoupleJoin(BaseModel):
 
 class CoupleOut(BaseModel):
     """情侣信息"""
-    id: int
-    user1_id: int
-    user2_id: Optional[int]
+    id: UUID
+    user1_id: UUID
+    user2_id: Optional[UUID]
     invite_code: str
     status: str
     anniversary_date: Optional[date]
@@ -69,12 +70,12 @@ class TodoItemUpdate(BaseModel):
 
 class TodoItemOut(TodoItemBase):
     """待办事项输出"""
-    id: int
-    couple_id: int
-    creator_uid: int
+    id: UUID
+    couple_id: UUID
+    creator_uid: UUID
     status: str
     completed_at: Optional[datetime]
-    completed_by: Optional[int]
+    completed_by: Optional[UUID]
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -103,9 +104,9 @@ class MemoUpdate(BaseModel):
 
 class MemoOut(MemoBase):
     """备忘录输出"""
-    id: int
-    couple_id: int
-    creator_uid: int
+    id: UUID
+    couple_id: UUID
+    creator_uid: UUID
     image_urls: Optional[List[str]]
     created_at: datetime
     updated_at: datetime
@@ -146,9 +147,9 @@ class UserManualUpdate(BaseModel):
 
 class UserManualOut(UserManualBase):
     """用户说明书输出"""
-    id: int
-    uid: int
-    couple_id: int
+    id: UUID
+    uid: UUID
+    couple_id: UUID
     created_at: datetime
     updated_at: datetime
 
@@ -160,7 +161,7 @@ class CoupleManualsOut(BaseModel):
     """情侣双方说明书"""
     mine: Optional[UserManualOut]
     ta: Optional[UserManualOut]
-    ta_uid: Optional[int]
+    ta_uid: Optional[UUID]
 
 
 # ==================== 模块三：日常决策与礼物池 ====================
@@ -190,8 +191,8 @@ class RouletteOptionUpdate(BaseModel):
 
 class RouletteOptionOut(RouletteOptionBase):
     """转盘选项输出"""
-    id: int
-    couple_id: int
+    id: UUID
+    couple_id: UUID
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -231,11 +232,11 @@ class WishlistItemUpdate(BaseModel):
 
 class WishlistItemOut(WishlistItemBase):
     """心愿输出"""
-    id: int
-    couple_id: int
-    creator_uid: int
+    id: UUID
+    couple_id: UUID
+    creator_uid: UUID
     status: str
-    claimer_uid: Optional[int]
+    claimer_uid: Optional[UUID]
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -246,15 +247,15 @@ class WishlistItemOut(WishlistItemBase):
 
 class WishlistItemOutHidden(BaseModel):
     """心愿输出 (隐藏认领状态 - 给创建者看)"""
-    id: int
-    couple_id: int
-    creator_uid: int
+    id: UUID
+    couple_id: UUID
+    creator_uid: UUID
     title: str
     url: Optional[str] = None
     price: Optional[float] = None
     image_url: Optional[str] = None
     status: str  # unclaimed 或 "preparing" (对方已暗中准备)
-    claimer_uid: Optional[int] = None  # 始终隐藏
+    claimer_uid: Optional[UUID] = None  # 始终隐藏
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -312,8 +313,8 @@ class AnniversaryUpdate(BaseModel):
 
 class AnniversaryOut(AnniversaryBase):
     """纪念日输出"""
-    id: int
-    couple_id: int
+    id: UUID
+    couple_id: UUID
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -334,7 +335,7 @@ class AnniversaryCountdown(BaseModel):
 
 class UserState(BaseModel):
     """用户状态"""
-    uid: int
+    uid: UUID
     mood: Optional[str] = None
     note: Optional[str] = None
     white_flag: bool = False
@@ -355,12 +356,12 @@ class FridgeNoteUpdate(BaseModel):
 
 class CoupleStateOut(BaseModel):
     """情侣首页状态输出"""
-    id: int
-    couple_id: int
+    id: UUID
+    couple_id: UUID
     user1: UserState
     user2: Optional[UserState]
     fridge_note: Optional[str]
-    fridge_note_by: Optional[int]
+    fridge_note_by: Optional[UUID]
     fridge_note_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime

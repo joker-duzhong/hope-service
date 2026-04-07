@@ -3,6 +3,7 @@
 """
 from datetime import datetime
 from typing import List, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -32,7 +33,7 @@ class UserUpdate(BaseModel):
 
 class RoleInfo(BaseModel):
     """角色简要信息（嵌入用户响应中）"""
-    id: int
+    id: UUID
     name: str
     code: str
 
@@ -42,7 +43,7 @@ class RoleInfo(BaseModel):
 
 class UserResponse(UserBase):
     """用户响应模型"""
-    id: int
+    id: UUID
     openid: Optional[str] = None
     phone: Optional[str] = None
     source: str

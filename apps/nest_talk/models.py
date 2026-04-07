@@ -2,9 +2,11 @@
 Nest Talk Models - 语筑智能房产顾问
 表名前缀: nest_talk_
 """
+import uuid
 from typing import Optional, List
 from datetime import date, datetime
 from sqlalchemy import String, Float, Integer, Date, DateTime, Text, Boolean, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -25,8 +27,8 @@ class NestTalkCommunity(CoreModel):
     __tablename__ = "nest_talk_communities"
 
     name: Mapped[str] = mapped_column(String(200), index=True, comment="小区名称")
-    region_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("nest_talk_regions.id", ondelete="SET NULL"), nullable=True, comment="所属区域ID"
+    region_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("nest_talk_regions.id", ondelete="SET NULL"), nullable=True, comment="所属区域ID"
     )
     region_name: Mapped[str] = mapped_column(String(50), index=True, comment="区域名称(冗余)")
     average_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="小区均价(元/㎡)")
@@ -52,13 +54,13 @@ class NestTalkHouse(CoreModel):
     orientation: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="朝向")
     decoration: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="装修情况")
 
-    region_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("nest_talk_regions.id", ondelete="SET NULL"), nullable=True, comment="所属区域ID"
+    region_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("nest_talk_regions.id", ondelete="SET NULL"), nullable=True, comment="所属区域ID"
     )
     region_name: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True, comment="区域名称(冗余)")
 
-    community_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("nest_talk_communities.id", ondelete="SET NULL"), nullable=True, comment="所属小区ID"
+    community_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("nest_talk_communities.id", ondelete="SET NULL"), nullable=True, comment="所属小区ID"
     )
     community_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True, comment="小区名称(冗余)")
 
@@ -83,7 +85,7 @@ class NestTalkUserPreference(CoreModel):
     """用户购房偏好表"""
     __tablename__ = "nest_talk_user_preferences"
 
-    user_id: Mapped[int] = mapped_column(Integer, index=True, unique=True, comment="所属用户ID")
+    user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), index=True, unique=True, comment="所属用户ID")
 
     # 预算
     budget_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="最低预算(万元)")
@@ -121,7 +123,7 @@ class NestTalkConversationSession(CoreModel):
     """对话会话表"""
     __tablename__ = "nest_talk_conversation_sessions"
 
-    user_id: Mapped[int] = mapped_column(Integer, index=True, comment="所属用户ID")
+    user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), index=True, comment="所属用户ID")
     session_id: Mapped[str] = mapped_column(String(100), unique=True, index=True, comment="会话ID")
     status: Mapped[str] = mapped_column(String(20), default="active", comment="会话状态: active(活跃), closed(已关闭)")
 
@@ -134,8 +136,8 @@ class NestTalkConversationMessage(CoreModel):
     """对话消息表"""
     __tablename__ = "nest_talk_conversation_messages"
 
-    session_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("nest_talk_conversation_sessions.id", ondelete="CASCADE"), index=True, comment="会话ID"
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("nest_talk_conversation_sessions.id", ondelete="CASCADE"), index=True, comment="会话ID"
     )
     role: Mapped[str] = mapped_column(String(20), comment="角色: user(用户) / assistant(AI)")
     content: Mapped[str] = mapped_column(Text, comment="消息内容")
@@ -149,8 +151,8 @@ class NestTalkRegionPriceLog(CoreModel):
     """区域均价历史记录表"""
     __tablename__ = "nest_talk_region_price_logs"
 
-    region_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("nest_talk_regions.id", ondelete="CASCADE"), index=True, comment="区域ID"
+    region_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("nest_talk_regions.id", ondelete="CASCADE"), index=True, comment="区域ID"
     )
     region_name: Mapped[str] = mapped_column(String(50), comment="区域名称(冗余)")
     record_date: Mapped[date] = mapped_column(Date, index=True, comment="记录日期")
