@@ -2,6 +2,7 @@
 用户授权路由 —— 仅解析请求，调用 service
 """
 import urllib.parse
+from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -246,7 +247,7 @@ async def refresh_token(
 
     user_id = payload.get("sub")
     try:
-        user_id = int(user_id)
+        user_id = UUID(user_id)
     except (ValueError, TypeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的刷新令牌"

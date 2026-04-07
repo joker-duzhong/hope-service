@@ -2,6 +2,7 @@
 用户认证 FastAPI Depends
 """
 from typing import Callable, List, Optional
+from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -30,11 +31,11 @@ async def get_current_user(
     if payload is None or payload.get("type") != "access":
         raise credentials_exception
 
-    user_id: Optional[int] = payload.get("sub")
+    user_id: Optional[str] = payload.get("sub")
     if user_id is None:
         raise credentials_exception
     try:
-        user_id = int(user_id)
+        user_id = UUID(user_id)
     except (ValueError, TypeError):
         raise credentials_exception
 
