@@ -140,6 +140,28 @@ async def login(
             refresh_token=create_refresh_token(subject=user.id),
         )
     )
+    
+@router.post("/login/test", response_model=ResponseModel[Token])
+async def login(
+    login_data: UsernameLogin,
+    db: AsyncSession = Depends(get_db),
+):
+    """用户名密码登录"""
+    user = await UserService.authenticate(db, login_data.username, login_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户名或密码错误",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return ResponseModel(
+        data=Token(
+            access_token=create_access_token(subject=user.id),
+            refresh_token=create_refresh_token(subject=user.id),
+        )
+    )
+
 
 
 # ==================== 微信登录 ====================
