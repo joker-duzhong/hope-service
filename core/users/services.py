@@ -13,13 +13,15 @@ from core.users.schemas import UserCreate
 from core.sms import verify_sms_code
 
 
+from uuid import UUID
+
 class UserService:
     """用户服务：CRUD 与认证逻辑"""
 
     # ==================== 查询 ====================
 
     @staticmethod
-    async def get_by_id(db: AsyncSession, user_id: int) -> Optional[User]:
+    async def get_by_id(db: AsyncSession, user_id: UUID) -> Optional[User]:
         result = await db.execute(select(User).where(User.id == user_id))
         return result.scalar_one_or_none()
 
@@ -62,6 +64,7 @@ class UserService:
             email=email,
             nickname=nickname,
             source=source,
+            roles=[],
         )
         db.add(user)
         await db.commit()
@@ -83,6 +86,7 @@ class UserService:
             nickname=nickname,
             avatar=avatar,
             source=source,
+            roles=[],
         )
         db.add(user)
         await db.commit()
@@ -118,6 +122,7 @@ class UserService:
             phone=phone,
             nickname=nickname or f"手机用户{phone[-4:]}",
             source=source,
+            roles=[],
         )
         db.add(new_user)
         await db.commit()
