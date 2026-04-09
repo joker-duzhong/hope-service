@@ -285,3 +285,4 @@ async def update_me(
         db, current_user, nickname=body.nickname, avatar=body.avatar,
     )
     return ResponseModel(data=UserResponse.model_validate(user))
+

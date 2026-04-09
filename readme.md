@@ -58,6 +58,7 @@ docker compose up -d
 
 # 查看日志
 docker compose logs -f app
+# docker logs hope-app --tail 50
 
 # 停止
 docker compose down
