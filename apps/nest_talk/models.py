@@ -130,6 +130,7 @@ class NestTalkConversationSession(CoreModel):
     # 当前提取的需求快照
     extracted_requirements: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="已提取的需求(JSON)")
     requirement_complete: Mapped[bool] = mapped_column(Boolean, default=False, comment="需求是否已完整")
+    turn_count: Mapped[int] = mapped_column(Integer, default=0, comment="对话轮数")
 
 
 class NestTalkConversationMessage(CoreModel):

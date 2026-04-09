@@ -100,6 +100,17 @@ class Settings(BaseSettings):
     TENCENT_SMS_TEMPLATE_ID_BIND: str = ""
     TENCENT_SMS_REGION: str = "ap-guangzhou"
 
+    # LLM 配置
+    # 格式: {"openai": {"api_key": "sk-...", "base_url": "...", "default_model": "gpt-4o", "timeout": 60, "max_retries": 3}}
+    LLM_PROVIDERS: dict = {}
+    LLM_DEFAULT_PROVIDER: str = "openai"
+
+    # 七牛云 OSS 配置
+    QINIU_ACCESS_KEY: str = ""
+    QINIU_SECRET_KEY: str = ""
+    QINIU_BUCKET_NAME: str = ""
+    QINIU_DOMAIN: str = ""  # 访问域名，如 http://oss.yourdomain.com
+
     class Config:
         env_file = ".env"
         case_sensitive = True

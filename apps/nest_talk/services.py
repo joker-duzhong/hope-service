@@ -14,6 +14,7 @@ from sqlalchemy.sql import text
 
 from core.config import settings
 from core.exceptions import AppException
+from core.llm import engine
 from apps.nest_talk.models import (
     NestTalkHouse,
     NestTalkUserPreference,
@@ -346,6 +347,48 @@ class UserPreferenceService:
 class ChatService:
     """AI 智能对话服务"""
 
+    # 最大对话轮数，超过后强制根据现有信息搜索
+    MAX_TURNS = 10
+
+    NEST_TALK_SYSTEM_PROMPT = """
+你是一位极致高效且专业的房地产置业顾问「语筑智能助手」。你的任务是通过极简、精准的对话理解用户购房需求。
+
+### 核心目标
+1. 收集以下 4 项核心信息。
+   - 预算范围（最高预算必须，单位：万元）
+   - 目标区域（全国范围均可。支持模糊描述如“南边”、“地铁口”，你需自行映射到逻辑区域。若区域极冷门或房源稀少，请礼貌提醒）
+   - 面积要求（如：90平以上）
+   - 户型/居室（如：3室）
+2. **强制限制**：必须在 10 轮对话内完成提取。单次回复必须简洁（不超过 50 字），避免啰嗦，以减少加载时间。
+
+### 决策与输出逻辑
+- **意图提取**：从对话中提取核心字段，以 JSON 格式输出。
+- **模糊理解**：用户说“高新区附近”或“城南”，你应提取到 `regions` 列表中对应的关键词，不必强求精确匹配。
+- **任务状态 (`is_complete`)**：
+  - 当“预算”和“区域”已明确，且其他项有基本缩影时，设为 true。
+  - 达到或接近 8-10 轮时，必须设为 true，基于现有信息直接给出总结。
+- **回复文本 (`reply`)**：这是用户看到的文字。必须短小精悍，不要重复用户已知信息。
+
+### 输出格式 (严格 JSON)
+{
+  "extracted": {
+    "budget_min": number | null,
+    "budget_max": number | null,
+    "area_min": number | null,
+    "area_max": number | null,
+    "rooms": number | null,
+    "regions": list[string] | null,
+    "exclude_top_floor": boolean | null,
+    "exclude_ground_floor": boolean | null,
+    "floor_min": number | null,
+    "floor_max": number | null,
+    "orientations": list[string] | null
+  },
+  "is_complete": boolean,
+  "reply": "极简短的追问或确认"
+}
+"""
+
     @classmethod
     def _generate_session_id(cls) -> str:
         """生成会话ID"""
@@ -376,7 +419,8 @@ class ChatService:
             session_id=cls._generate_session_id(),
             status="active",
             extracted_requirements="{}",
-            requirement_complete=False
+            requirement_complete=False,
+            turn_count=0
         )
         session.add(new_session)
         await session.commit()
@@ -386,16 +430,16 @@ class ChatService:
     @classmethod
     async def _get_conversation_history(
         cls,
-        session: AsyncSession,
+        session_db: AsyncSession,
         session_pk: int
     ) -> List[Dict[str, str]]:
-        """获取对话历史"""
+        """获取全部对话历史，格式化成 OpenAI 风格。"""
         stmt = select(NestTalkConversationMessage).where(
             NestTalkConversationMessage.session_id == session_pk,
-            NestTalkConversationMessage.is_deleted == False
+            NestTalkConversationMessage.message_type == "text"
         ).order_by(NestTalkConversationMessage.created_at.asc())
 
-        result = await session.execute(stmt)
+        result = await session_db.execute(stmt)
         messages = result.scalars().all()
 
         return [
@@ -427,70 +471,6 @@ class ChatService:
         return message
 
     @classmethod
-    def _extract_requirements_from_text(cls, text: str) -> Dict[str, Any]:
-        """
-        从用户输入中提取购房需求（简化版，实际应调用 AI 服务）
-        """
-        # 这里是一个简化的实现，实际应该调用 OpenAI 等 AI 服务
-        requirements = {}
-
-        text_lower = text.lower()
-
-        # 预算提取
-        import re
-        budget_pattern = r'(\d+)\s*[万w]'
-        budgets = re.findall(budget_pattern, text)
-        if budgets:
-            budgets = [int(b) for b in budgets]
-            if len(budgets) >= 2:
-                requirements['budget_min'] = min(budgets)
-                requirements['budget_max'] = max(budgets)
-            elif len(budgets) == 1:
-                requirements['budget_max'] = budgets[0]
-
-        # 面积提取
-        area_pattern = r'(\d+)\s*[平㎡米]'
-        areas = re.findall(area_pattern, text)
-        if areas:
-            areas = [int(a) for a in areas]
-            if len(areas) >= 2:
-                requirements['area_min'] = min(areas)
-                requirements['area_max'] = max(areas)
-            elif len(areas) == 1:
-                requirements['area_max'] = max(areas)
-
-        # 居室提取
-        rooms_pattern = r'(\d)\s*[居室]'
-        rooms = re.findall(rooms_pattern, text)
-        if rooms:
-            requirements['rooms'] = int(rooms[0])
-
-        # 区域提取
-        regions = []
-        known_regions = ["高新区", "天府新区", "锦江区", "青羊区", "武侯区", "成华区", "金牛区", "双流区", "温江区", "郫都区", "龙泉驿区", "新都区"]
-        for region in known_regions:
-            if region in text:
-                regions.append(region)
-        if regions:
-            requirements['regions'] = regions
-
-        return requirements
-
-    @classmethod
-    def _check_requirements_complete(cls, requirements: Dict[str, Any]) -> tuple[bool, str]:
-        """
-        检查需求是否完整
-        返回: (是否完整, 追问消息)
-        """
-        # 简化逻辑：至少需要预算和区域
-        if not requirements.get('budget_max') and not requirements.get('budget_min'):
-            return False, "请问您的预算大概是多少呢？比如200万以内。"
-        if not requirements.get('regions'):
-            return False, "请问您希望在哪些区域购房呢？比如高新区、天府新区等。"
-
-        return True, ""
-
-    @classmethod
     async def process_chat(
         cls,
         db_session: AsyncSession,
@@ -503,43 +483,116 @@ class ChatService:
             db_session, user_id, data.session_id
         )
 
+        # 检查对话轮数，若超过限制直接强制按现有条件搜索房源
+        if conv_session.turn_count >= cls.MAX_TURNS:
+            current_requirements = json.loads(conv_session.extracted_requirements or "{}")
+            search_params = HouseSearchRequest(
+                budget_min=current_requirements.get('budget_min'),
+                budget_max=current_requirements.get('budget_max'),
+                area_min=current_requirements.get('area_min'),
+                area_max=current_requirements.get('area_max'),
+                rooms=current_requirements.get('rooms'),
+                regions=current_requirements.get('regions'),
+                page=1,
+                page_size=10
+            )
+            houses, total = await HouseService.search_houses(db_session, search_params)
+            response_msg = f"我们已经聊了比较久了，为您整理了以下符合您主要需求的房源。如果您有更详细的需求，可以开启新对话。"
+            
+            await cls._save_message(db_session, conv_session.id, "assistant", response_msg, "houses", [h.id for h in houses])
+            conv_session.status = "closed"
+            await db_session.commit()
+            
+            return ChatResponse(
+                session_id=conv_session.session_id,
+                response_type="results",
+                message=response_msg,
+                houses=[HouseOut.model_validate(h) for h in houses] if houses else None,
+                requirements=ExtractedRequirements(**current_requirements)
+            )
+
         # 保存用户消息
         await cls._save_message(
             db_session, conv_session.id, "user", data.message
         )
+        conv_session.turn_count += 1
 
-        # 获取当前已提取的需求
+        # 获取历史消息上下文
+        history = await cls._get_conversation_history(db_session, conv_session.id)
+        
+        # 准备系统提示词
+        full_context = [{"role": "system", "content": cls.NEST_TALK_SYSTEM_PROMPT}] + history
+
+        try:
+            # 调用 AI 引擎处理用户意图并提取需求（使用 JSON 模式，如果 supported）
+            ai_response_text = await engine.generate_chat(
+                full_context,
+                response_format={"type": "json_object"}
+            )
+            ai_parsed = json.loads(ai_response_text)
+        except Exception as e:
+            logger.error(f"AI 调用或解析失败: {str(e)}")
+            # 容错处理：使用之前的简单提取逻辑或报错
+            ai_parsed = {
+                "extracted": {},
+                "is_complete": False,
+                "reply": "抱歉，我现在遇到了一些小问题。能请你重述一遍你的需求吗？比如你的大概预算。"
+            }
+
+        # 更新需求快照
         current_requirements = json.loads(conv_session.extracted_requirements or "{}")
-
-        # 提取新需求
-        new_requirements = cls._extract_requirements_from_text(data.message)
-
-        # 合并需求
-        current_requirements.update(new_requirements)
-
-        # 更新会话中的需求
+        # 合并 AI 提取出的新需求
+        new_extracted = ai_parsed.get("extracted", {})
+        for k, v in new_extracted.items():
+            if v is not None:
+                current_requirements[k] = v
+        
         conv_session.extracted_requirements = json.dumps(current_requirements)
-
-        # 检查需求是否完整
-        is_complete, clarification_msg = cls._check_requirements_complete(current_requirements)
+        
+        is_complete = ai_parsed.get("is_complete", False)
+        reply_message = ai_parsed.get("reply", "好的，我记下了。还有其他要求吗？")
 
         if not is_complete:
             # 需要追问
             await cls._save_message(
-                db_session, conv_session.id, "assistant", clarification_msg
+                db_session, conv_session.id, "assistant", reply_message
             )
             await db_session.commit()
 
             return ChatResponse(
                 session_id=conv_session.session_id,
                 response_type="clarification",
-                message=clarification_msg,
+                message=reply_message,
                 requirements=ExtractedRequirements(**current_requirements) if current_requirements else None
             )
 
-        # 需求完整，搜索房源
+        # 需求完整，1. 建立房源监听（更新/创建用户偏好）
         conv_session.requirement_complete = True
+        
+        pref_data = UserPreferenceUpdate(
+            budget_min=current_requirements.get('budget_min'),
+            budget_max=current_requirements.get('budget_max'),
+            area_min=current_requirements.get('area_min'),
+            area_max=current_requirements.get('area_max'),
+            rooms_min=current_requirements.get('rooms'),
+            rooms_max=current_requirements.get('rooms'),
+            preferred_regions=",".join(current_requirements.get('regions')) if current_requirements.get('regions') else None,
+            exclude_top_floor=current_requirements.get('exclude_top_floor'),
+            exclude_ground_floor=current_requirements.get('exclude_ground_floor'),
+            floor_min=current_requirements.get('floor_min'),
+            floor_max=current_requirements.get('floor_max'),
+            preferred_orientations=",".join(current_requirements.get('orientations')) if current_requirements.get('orientations') else None,
+            bargain_enabled=True # 默认开启捡漏监听
+        )
+        
+        # 尝试更新现有偏好，若无则创建
+        existing_pref = await UserPreferenceService.get_preference(db_session, user_id)
+        if existing_pref:
+            await UserPreferenceService.update_preference(db_session, user_id, pref_data)
+        else:
+            await UserPreferenceService.create_preference(db_session, user_id, UserPreferenceCreate(**pref_data.model_dump()))
 
+        # 2. 查找当前符合需求的房源作为附加反馈
         search_params = HouseSearchRequest(
             budget_min=current_requirements.get('budget_min'),
             budget_max=current_requirements.get('budget_max'),
@@ -558,16 +611,17 @@ class ChatService:
 
         houses, total = await HouseService.search_houses(db_session, search_params)
 
-        # 构建回复消息
+        # 构建回复消息：告知监听已启动，并展示现状
+        final_prefix = f"您的购房需求已锁定，实时房源监听已启动！{reply_message}"
         if total > 0:
-            response_msg = f"为您找到 {total} 套符合条件的房源，以下是部分推荐："
+            final_response = f"{final_prefix}\n\n当前为您发现 {total} 套符合条件的房源，以下是部分推荐："
         else:
-            response_msg = "抱歉，没有找到完全符合您需求的房源。您可以尝试调整一下条件。"
+            final_response = f"{final_prefix}\n\n目前暂无完全匹配的房源，我将为您持续关注，一旦有新房源上线将第一时间通知您。"
 
         # 保存 AI 回复
         house_ids = [h.id for h in houses] if houses else None
         await cls._save_message(
-            db_session, conv_session.id, "assistant", response_msg,
+            db_session, conv_session.id, "assistant", final_response,
             message_type="houses" if houses else "text",
             house_ids=house_ids
         )
@@ -577,7 +631,7 @@ class ChatService:
         return ChatResponse(
             session_id=conv_session.session_id,
             response_type="results",
-            message=response_msg,
+            message=final_response,
             houses=[HouseOut.model_validate(h) for h in houses] if houses else None,
             requirements=ExtractedRequirements(**current_requirements)
         )

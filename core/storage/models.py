@@ -31,6 +31,9 @@ class Resource(CoreModel):
     # MIME 类型（image/png, application/pdf 等）
     type: Mapped[str] = mapped_column(String(100), nullable=False)
 
+    # 应用标识 (scope)
+    scope: Mapped[Optional[str]] = mapped_column(String(50), index=True, nullable=True)
+
     # 文件 MD5 哈希（用于秒传去重）
     hash: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
 

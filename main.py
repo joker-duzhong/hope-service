@@ -71,6 +71,16 @@ def create_app() -> FastAPI:
     from apps.nest_talk.router import router as nest_talk_router
     app.include_router(nest_talk_router, prefix=f"{settings.API_V1_PREFIX}/nest-talk", tags=["语筑"])
 
+    # Apps: 时空图书馆 (Time Library)
+    from apps.time_library.router import router as time_library_router
+    from apps.time_library.admin_router import router as time_library_admin_router
+    app.include_router(time_library_router, prefix=f"{settings.API_V1_PREFIX}/time-library", tags=["时空图书馆"])
+    app.include_router(time_library_admin_router, prefix=f"{settings.API_V1_PREFIX}/time-library/admin", tags=["时空图书馆-管理端"])
+
+    # Apps: AI Gateway
+    from apps.ai_gateway.router import router as ai_gateway_router
+    app.include_router(ai_gateway_router, prefix=f"{settings.API_V1_PREFIX}/ai", tags=["AI对话网关"])
+
     # 健康检查
     @app.get("/health", tags=["健康检查"])
     async def health_check():
