@@ -369,7 +369,9 @@ class ChatService:
   - 达到或接近 8-10 轮时，必须设为 true，基于现有信息直接给出总结。
 - **回复文本 (`reply`)**：这是用户看到的文字。必须短小精悍，不要重复用户已知信息。
 
-### 输出格式 (严格 JSON)
+### 输出格式要求 (严格 JSON，**禁止 Markdown 包装**)
+⚠️ **重要**：直接输出 JSON 对象，**禁止使用三反引号或 Markdown 代码块包装**。输出必须以 `{` 开始，以 `}` 结束。
+
 {
   "extracted": {
     "budget_min": number | null,
@@ -531,7 +533,9 @@ class ChatService:
             )
             ai_parsed = json.loads(ai_response_text)
         except Exception as e:
+            import traceback
             logger.error(f"AI 调用或解析失败: {str(e)}")
+            logger.error(f"完整错误堆栈:\n{traceback.format_exc()}")
             # 容错处理：使用之前的简单提取逻辑或报错
             ai_parsed = {
                 "extracted": {},
