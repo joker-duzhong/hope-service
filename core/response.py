@@ -32,3 +32,10 @@ class PaginatedResponse(BaseModel, Generic[T]):
     code: int = 200
     message: str = "success"
     data: Optional[PaginatedData[T]] = None
+
+
+class MessageResponse(BaseModel):
+    """消息响应模型"""
+
+    code: int = 200
+    message: str

@@ -13,13 +13,13 @@ from core.database import CoreModel
 
 
 class Resource(CoreModel):
-    """全局资源表 —— 记录所有上传到 MinIO 的文件"""
+    """全局资源表 —— 记录所有上传到七牛云 OSS 的文件"""
     __tablename__ = "core_resources"
 
     # 原始文件名（用于下载时还原）
     name: Mapped[str] = mapped_column(String(500), nullable=False)
 
-    # MinIO 内部存储路径（YYYY/MM/DD/{uuid}.{ext}）
+    # 七牛云 OSS 存储路径（YYYY/MM/DD/{uuid}.{ext}）
     url: Mapped[str] = mapped_column(String(500), nullable=False)
 
     # 缩略图路径（仅图片类型有值）

@@ -34,32 +34,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # MinIO 对象存储
-  minio:
-    image: minio/minio
-    container_name: hope-minio
-    restart: unless-stopped
-    # === 新增这段 DNS 别名 ===
-    networks:
-      default:
-        aliases:
-          - api.lxyy.fun
-    # =======================
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin_password}
-    volumes:
-      - minio_data:/data
-    ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
-    command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-
   # FastAPI 应用
   app:
     build:
@@ -75,12 +49,10 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-hope_service}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      # --- 修改此处为域名 ---
-      - MINIO_ENDPOINT=api.lxyy.fun:9000
-      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_password}
-      - MINIO_USE_SSL=false
-      # ----------------------
+      - QINIU_ACCESS_KEY=${QINIU_ACCESS_KEY:-}
+      - QINIU_SECRET_KEY=${QINIU_SECRET_KEY:-}
+      - QINIU_BUCKET_NAME=${QINIU_BUCKET_NAME:-}
+      - QINIU_DOMAIN=${QINIU_DOMAIN:-}
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
       - DEBUG=${DEBUG:-false}
       - WECHAT_APPS=${WECHAT_APPS:-}
@@ -91,8 +63,6 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
@@ -111,20 +81,16 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-hope_service}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      # --- 修改此处为域名 ---
-      - MINIO_ENDPOINT=api.lxyy.fun:9000
-      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_password}
-      - MINIO_USE_SSL=false
-      # ----------------------
+      - QINIU_ACCESS_KEY=${QINIU_ACCESS_KEY:-}
+      - QINIU_SECRET_KEY=${QINIU_SECRET_KEY:-}
+      - QINIU_BUCKET_NAME=${QINIU_BUCKET_NAME:-}
+      - QINIU_DOMAIN=${QINIU_DOMAIN:-}
       - WECHAT_APPS=${WECHAT_APPS:-}
       - FEISHU_WEBHOOK_URL=${FEISHU_WEBHOOK_URL:-}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     command: celery -A worker.celery_app worker --loglevel=info
 
@@ -143,12 +109,10 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-hope_service}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      # --- 修改此处为域名 ---
-      - MINIO_ENDPOINT=api.lxyy.fun:9000
-      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_password}
-      - MINIO_USE_SSL=false
-      # ----------------------
+      - QINIU_ACCESS_KEY=${QINIU_ACCESS_KEY:-}
+      - QINIU_SECRET_KEY=${QINIU_SECRET_KEY:-}
+      - QINIU_BUCKET_NAME=${QINIU_BUCKET_NAME:-}
+      - QINIU_DOMAIN=${QINIU_DOMAIN:-}
       - WECHAT_APPS=${WECHAT_APPS:-}
       - FEISHU_WEBHOOK_URL=${FEISHU_WEBHOOK_URL:-}
     depends_on:
@@ -156,11 +120,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
-        condition: service_healthy
     command: celery -A worker.celery_app beat --loglevel=info
 
 volumes:
   postgres_data:
   redis_data:
-  minio_data:
