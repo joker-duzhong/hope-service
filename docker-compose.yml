@@ -4,6 +4,7 @@ services:
     image: postgres:15-alpine
     container_name: hope-postgres
     restart: unless-stopped
+    # 数据库初始化依然使用这些基础变量
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -36,27 +37,16 @@ services:
 
   # FastAPI 应用
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     container_name: hope-app
     restart: unless-stopped
+    # 🔴 核心改动：直接挂载整个 .env 文件
+    env_file:
+      - .env
     environment:
+      # 🔴 核心覆盖：覆盖掉 .env 里的 localhost，强制使用 docker 内部容器名通信
       - POSTGRES_SERVER=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - POSTGRES_DB=${POSTGRES_DB:-hope_service}
       - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - QINIU_ACCESS_KEY=${QINIU_ACCESS_KEY:-}
-      - QINIU_SECRET_KEY=${QINIU_SECRET_KEY:-}
-      - QINIU_BUCKET_NAME=${QINIU_BUCKET_NAME:-}
-      - QINIU_DOMAIN=${QINIU_DOMAIN:-}
-      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
-      - DEBUG=${DEBUG:-false}
-      - WECHAT_APPS=${WECHAT_APPS:-}
-      - FEISHU_WEBHOOK_URL=${FEISHU_WEBHOOK_URL:-}
     ports:
       - "${APP_PORT:-8000}:8000"
     depends_on:
@@ -68,25 +58,14 @@ services:
 
   # Celery Worker
   celery-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     container_name: hope-celery-worker
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       - POSTGRES_SERVER=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - POSTGRES_DB=${POSTGRES_DB:-hope_service}
       - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - QINIU_ACCESS_KEY=${QINIU_ACCESS_KEY:-}
-      - QINIU_SECRET_KEY=${QINIU_SECRET_KEY:-}
-      - QINIU_BUCKET_NAME=${QINIU_BUCKET_NAME:-}
-      - QINIU_DOMAIN=${QINIU_DOMAIN:-}
-      - WECHAT_APPS=${WECHAT_APPS:-}
-      - FEISHU_WEBHOOK_URL=${FEISHU_WEBHOOK_URL:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -96,25 +75,14 @@ services:
 
   # Celery Beat (定时任务调度)
   celery-beat:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     container_name: hope-celery-beat
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       - POSTGRES_SERVER=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - POSTGRES_DB=${POSTGRES_DB:-hope_service}
       - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - QINIU_ACCESS_KEY=${QINIU_ACCESS_KEY:-}
-      - QINIU_SECRET_KEY=${QINIU_SECRET_KEY:-}
-      - QINIU_BUCKET_NAME=${QINIU_BUCKET_NAME:-}
-      - QINIU_DOMAIN=${QINIU_DOMAIN:-}
-      - WECHAT_APPS=${WECHAT_APPS:-}
-      - FEISHU_WEBHOOK_URL=${FEISHU_WEBHOOK_URL:-}
     depends_on:
       postgres:
         condition: service_healthy

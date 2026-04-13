@@ -96,7 +96,7 @@ class Settings(BaseSettings):
     # LLM 配置
     # 格式: {"openai": {"api_key": "sk-...", "base_url": "...", "default_model": "gpt-4o", "timeout": 60, "max_retries": 3}}
     LLM_PROVIDERS: dict = {}
-    LLM_DEFAULT_PROVIDER: str = "openai"
+    LLM_DEFAULT_PROVIDER: str = ""
 
     # 七牛云 OSS 配置
     QINIU_ACCESS_KEY: str = ""
