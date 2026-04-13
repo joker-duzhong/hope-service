@@ -80,3 +80,5 @@ logs/
 # Celery
 celerybeat-schedule
 celerybeat.pid
+celerybeat*
+test*

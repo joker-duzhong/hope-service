@@ -1,17 +1,20 @@
 import uuid
 import random
+import logging
 from typing import List, Optional, Dict, Any
 from sqlalchemy import select, update, func, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from apps.zaiwen_gaokao.models import (
-    CommunityPersona, TreeholePost, TreeholeReply, 
+    CommunityPersona, TreeholePost, TreeholeReply,
     BoardPost, BoardVote, LimitedRoom, RoomMessage
 )
 from apps.zaiwen_gaokao.schemas import (
-    TreeholePostCreate, BoardPostCreate, BoardVoteCreate, 
+    TreeholePostCreate, BoardPostCreate, BoardVoteCreate,
     RoomCreate, PersonaUpdate
 )
 from core.exceptions import CustomException
+
+logger = logging.getLogger(__name__)
 
 class GaokaoService:
     # --- 个人中心与马甲管理 ---
@@ -144,9 +147,10 @@ class GaokaoService:
         # 触发异步风控和 AI 回复任务
         try:
             from apps.zaiwen_gaokao.tasks import process_treehole_ai_reply
-            process_treehole_ai_reply.delay(str(post.id), post.type, post.content)
-        except Exception:
-            pass
+            task = process_treehole_ai_reply.delay(str(post.id), post.type, post.content)
+            logger.info(f"树洞 AI 回复任务已提交: post_id={post.id}, task_id={task.id}")
+        except Exception as e:
+            logger.error(f"提交树洞 AI 回复任务失败: {e}", exc_info=True)
             
         return post
 

@@ -81,6 +81,20 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
+#### 一键启动所有服务
+
+**Windows (PowerShell)：**
+
+```powershell
+$env:PYTHONUTF8=1
+wt -p "Windows PowerShell" -d . uvicorn main:app --reload --port 8000 `; split-pane -p "Windows PowerShell" -d . celery -A worker.celery_app worker --loglevel=info `; split-pane -p "Windows PowerShell" -d . celery -A worker.celery_app beat --loglevel=info
+```
+
+这会在一个终端中启动所有服务：
+- **FastAPI** - uvicorn 应用，监听 http://localhost:8000
+- **Celery Worker** - 后台任务处理（AI 回复、数据生成等）
+- **Celery Beat** - 定时任务调度
+
 ### 4. 访问服务
 
 - Swagger 文档: http://localhost:8000/docs
