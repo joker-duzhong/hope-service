@@ -81,6 +81,10 @@ def create_app() -> FastAPI:
     from apps.ai_gateway.router import router as ai_gateway_router
     app.include_router(ai_gateway_router, prefix=f"{settings.API_V1_PREFIX}/ai", tags=["AI对话网关"])
 
+    # Apps: 在线高考 (Zaiwen Gaokao)
+    from apps.zaiwen_gaokao.router import router as gaokao_router
+    app.include_router(gaokao_router, prefix=f"{settings.API_V1_PREFIX}/zaiwen-gaokao", tags=["在线高考"])
+
     # 健康检查
     @app.get("/health", tags=["健康检查"])
     async def health_check():

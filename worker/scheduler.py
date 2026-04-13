@@ -43,4 +43,10 @@ celery_app.conf.beat_schedule = {
         # 每天早上 6:30 更新区域均价日志
         "schedule": crontab(minute=30, hour=6),
     },
+    # ==================== 在线高考 (zaiwen_gaokao) 定时任务 ====================
+    "gaokao_check_room_lifecycles": {
+        "task": "apps.zaiwen_gaokao.tasks.check_room_lifecycles",
+        # 每 5 分钟检查一次房间状态
+        "schedule": crontab(minute="*/5"),
+    },
 }
