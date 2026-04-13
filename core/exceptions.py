@@ -34,6 +34,10 @@ class BadRequestException(AppException):
         super().__init__(code=400, message=message)
 
 
+# Alias for backward compatibility
+CustomException = AppException
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """在 FastAPI 实例上注册全局异常处理器"""
 

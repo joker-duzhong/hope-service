@@ -61,6 +61,9 @@ class TreeholeAuthorInfo(BaseModel):
     avatar_url: Optional[str] = None
     status_emoji: Optional[str] = None
 
+    class Config:
+        from_attributes = True
+
 class TreeholeFeedItem(TreeholePostRead):
     author: Optional[TreeholeAuthorInfo] = None
     ai_reply: Optional[TreeholeReplyRead] = None
@@ -85,6 +88,9 @@ class BoardAuthorInfo(BaseModel):
     nickname: str
     avatar_url: Optional[str] = None
     status_emoji: Optional[str] = None
+
+    class Config:
+        from_attributes = True
 
 class BoardPostRead(BaseModel):
     id: UUID
