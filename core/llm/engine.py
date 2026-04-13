@@ -37,7 +37,7 @@ async def generate_chat(
     config = settings.LLM_PROVIDERS.get(provider)
 
     if not config:
-        raise ValueError(f"未配置 LLM 提供商: {provider}")
+        raise ValueError(f"未配置 LLM 提供商: {provider},{settings}")
 
     api_key = config.get("api_key")
     base_url = config.get("base_url")
