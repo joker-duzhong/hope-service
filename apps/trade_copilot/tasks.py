@@ -214,7 +214,7 @@ async def run_daily_settlement() -> str:
         # 推理整体警告颜色给大盘总结卡片标题打底
         card_color = "red"  # 默认都好为红色（A股特色）
         card_title = "🔴 红灯报喜：全市场均在进攻阵型"
-        
+
         if market_status.sh_status == "green" and market_status.sz_status == "green":
             card_color = "green"
             card_title = "🟢 绿灯警报：两大市场全部破位，明日严禁开新仓"
@@ -222,14 +222,13 @@ async def run_daily_settlement() -> str:
             card_color = "orange"
             card_title = "🟠 橙灯警报：出现结构性破位，注意控制仓位"
 
-        if card_color in ["green", "orange"]:
-            card = build_market_status_card(
-                title=card_title,
-                status_color=card_color,
-                sh_reason=market_status.sh_reason,
-                sz_reason=market_status.sz_reason
-            )
-            await send_feishu_alert("大盘防守警报", card=card)
+        card = build_market_status_card(
+            title=card_title,
+            status_color=card_color,
+            sh_reason=market_status.sh_reason,
+            sz_reason=market_status.sz_reason
+        )
+        await send_feishu_alert("大盘收盘简报", card=card)
 
         return "Success"
     finally:
