@@ -296,40 +296,38 @@ class MarketService:
 
         try:
             # 如果没有缓存，通过 AkShare 获取实时结果
+            # 数据格式已改为 push2his dict: {"spot": {f12: {f2:.., f3:..}}, "board": {...}}
             data = await AkShareClient.get_market_thermometer_data()
-            df_spot = data.get('spot')
-            df_board = data.get('board')
+            spot_items = data.get('spot')
+            board_items = data.get('board')
 
-            if df_spot is None or df_spot.empty:
+            if not spot_items:
                 raise ValueError("获取全市场个股数据为空")
 
-            # 统计市场家数（排除退市等无数据的）
-            # 尝试不同的列名（akshare 可能返回不同的列名）
-            pct_col = None
-            for col in ['涨跌幅', 'chg', 'pct_chg', 'pctChange']:
-                if col in df_spot.columns:
-                    pct_col = col
-                    break
+            # push2his diff 格式: dict {"0": {f3:涨跌幅, f12:代码, f14:名称}, ...} 或 list
+            if isinstance(spot_items, dict):
+                spot_list = list(spot_items.values())
+            else:
+                spot_list = spot_items
 
-            if pct_col is None:
-                logger.error(f"未找到涨跌幅列，可用列: {df_spot.columns.tolist()}")
-                raise ValueError("数据列名不匹配")
+            pcts = []
+            for item in spot_list:
+                try:
+                    pct = float(item.get("f3", 0) or 0)
+                    pcts.append(pct)
+                except (ValueError, TypeError):
+                    continue
 
-            df_spot = df_spot.dropna(subset=[pct_col])
-            # 确保涨跌幅是数值类型
-            df_spot[pct_col] = pd.to_numeric(df_spot[pct_col], errors='coerce')
-            df_spot = df_spot.dropna(subset=[pct_col])
+            total_stocks = len(pcts)
+            up_count = sum(1 for p in pcts if p > 0)
+            down_count = sum(1 for p in pcts if p < 0)
+            limit_up_count = sum(1 for p in pcts if p >= 9.8)
+            limit_down_count = sum(1 for p in pcts if p <= -9.8)
 
-            total_stocks = len(df_spot)
-            up_count = len(df_spot[df_spot[pct_col] > 0])
-            down_count = len(df_spot[df_spot[pct_col] < 0])
-            limit_up_count = len(df_spot[df_spot[pct_col] >= 9.8])
-            limit_down_count = len(df_spot[df_spot[pct_col] <= -9.8])
-
-            # 按照涨停家数和上涨家数综合打分（一个极其简化的温度计）
+            # 按照涨停家数和上涨家数综合打分
             score = min(100, max(0, int((up_count / max(1, total_stocks)) * 60 + (limit_up_count / 100) * 40)))
 
-            # 温度标语：冰点 / 分歧 / 弱修复 / 温和 / 高潮
+            # 温度标语
             if score < 20:
                 temperature = "冰点 (情绪极度低迷，注意杀跌风险)"
             elif score < 40:
@@ -341,35 +339,25 @@ class MarketService:
             else:
                 temperature = "高潮 (情绪亢奋，注意高位落袋或警惕分歧转一致的尾声)"
 
-            # 板块轮动数据 (取前5)
+            # 板块轮动数据 (取涨幅前5)
             top_sectors = []
-            if df_board is not None and not df_board.empty:
-                # 尝试找到板块名称和涨跌幅列
-                board_name_col = None
-                board_pct_col = None
-                for col in ['板块名称', 'name', 'board_name']:
-                    if col in df_board.columns:
-                        board_name_col = col
-                        break
-                for col in ['涨跌幅', 'chg', 'pct_chg', 'pctChange']:
-                    if col in df_board.columns:
-                        board_pct_col = col
-                        break
+            if board_items:
+                if isinstance(board_items, dict):
+                    board_list = list(board_items.values())
+                else:
+                    board_list = board_items
 
-                if board_name_col and board_pct_col:
-                    try:
-                        df_board[board_pct_col] = pd.to_numeric(df_board[board_pct_col], errors='coerce')
-                        df_board = df_board.dropna(subset=[board_pct_col])
-                        df_board_sorted = df_board.sort_values(by=board_pct_col, ascending=False)
-                        for _, row in df_board_sorted.head(5).iterrows():
-                            top_sectors.append(
-                                SectorItemOut(
-                                    sector_name=str(row[board_name_col]),
-                                    pct_change=float(row[board_pct_col])
-                                )
+                try:
+                    board_sorted = sorted(board_list, key=lambda x: float(x.get("f3", 0) or 0), reverse=True)
+                    for item in board_sorted[:5]:
+                        top_sectors.append(
+                            SectorItemOut(
+                                sector_name=str(item.get("f14", "")),
+                                pct_change=float(item.get("f3", 0) or 0)
                             )
-                    except Exception as e:
-                        logger.warning(f"解析板块数据失败: {e}")
+                        )
+                except Exception as e:
+                    logger.warning(f"解析板块数据失败: {e}")
 
             result = MarketThermometerOut(
                 total_stocks=total_stocks,
@@ -384,7 +372,7 @@ class MarketService:
 
             # 尝试写入缓存
             try:
-                await redis_client.set(REDIS_KEY, result.model_dump_json(), ex=300)  # 缓存 5 分钟
+                await redis_client.set(REDIS_KEY, result.model_dump_json(), ex=300)
             except Exception as e:
                 logger.warning(f"Redis 写入失败，跳过缓存: {e}")
 
@@ -880,65 +868,9 @@ class TradeTransactionService:
 
     @classmethod
     async def get_market_thermometer(cls):
-        """获取市场温度计与板块轮动"""
-        try:
-            data = await AkShareClient.get_market_thermometer_data()
-            df_spot = data["spot"]
-            df_board = data["board"]
-
-            # 计算市场温度
-            # 过滤掉涨跌幅为 NaN 的数据
-            spot = df_spot[~df_spot["涨跌幅"].isna()]
-            total_count = len(spot)
-
-            advance_count = len(spot[spot["涨跌幅"] > 0])
-            decline_count = len(spot[spot["涨跌幅"] < 0])
-            flat_count = total_count - advance_count - decline_count
-
-            # 估算涨跌停
-            limit_up_count = len(spot[spot["涨跌幅"] >= 9.8])
-            limit_down_count = len(spot[spot["涨跌幅"] <= -9.8])
-
-            median_pct = float(spot["涨跌幅"].median()) if not spot.empty else 0.0
-
-            # 赚钱效应打分 (0-100) 简单模型: 基础分50 + 涨跌比加成 + 涨跌停加成
-            score = 50.0
-            if total_count > 0:
-                adv_ratio = advance_count / total_count
-                score += (adv_ratio - 0.5) * 50  # -25 to +25
-
-                # 涨跌停加成
-                if limit_up_count + limit_down_count > 0:
-                    limit_ratio = limit_up_count / (limit_up_count + limit_down_count)
-                    score += (limit_ratio - 0.5) * 50 # -25 to +25
-
-            score = max(0, min(100, int(score)))
-
-            # 解析板块数据 (前5)
-            top_sectors = []
-            if not df_board.empty:
-                df_board_sorted = df_board.sort_values(by="涨跌幅", ascending=False).head(5)
-                from apps.trade_copilot.schemas import SectorItemOut
-                for _, row in df_board_sorted.iterrows():
-                    top_sectors.append(SectorItemOut(
-                        sector_name=str(row.get("板块名称", "")),
-                        pct_change=float(row.get("涨跌幅", 0.0))
-                    ))
-
-            return MarketThermometerOut(
-                total_stocks=total_count,
-                up_count=advance_count,
-                down_count=decline_count,
-                flat_count=flat_count,
-                limit_up_count=limit_up_count,
-                limit_down_count=limit_down_count,
-                score=score,
-                median_pct_change=median_pct,
-                top_sectors=top_sectors
-            )
-        except Exception as e:
-            logger.error(f"计算市场温度计异常: {e}")
-            raise
+        """获取市场温度计与板块轮动（已弃用 DataFrame，保留兼容）"""
+        # 委托给 MarketService.get_market_thermometer
+        return await MarketService.get_market_thermometer()
 
 
 class StockInfoService:
