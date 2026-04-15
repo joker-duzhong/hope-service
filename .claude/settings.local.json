@@ -46,7 +46,8 @@
       "Bash(celery -A worker.celery_app inspect registered)",
       "Bash(python -c \"from apps.trade_copilot import tasks; print\\('OK'\\)\")",
       "Bash(nslookup 80.push2.eastmoney.com 114.114.114.114)",
-      "Bash(curl --http2 \"https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5&fields=f12,f14,f3\" --connect-timeout 10)"
+      "Bash(curl --http2 \"https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5&fields=f12,f14,f3\" --connect-timeout 10)",
+      "Bash(python -m alembic revision --autogenerate -m \"Add NestTalkUserMatchHouse model\")"
     ]
   }
 }

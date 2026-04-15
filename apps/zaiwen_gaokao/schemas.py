@@ -141,7 +141,7 @@ class MessageCreate(BaseModel):
 class MessageRead(BaseModel):
     id: UUID
     nickname: str
-    avatar_id: int
+    avatar_id: UUID
     content: str
     created_at: datetime
 

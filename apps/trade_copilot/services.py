@@ -1,5 +1,6 @@
 import logging
 from typing import List, Optional
+from uuid import UUID
 import json
 from datetime import datetime
 import httpx
@@ -72,7 +73,7 @@ class PositionService:
     async def create_position(
         cls, 
         session: AsyncSession, 
-        user_id: int, 
+        user_id: UUID, 
         data: PositionCreate
     ) -> Position:
         # 初始高水位线可以默认等于最高买入价（或者等于成本价）
@@ -115,7 +116,7 @@ class PositionService:
     async def list_positions(
         cls, 
         session: AsyncSession, 
-        user_id: int,
+        user_id: UUID,
         status: Optional[str] = None
     ) -> List[Position]:
         stmt = select(Position).where(
@@ -132,8 +133,8 @@ class PositionService:
     async def get_position(
         cls,
         session: AsyncSession,
-        user_id: int,
-        position_id: int
+        user_id: UUID,
+        position_id: UUID
     ) -> Optional[Position]:
         stmt = select(Position).where(
             Position.id == position_id,
@@ -147,8 +148,8 @@ class PositionService:
     async def update_position(
         cls,
         session: AsyncSession,
-        user_id: int,
-        position_id: int,
+        user_id: UUID,
+        position_id: UUID,
         data: PositionUpdate
     ) -> Optional[Position]:
         position = await cls.get_position(session, user_id, position_id)
@@ -170,8 +171,8 @@ class PositionService:
     async def delete_position(
         cls,
         session: AsyncSession,
-        user_id: int,
-        position_id: int
+        user_id: UUID,
+        position_id: UUID
     ) -> bool:
         position = await cls.get_position(session, user_id, position_id)
         if not position:
@@ -312,7 +313,7 @@ class WatchlistService:
     async def create_watchlist(
         cls, 
         session: AsyncSession, 
-        user_id: int, 
+        user_id: UUID, 
         data: WatchlistCreate
     ) -> Watchlist:
         # 添加前先排雷：检查是否为 ST 股票
@@ -336,7 +337,7 @@ class WatchlistService:
     async def list_watchlist(
         cls, 
         session: AsyncSession, 
-        user_id: int,
+        user_id: UUID,
         status: Optional[str] = None
     ) -> List[Watchlist]:
         stmt = select(Watchlist).where(
@@ -353,8 +354,8 @@ class WatchlistService:
     async def get_watchlist(
         cls,
         session: AsyncSession,
-        user_id: int,
-        watchlist_id: int
+        user_id: UUID,
+        watchlist_id: UUID
     ) -> Optional[Watchlist]:
         stmt = select(Watchlist).where(
             Watchlist.id == watchlist_id,
@@ -368,8 +369,8 @@ class WatchlistService:
     async def update_watchlist(
         cls,
         session: AsyncSession,
-        user_id: int,
-        watchlist_id: int,
+        user_id: UUID,
+        watchlist_id: UUID,
         data: WatchlistUpdate
     ) -> Optional[Watchlist]:
         watchlist = await cls.get_watchlist(session, user_id, watchlist_id)
@@ -389,8 +390,8 @@ class WatchlistService:
     async def delete_watchlist(
         cls,
         session: AsyncSession,
-        user_id: int,
-        watchlist_id: int
+        user_id: UUID,
+        watchlist_id: UUID
     ) -> bool:
         watchlist = await cls.get_watchlist(session, user_id, watchlist_id)
         if not watchlist:
@@ -406,7 +407,7 @@ class TradeStrategyService:
     async def create_strategy(
         cls, 
         session: AsyncSession, 
-        user_id: int, 
+        user_id: UUID, 
         data: TradeStrategyCreate
     ) -> TradeStrategy:
         strategy = TradeStrategy(
@@ -425,7 +426,7 @@ class TradeStrategyService:
     async def list_strategies(
         cls, 
         session: AsyncSession, 
-        user_id: int
+        user_id: UUID
     ) -> List[TradeStrategy]:
         stmt = select(TradeStrategy).where(
             TradeStrategy.user_id == user_id,
@@ -438,8 +439,8 @@ class TradeStrategyService:
     async def get_strategy(
         cls,
         session: AsyncSession,
-        user_id: int,
-        strategy_id: int
+        user_id: UUID,
+        strategy_id: UUID
     ) -> Optional[TradeStrategy]:
         stmt = select(TradeStrategy).where(
             TradeStrategy.id == strategy_id,
@@ -453,8 +454,8 @@ class TradeStrategyService:
     async def update_strategy(
         cls,
         session: AsyncSession,
-        user_id: int,
-        strategy_id: int,
+        user_id: UUID,
+        strategy_id: UUID,
         data: TradeStrategyUpdate
     ) -> Optional[TradeStrategy]:
         strategy = await cls.get_strategy(session, user_id, strategy_id)
@@ -478,8 +479,8 @@ class TradeStrategyService:
     async def delete_strategy(
         cls,
         session: AsyncSession,
-        user_id: int,
-        strategy_id: int
+        user_id: UUID,
+        strategy_id: UUID
     ) -> bool:
         strategy = await cls.get_strategy(session, user_id, strategy_id)
         if not strategy:
@@ -494,7 +495,7 @@ class TradingJournalService:
     async def create_journal(
         cls, 
         session: AsyncSession, 
-        user_id: int, 
+        user_id: UUID, 
         data: TradingJournalCreate
     ) -> TradingJournal:
         from sqlalchemy import select
@@ -525,7 +526,7 @@ class TradingJournalService:
     async def list_journals(
         cls, 
         session: AsyncSession, 
-        user_id: int
+        user_id: UUID
     ) -> List[TradingJournal]:
         from sqlalchemy import select
         stmt = select(TradingJournal).where(
@@ -540,8 +541,8 @@ class TradingJournalService:
     async def get_journal(
         cls,
         session: AsyncSession,
-        user_id: int,
-        journal_id: int
+        user_id: UUID,
+        journal_id: UUID
     ) -> Optional[TradingJournal]:
         from sqlalchemy import select
         stmt = select(TradingJournal).where(
@@ -556,8 +557,8 @@ class TradingJournalService:
     async def update_journal(
         cls,
         session: AsyncSession,
-        user_id: int,
-        journal_id: int,
+        user_id: UUID,
+        journal_id: UUID,
         data: TradingJournalUpdate
     ) -> Optional[TradingJournal]:
         journal = await cls.get_journal(session, user_id, journal_id)
@@ -652,7 +653,7 @@ class UserTradeSettingsService:
     async def get_settings(
         cls,
         session: AsyncSession,
-        user_id: int
+        user_id: UUID
     ) -> UserTradeSettings:
         from sqlalchemy import select
         stmt = select(UserTradeSettings).where(
@@ -675,7 +676,7 @@ class UserTradeSettingsService:
     async def update_settings(
         cls,
         session: AsyncSession,
-        user_id: int,
+        user_id: UUID,
         data: UserTradeSettingsUpdate
     ) -> UserTradeSettings:
         settings = await cls.get_settings(session, user_id)
@@ -697,8 +698,8 @@ class TradeTransactionService:
     async def add_transaction(
         cls,
         session: AsyncSession,
-        user_id: int,
-        position_id: int,
+        user_id: UUID,
+        position_id: UUID,
         data: TradeTransactionCreate
     ) -> Optional[TradeTransaction]:
         from apps.trade_copilot.models import Position, UserTradeSettings
@@ -776,8 +777,8 @@ class TradeTransactionService:
     async def get_transactions(
         cls,
         session: AsyncSession,
-        user_id: int,
-        position_id: int
+        user_id: UUID,
+        position_id: UUID
     ) -> List[TradeTransaction]:
         from apps.trade_copilot.models import Position
         from sqlalchemy import select

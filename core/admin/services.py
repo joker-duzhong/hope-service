@@ -2,6 +2,7 @@
 管理后台业务逻辑
 """
 from typing import List, Optional, Tuple
+from uuid import UUID
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,7 +69,7 @@ class AdminUserService:
         return users, total
 
     @staticmethod
-    async def get_user_detail(db: AsyncSession, user_id: int) -> Optional[User]:
+    async def get_user_detail(db: AsyncSession, user_id: UUID) -> Optional[User]:
         """获取用户详情（含角色）"""
         result = await db.execute(
             select(User)
@@ -87,7 +88,7 @@ class AdminUserService:
 
     @staticmethod
     async def assign_roles(
-        db: AsyncSession, user: User, role_ids: List[int]
+        db: AsyncSession, user: User, role_ids: List[UUID]
     ) -> User:
         """覆盖式分配角色：以传入的 role_ids 为准，替换用户当前所有角色"""
         if role_ids:
@@ -119,7 +120,7 @@ class RoleService:
         return list(result.scalars().all())
 
     @staticmethod
-    async def get_by_id(db: AsyncSession, role_id: int) -> Optional[Role]:
+    async def get_by_id(db: AsyncSession, role_id: UUID) -> Optional[Role]:
         result = await db.execute(select(Role).where(Role.id == role_id))
         return result.scalar_one_or_none()
 

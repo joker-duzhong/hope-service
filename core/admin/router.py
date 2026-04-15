@@ -4,6 +4,8 @@
 """
 import math
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,7 +69,7 @@ async def list_users(
 
 @router.get("/users/{user_id}", response_model=ResponseModel[AdminUserDetail])
 async def get_user(
-    user_id: int,
+    user_id: UUID,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_superuser),
 ):
@@ -80,7 +82,7 @@ async def get_user(
 
 @router.patch("/users/{user_id}/freeze", response_model=ResponseModel[AdminUserDetail])
 async def freeze_user(
-    user_id: int,
+    user_id: UUID,
     body: AdminFreezeRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_superuser),
@@ -109,7 +111,7 @@ async def freeze_user(
 
 @router.put("/users/{user_id}/roles", response_model=ResponseModel[AdminUserDetail])
 async def assign_user_roles(
-    user_id: int,
+    user_id: UUID,
     body: AdminAssignRolesRequest,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_superuser),
@@ -165,7 +167,7 @@ async def create_role(
 
 @router.patch("/roles/{role_id}", response_model=ResponseModel[RoleResponse])
 async def update_role(
-    role_id: int,
+    role_id: UUID,
     body: RoleUpdate,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_superuser),
@@ -187,7 +189,7 @@ async def update_role(
 
 @router.delete("/roles/{role_id}", response_model=ResponseModel[None])
 async def delete_role(
-    role_id: int,
+    role_id: UUID,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_superuser),
 ):

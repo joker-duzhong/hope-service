@@ -44,7 +44,7 @@ class CoupleService:
         return secrets.token_urlsafe(4)[:6].upper()
 
     @classmethod
-    async def create_couple(cls, session: AsyncSession, user_id: int) -> Couple:
+    async def create_couple(cls, session: AsyncSession, user_id: UUID) -> Couple:
         """创建情侣关系 (生成邀请码)"""
         # 检查用户是否已有情侣关系
         existing = await cls.get_couple_by_user(session, user_id)
@@ -67,7 +67,7 @@ class CoupleService:
         return couple
 
     @classmethod
-    async def join_couple(cls, session: AsyncSession, user_id: int, invite_code: str) -> Couple:
+    async def join_couple(cls, session: AsyncSession, user_id: UUID, invite_code: str) -> Couple:
         """加入情侣关系"""
         # 检查用户是否已有情侣关系
         existing = await cls.get_couple_by_user(session, user_id)
@@ -102,7 +102,7 @@ class CoupleService:
         return couple
 
     @classmethod
-    async def get_couple_by_user(cls, session: AsyncSession, user_id: int) -> Optional[Couple]:
+    async def get_couple_by_user(cls, session: AsyncSession, user_id: UUID) -> Optional[Couple]:
         """根据用户ID获取情侣关系"""
         stmt = select(Couple).where(
             or_(Couple.user1_id == user_id, Couple.user2_id == user_id),
@@ -111,7 +111,7 @@ class CoupleService:
         return (await session.execute(stmt)).scalars().first()
 
     @classmethod
-    async def get_couple_by_id(cls, session: AsyncSession, couple_id: int) -> Optional[Couple]:
+    async def get_couple_by_id(cls, session: AsyncSession, couple_id: UUID) -> Optional[Couple]:
         """根据ID获取情侣关系"""
         stmt = select(Couple).where(
             Couple.id == couple_id,
@@ -120,7 +120,7 @@ class CoupleService:
         return (await session.execute(stmt)).scalars().first()
 
     @classmethod
-    async def get_partner_id(cls, session: AsyncSession, user_id: int) -> Optional[int]:
+    async def get_partner_id(cls, session: AsyncSession, user_id: UUID) -> Optional[UUID]:
         """获取伴侣的用户ID"""
         couple = await cls.get_couple_by_user(session, user_id)
         if not couple or couple.status != "active":
@@ -131,7 +131,7 @@ class CoupleService:
 
     @classmethod
     async def update_couple(
-        cls, session: AsyncSession, couple_id: int, user_id: int, anniversary_date: Optional[date]
+        cls, session: AsyncSession, couple_id: UUID, user_id: UUID, anniversary_date: Optional[date]
     ) -> Couple:
         """更新情侣信息"""
         couple = await cls.get_couple_by_id(session, couple_id)
@@ -154,7 +154,7 @@ class TodoService:
 
     @classmethod
     async def create_todo(
-        cls, session: AsyncSession, couple_id: int, user_id: int, data: TodoItemCreate
+        cls, session: AsyncSession, couple_id: UUID, user_id: UUID, data: TodoItemCreate
     ) -> TodoItem:
         """创建待办事项"""
         todo = TodoItem(
@@ -170,7 +170,7 @@ class TodoService:
 
     @classmethod
     async def list_todos(
-        cls, session: AsyncSession, couple_id: int, status: Optional[str] = None
+        cls, session: AsyncSession, couple_id: UUID, status: Optional[str] = None
     ) -> List[TodoItem]:
         """获取待办列表"""
         stmt = select(TodoItem).where(
@@ -185,8 +185,8 @@ class TodoService:
 
     @classmethod
     async def update_todo(
-        cls, session: AsyncSession, couple_id: int, todo_id: int,
-        data: TodoItemUpdate, user_id: int
+        cls, session: AsyncSession, couple_id: UUID, todo_id: UUID,
+        data: TodoItemUpdate, user_id: UUID
     ) -> Optional[TodoItem]:
         """更新待办事项"""
         stmt = select(TodoItem).where(
@@ -211,7 +211,7 @@ class TodoService:
         return todo
 
     @classmethod
-    async def delete_todo(cls, session: AsyncSession, couple_id: int, todo_id: int) -> bool:
+    async def delete_todo(cls, session: AsyncSession, couple_id: UUID, todo_id: UUID) -> bool:
         """删除待办事项"""
         stmt = select(TodoItem).where(
             TodoItem.id == todo_id,
@@ -235,15 +235,23 @@ class MemoService:
         resources = []
         resource_ids = memo.resource_ids or []
         if resource_ids:
-            parsed_ids = [UUID(r) if isinstance(r, str) else r for r in resource_ids]
-            result = await session.execute(
-                select(Resource).where(
-                    Resource.id.in_(parsed_ids),
-                    Resource.is_deleted == False,
+            parsed_ids = []
+            for r in resource_ids:
+                try:
+                    parsed_ids.append(UUID(r) if isinstance(r, str) else r)
+                except (ValueError, AttributeError):
+                    logger.warning(f"Invalid UUID in memo {memo.id}: {r}")
+                    continue
+
+            if parsed_ids:
+                result = await session.execute(
+                    select(Resource).where(
+                        Resource.id.in_(parsed_ids),
+                        Resource.is_deleted == False,
+                    )
                 )
-            )
-            for r in result.scalars().all():
-                resources.append(await StorageService._build_response(r))
+                for r in result.scalars().all():
+                    resources.append(await StorageService._build_response(r))
 
         return MemoOut(
             id=memo.id,
@@ -258,7 +266,7 @@ class MemoService:
 
     @classmethod
     async def create_memo(
-        cls, session: AsyncSession, couple_id: int, user_id: int, data: MemoCreate
+        cls, session: AsyncSession, couple_id: UUID, user_id: UUID, data: MemoCreate
     ) -> MemoOut:
         """创建备忘录"""
         memo = Memo(
@@ -274,7 +282,7 @@ class MemoService:
 
     @classmethod
     async def list_memos(
-        cls, session: AsyncSession, couple_id: int, page: int = 1, page_size: int = 20
+        cls, session: AsyncSession, couple_id: UUID, page: int = 1, page_size: int = 20
     ) -> Tuple[List[MemoOut], int]:
         """获取备忘录列表 (分页)"""
         offset = (page - 1) * page_size
@@ -321,7 +329,7 @@ class UserManualService:
 
     @classmethod
     async def get_or_create_manual(
-        cls, session: AsyncSession, user_id: int, couple_id: int
+        cls, session: AsyncSession, user_id: UUID, couple_id: UUID
     ) -> UserManual:
         """获取或创建用户说明书"""
         stmt = select(UserManual).where(UserManual.uid == user_id)
@@ -336,7 +344,7 @@ class UserManualService:
 
     @classmethod
     async def update_manual(
-        cls, session: AsyncSession, user_id: int, data: UserManualUpdate
+        cls, session: AsyncSession, user_id: UUID, data: UserManualUpdate
     ) -> UserManual:
         """更新用户说明书"""
         stmt = select(UserManual).where(UserManual.uid == user_id)
@@ -360,7 +368,7 @@ class UserManualService:
 
     @classmethod
     async def get_couple_manuals(
-        cls, session: AsyncSession, user_id: int, couple_id: int
+        cls, session: AsyncSession, user_id: UUID, couple_id: UUID
     ) -> CoupleManualsOut:
         """获取情侣双方的说明书"""
         couple = await CoupleService.get_couple_by_id(session, couple_id)
@@ -391,7 +399,7 @@ class RouletteService:
 
     @classmethod
     async def create_option(
-        cls, session: AsyncSession, couple_id: int, data: RouletteOptionCreate
+        cls, session: AsyncSession, couple_id: UUID, data: RouletteOptionCreate
     ) -> RouletteOption:
         """创建转盘选项"""
         option = RouletteOption(
@@ -408,7 +416,7 @@ class RouletteService:
 
     @classmethod
     async def list_options(
-        cls, session: AsyncSession, couple_id: int, category: Optional[str] = None
+        cls, session: AsyncSession, couple_id: UUID, category: Optional[str] = None
     ) -> List[RouletteOption]:
         """获取转盘选项列表"""
         stmt = select(RouletteOption).where(
@@ -422,7 +430,7 @@ class RouletteService:
 
     @classmethod
     async def update_option(
-        cls, session: AsyncSession, couple_id: int, option_id: int, data: RouletteOptionUpdate
+        cls, session: AsyncSession, couple_id: UUID, option_id: UUID, data: RouletteOptionUpdate
     ) -> Optional[RouletteOption]:
         """更新转盘选项"""
         stmt = select(RouletteOption).where(
@@ -448,7 +456,7 @@ class RouletteService:
         return option
 
     @classmethod
-    async def delete_option(cls, session: AsyncSession, couple_id: int, option_id: int) -> bool:
+    async def delete_option(cls, session: AsyncSession, couple_id: UUID, option_id: UUID) -> bool:
         """删除转盘选项"""
         stmt = select(RouletteOption).where(
             RouletteOption.id == option_id,
@@ -464,7 +472,7 @@ class RouletteService:
 
     @classmethod
     async def spin(
-        cls, session: AsyncSession, couple_id: int, category: Optional[str] = None
+        cls, session: AsyncSession, couple_id: UUID, category: Optional[str] = None
     ) -> Tuple[RouletteOption, List[RouletteOption]]:
         """转盘抽奖"""
         options = await cls.list_options(session, couple_id, category)
@@ -482,7 +490,7 @@ class WishlistService:
 
     @classmethod
     async def create_item(
-        cls, session: AsyncSession, couple_id: int, user_id: int, data: WishlistItemCreate
+        cls, session: AsyncSession, couple_id: UUID, user_id: UUID, data: WishlistItemCreate
     ) -> WishlistItem:
         """创建心愿"""
         item = WishlistItem(
@@ -501,7 +509,7 @@ class WishlistService:
 
     @classmethod
     async def list_items(
-        cls, session: AsyncSession, couple_id: int, user_id: int
+        cls, session: AsyncSession, couple_id: UUID, user_id: UUID
     ) -> List[WishlistItem]:
         """获取心愿单列表"""
         stmt = select(WishlistItem).where(
@@ -513,8 +521,8 @@ class WishlistService:
 
     @classmethod
     async def update_item(
-        cls, session: AsyncSession, couple_id: int, item_id: int,
-        user_id: int, data: WishlistItemUpdate
+        cls, session: AsyncSession, couple_id: UUID, item_id: UUID,
+        user_id: UUID, data: WishlistItemUpdate
     ) -> Optional[WishlistItem]:
         """更新心愿 (只有创建者可以更新)"""
         stmt = select(WishlistItem).where(
@@ -542,7 +550,7 @@ class WishlistService:
 
     @classmethod
     async def delete_item(
-        cls, session: AsyncSession, couple_id: int, item_id: int, user_id: int
+        cls, session: AsyncSession, couple_id: UUID, item_id: UUID, user_id: UUID
     ) -> bool:
         """删除心愿 (只有创建者可以删除)"""
         stmt = select(WishlistItem).where(
@@ -560,7 +568,7 @@ class WishlistService:
 
     @classmethod
     async def claim_item(
-        cls, session: AsyncSession, couple_id: int, item_id: int, user_id: int
+        cls, session: AsyncSession, couple_id: UUID, item_id: UUID, user_id: UUID
     ) -> WishlistItem:
         """认领心愿 (只有非创建者可以认领)"""
         stmt = select(WishlistItem).where(
@@ -587,7 +595,7 @@ class WishlistService:
 
     @classmethod
     async def fulfill_item(
-        cls, session: AsyncSession, couple_id: int, item_id: int, user_id: int
+        cls, session: AsyncSession, couple_id: UUID, item_id: UUID, user_id: UUID
     ) -> WishlistItem:
         """标记心愿已实现 (只有认领者可以操作)"""
         stmt = select(WishlistItem).where(
@@ -614,7 +622,7 @@ class AnniversaryService:
 
     @classmethod
     async def create_anniversary(
-        cls, session: AsyncSession, couple_id: int, data: AnniversaryCreate
+        cls, session: AsyncSession, couple_id: UUID, data: AnniversaryCreate
     ) -> Anniversary:
         """创建纪念日"""
         anniversary = Anniversary(
@@ -632,7 +640,7 @@ class AnniversaryService:
 
     @classmethod
     async def list_anniversaries(
-        cls, session: AsyncSession, couple_id: int
+        cls, session: AsyncSession, couple_id: UUID
     ) -> List[Anniversary]:
         """获取纪念日列表"""
         stmt = select(Anniversary).where(
@@ -644,7 +652,7 @@ class AnniversaryService:
 
     @classmethod
     async def update_anniversary(
-        cls, session: AsyncSession, couple_id: int, anniversary_id: int, data: AnniversaryUpdate
+        cls, session: AsyncSession, couple_id: UUID, anniversary_id: UUID, data: AnniversaryUpdate
     ) -> Optional[Anniversary]:
         """更新纪念日"""
         stmt = select(Anniversary).where(
@@ -673,7 +681,7 @@ class AnniversaryService:
 
     @classmethod
     async def delete_anniversary(
-        cls, session: AsyncSession, couple_id: int, anniversary_id: int
+        cls, session: AsyncSession, couple_id: UUID, anniversary_id: UUID
     ) -> bool:
         """删除纪念日"""
         stmt = select(Anniversary).where(
@@ -745,7 +753,7 @@ class AnniversaryService:
 
     @classmethod
     async def get_upcoming_anniversaries(
-        cls, session: AsyncSession, couple_id: int, limit: int = 5
+        cls, session: AsyncSession, couple_id: UUID, limit: int = 5
     ) -> List[dict]:
         """获取即将到来的纪念日 (带倒计时)"""
         anniversaries = await cls.list_anniversaries(session, couple_id)
@@ -772,7 +780,7 @@ class CoupleStateService:
 
     @classmethod
     async def get_or_create_state(
-        cls, session: AsyncSession, couple_id: int, user1_id: int, user2_id: Optional[int]
+        cls, session: AsyncSession, couple_id: UUID, user1_id: UUID, user2_id: Optional[UUID]
     ) -> CoupleState:
         """获取或创建情侣状态"""
         stmt = select(CoupleState).where(CoupleState.couple_id == couple_id)
@@ -790,14 +798,14 @@ class CoupleStateService:
         return state
 
     @classmethod
-    async def get_state(cls, session: AsyncSession, couple_id: int) -> Optional[CoupleState]:
+    async def get_state(cls, session: AsyncSession, couple_id: UUID) -> Optional[CoupleState]:
         """获取情侣状态"""
         stmt = select(CoupleState).where(CoupleState.couple_id == couple_id)
         return (await session.execute(stmt)).scalars().first()
 
     @classmethod
     async def update_user_state(
-        cls, session: AsyncSession, couple_id: int, user_id: int, data: CoupleStateUpdate
+        cls, session: AsyncSession, couple_id: UUID, user_id: UUID, data: CoupleStateUpdate
     ) -> CoupleState:
         """更新用户状态 (心情、留言、白旗)"""
         state = await cls.get_state(session, couple_id)
@@ -829,7 +837,7 @@ class CoupleStateService:
 
     @classmethod
     async def update_fridge_note(
-        cls, session: AsyncSession, couple_id: int, user_id: int, data: FridgeNoteUpdate
+        cls, session: AsyncSession, couple_id: UUID, user_id: UUID, data: FridgeNoteUpdate
     ) -> CoupleState:
         """更新冰箱贴"""
         state = await cls.get_state(session, couple_id)
@@ -845,7 +853,7 @@ class CoupleStateService:
         return state
 
     @classmethod
-    async def check_white_flag(cls, session: AsyncSession, couple_id: int, user_id: int) -> dict:
+    async def check_white_flag(cls, session: AsyncSession, couple_id: UUID, user_id: UUID) -> dict:
         """检查对方是否举了白旗 (用于前端弹动画)"""
         state = await cls.get_state(session, couple_id)
         if not state:

@@ -211,6 +211,20 @@ class RegionPriceLogOut(BaseModel):
         from_attributes = True
 
 
+class UserMatchHouseOut(BaseModel):
+    """用户匹配房源输出"""
+    id: UUID
+    house_id: UUID
+    match_score: float
+    match_reason: str
+    is_read: bool
+    matched_at: datetime
+    house: HouseOut
+
+    class Config:
+        from_attributes = True
+
+
 # ==================== 统计 Schemas ====================
 class HouseStatistics(BaseModel):
     """房源统计"""

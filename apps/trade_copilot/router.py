@@ -1,4 +1,5 @@
 from typing import List, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Path
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,7 +64,7 @@ async def list_positions(
 @router.put("/positions/{position_id}", response_model=ResponseModel[PositionOut])
 async def update_position(
     data: PositionUpdate,
-    position_id: int = Path(..., description="持仓ID"),
+    position_id: UUID = Path(..., description="持仓ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -76,7 +77,7 @@ async def update_position(
 
 @router.delete("/positions/{position_id}", response_model=ResponseModel[bool])
 async def delete_position(
-    position_id: int = Path(..., description="持仓ID"),
+    position_id: UUID = Path(..., description="持仓ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -132,7 +133,7 @@ async def list_watchlist(
 @router.put("/watchlist/{watchlist_id}", response_model=ResponseModel[WatchlistOut])
 async def update_watchlist(
     data: WatchlistUpdate,
-    watchlist_id: int = Path(..., description="观察记录ID"),
+    watchlist_id: UUID = Path(..., description="观察记录ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -144,7 +145,7 @@ async def update_watchlist(
 
 @router.delete("/watchlist/{watchlist_id}", response_model=ResponseModel[bool])
 async def delete_watchlist(
-    watchlist_id: int = Path(..., description="观察记录ID"),
+    watchlist_id: UUID = Path(..., description="观察记录ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -177,7 +178,7 @@ async def list_strategies(
 @router.put("/strategies/{strategy_id}", response_model=ResponseModel[TradeStrategyOut])
 async def update_strategy(
     data: TradeStrategyUpdate,
-    strategy_id: int = Path(..., description="策略ID"),
+    strategy_id: UUID = Path(..., description="策略ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -189,7 +190,7 @@ async def update_strategy(
 
 @router.delete("/strategies/{strategy_id}", response_model=ResponseModel[bool])
 async def delete_strategy(
-    strategy_id: int = Path(..., description="策略ID"),
+    strategy_id: UUID = Path(..., description="策略ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -226,7 +227,7 @@ async def list_journals(
 @router.put("/journals/{journal_id}", response_model=ResponseModel[TradingJournalOut])
 async def update_journal(
     data: TradingJournalUpdate,
-    journal_id: int = Path(..., description="日记ID"),
+    journal_id: UUID = Path(..., description="日记ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -262,7 +263,7 @@ async def update_user_capital_settings(
 @router.post("/positions/{position_id}/transactions", response_model=ResponseModel[TradeTransactionOut])
 async def add_trade_transaction(
     data: TradeTransactionCreate,
-    position_id: int = Path(..., description="日记ID"),
+    position_id: UUID = Path(..., description="持仓ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -277,7 +278,7 @@ async def add_trade_transaction(
 
 @router.get("/positions/{position_id}/transactions", response_model=ResponseModel[List[TradeTransactionOut]])
 async def list_trade_transactions(
-    position_id: int = Path(..., description="持仓ID"),
+    position_id: UUID = Path(..., description="持仓ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):

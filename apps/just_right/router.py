@@ -50,7 +50,7 @@ router = APIRouter(dependencies=[Depends(get_app_key)])
 
 # ==================== 辅助函数 ====================
 
-async def get_couple_or_raise(session: AsyncSession, user_id: int) -> Couple:
+async def get_couple_or_raise(session: AsyncSession, user_id: PyUUID) -> Couple:
     """获取当前用户的情侣关系，如果不存在则抛出异常"""
     couple = await CoupleService.get_couple_by_user(session, user_id)
     if not couple:
@@ -167,7 +167,7 @@ async def list_todos(
 @router.put("/todos/{todo_id}", response_model=ResponseModel[TodoItemOut])
 async def update_todo(
     data: TodoItemUpdate,
-    todo_id: int = Path(..., description="待办ID"),
+    todo_id: PyUUID = Path(..., description="待办ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -185,7 +185,7 @@ async def update_todo(
 
 @router.delete("/todos/{todo_id}", response_model=ResponseModel[bool])
 async def delete_todo(
-    todo_id: int = Path(..., description="待办ID"),
+    todo_id: PyUUID = Path(..., description="待办ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -305,7 +305,7 @@ async def list_roulette_options(
 @router.put("/roulette/options/{option_id}", response_model=ResponseModel[RouletteOptionOut])
 async def update_roulette_option(
     data: RouletteOptionUpdate,
-    option_id: int = Path(..., description="选项ID"),
+    option_id: PyUUID = Path(..., description="选项ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -319,7 +319,7 @@ async def update_roulette_option(
 
 @router.delete("/roulette/options/{option_id}", response_model=ResponseModel[bool])
 async def delete_roulette_option(
-    option_id: int = Path(..., description="选项ID"),
+    option_id: PyUUID = Path(..., description="选项ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -379,7 +379,7 @@ async def list_wishlist(
 @router.put("/wishlist/{item_id}", response_model=ResponseModel[WishlistItemOut])
 async def update_wishlist_item(
     data: WishlistItemUpdate,
-    item_id: int = Path(..., description="心愿ID"),
+    item_id: PyUUID = Path(..., description="心愿ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -393,7 +393,7 @@ async def update_wishlist_item(
 
 @router.delete("/wishlist/{item_id}", response_model=ResponseModel[bool])
 async def delete_wishlist_item(
-    item_id: int = Path(..., description="心愿ID"),
+    item_id: PyUUID = Path(..., description="心愿ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -407,7 +407,7 @@ async def delete_wishlist_item(
 
 @router.post("/wishlist/{item_id}/claim", response_model=ResponseModel[WishlistItemOut])
 async def claim_wishlist_item(
-    item_id: int = Path(..., description="心愿ID"),
+    item_id: PyUUID = Path(..., description="心愿ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -422,7 +422,7 @@ async def claim_wishlist_item(
 
 @router.post("/wishlist/{item_id}/fulfill", response_model=ResponseModel[WishlistItemOut])
 async def fulfill_wishlist_item(
-    item_id: int = Path(..., description="心愿ID"),
+    item_id: PyUUID = Path(..., description="心愿ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -496,7 +496,7 @@ async def get_upcoming_anniversaries(
 @router.put("/anniversaries/{anniversary_id}", response_model=ResponseModel[AnniversaryOut])
 async def update_anniversary(
     data: AnniversaryUpdate,
-    anniversary_id: int = Path(..., description="纪念日ID"),
+    anniversary_id: PyUUID = Path(..., description="纪念日ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -510,7 +510,7 @@ async def update_anniversary(
 
 @router.delete("/anniversaries/{anniversary_id}", response_model=ResponseModel[bool])
 async def delete_anniversary(
-    anniversary_id: int = Path(..., description="纪念日ID"),
+    anniversary_id: PyUUID = Path(..., description="纪念日ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):

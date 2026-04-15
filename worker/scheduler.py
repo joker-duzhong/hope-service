@@ -48,6 +48,11 @@ celery_app.conf.beat_schedule = {
         # 每天早上 6:30 更新区域均价日志
         "schedule": crontab(minute=30, hour=6),
     },
+    "nest_talk_crawl_and_match": {
+        "task": "apps.nest_talk.tasks.crawl_and_match_task",
+        # 每天上午 7:00 执行爬虫 (在捡漏检测之后)
+        "schedule": crontab(minute=0, hour=7),
+    },
     # ==================== 在线高考 (zaiwen_gaokao) 定时任务 ====================
     "gaokao_check_room_lifecycles": {
         "task": "apps.zaiwen_gaokao.tasks.check_room_lifecycles",

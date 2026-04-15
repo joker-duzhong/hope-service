@@ -163,6 +163,7 @@ class NestTalkRegionPriceLog(CoreModel):
     region = relationship("NestTalkRegion", backref="price_logs")
 
 
+
 class NestTalkDailyReport(CoreModel):
     """每日行情报表表"""
     __tablename__ = "nest_talk_daily_reports"
@@ -172,3 +173,33 @@ class NestTalkDailyReport(CoreModel):
     report_type: Mapped[str] = mapped_column(String(20), default="daily", comment="报表类型: daily(日报), weekly(周报)")
     image_url: Mapped[str] = mapped_column(String(500), comment="报表图片URL")
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="报表摘要")
+
+
+class NestTalkUserMatchHouse(CoreModel):
+    """用户匹配房源表 - 存储用户偏好匹配的房源"""
+    __tablename__ = "nest_talk_user_match_houses"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), index=True, comment="所属用户ID"
+    )
+    house_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("nest_talk_houses.id", ondelete="CASCADE"), index=True, comment="房源ID"
+    )
+    preference_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("nest_talk_user_preferences.id", ondelete="CASCADE"), index=True, comment="用户偏好ID"
+    )
+
+    # 匹配信息
+    match_score: Mapped[float] = mapped_column(Float, comment="匹配度(0-100)")
+    match_reason: Mapped[str] = mapped_column(String(500), comment="匹配原因")
+
+    # 状态
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True, comment="用户是否已查看")
+    is_notified: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否已推送通知")
+    notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="推送时间")
+
+    # 时效性
+    matched_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True, comment="匹配时间")
+
+    house = relationship("NestTalkHouse", backref="user_matches")
+    preference = relationship("NestTalkUserPreference", backref="user_matches")

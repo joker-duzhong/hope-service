@@ -4,6 +4,7 @@ Nest Talk Services - 语筑智能房产顾问
 import logging
 import json
 import uuid
+from uuid import UUID
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date, timedelta
 from decimal import Decimal
@@ -24,6 +25,7 @@ from apps.nest_talk.models import (
     NestTalkCommunity,
     NestTalkRegionPriceLog,
     NestTalkDailyReport,
+    NestTalkUserMatchHouse,
 )
 from apps.nest_talk.schemas import (
     HouseSearchRequest,
@@ -134,7 +136,7 @@ class HouseService:
     async def get_house_by_id(
         cls,
         session: AsyncSession,
-        house_id: int
+        house_id: UUID
     ) -> Optional[NestTalkHouse]:
         """获取房源详情"""
         stmt = select(NestTalkHouse).where(
@@ -261,7 +263,7 @@ class UserPreferenceService:
     async def create_preference(
         cls,
         session: AsyncSession,
-        user_id: int,
+        user_id: UUID,
         data: UserPreferenceCreate
     ) -> NestTalkUserPreference:
         """创建用户偏好"""
@@ -297,7 +299,7 @@ class UserPreferenceService:
     async def get_preference(
         cls,
         session: AsyncSession,
-        user_id: int
+        user_id: UUID
     ) -> Optional[NestTalkUserPreference]:
         """获取用户偏好"""
         stmt = select(NestTalkUserPreference).where(
@@ -311,7 +313,7 @@ class UserPreferenceService:
     async def update_preference(
         cls,
         session: AsyncSession,
-        user_id: int,
+        user_id: UUID,
         data: UserPreferenceUpdate
     ) -> Optional[NestTalkUserPreference]:
         """更新用户偏好"""
@@ -332,7 +334,7 @@ class UserPreferenceService:
     async def delete_preference(
         cls,
         session: AsyncSession,
-        user_id: int
+        user_id: UUID
     ) -> bool:
         """删除用户偏好（软删除）"""
         preference = await cls.get_preference(session, user_id)
@@ -392,6 +394,49 @@ class ChatService:
 """
 
     @classmethod
+    def _extract_json_from_ai_response(cls, text: str) -> dict:
+        """从 AI 回复中健壮地提取 JSON，兼容各种返回格式"""
+        import re
+
+        if not text or not text.strip():
+            raise ValueError("AI 返回为空")
+
+        text = text.strip()
+
+        # 1. 尝试直接解析（最理想的情况）
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # 2. 提取 markdown 代码块中的 JSON
+        code_block_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, re.DOTALL)
+        if code_block_match:
+            try:
+                return json.loads(code_block_match.group(1).strip())
+            except json.JSONDecodeError:
+                pass
+
+        # 3. 用大括号匹配提取第一个完整 JSON 对象
+        brace_match = re.search(r'\{', text)
+        if brace_match:
+            start = brace_match.start()
+            depth = 0
+            for i in range(start, len(text)):
+                if text[i] == '{':
+                    depth += 1
+                elif text[i] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start:i + 1]
+                        try:
+                            return json.loads(candidate)
+                        except json.JSONDecodeError:
+                            break
+
+        raise ValueError(f"无法从 AI 回复中提取 JSON: {text[:200]}")
+
+    @classmethod
     def _generate_session_id(cls) -> str:
         """生成会话ID"""
         return f"chat_{uuid.uuid4().hex[:16]}_{int(datetime.now().timestamp())}"
@@ -400,7 +445,7 @@ class ChatService:
     async def _get_or_create_session(
         cls,
         session: AsyncSession,
-        user_id: int,
+        user_id: UUID,
         session_id: Optional[str] = None
     ) -> NestTalkConversationSession:
         """获取或创建会话"""
@@ -433,7 +478,7 @@ class ChatService:
     async def _get_conversation_history(
         cls,
         session_db: AsyncSession,
-        session_pk: int
+        session_pk: UUID
     ) -> List[Dict[str, str]]:
         """获取全部对话历史，格式化成 OpenAI 风格。"""
         stmt = select(NestTalkConversationMessage).where(
@@ -453,11 +498,11 @@ class ChatService:
     async def _save_message(
         cls,
         session: AsyncSession,
-        session_pk: int,
+        session_pk: UUID,
         role: str,
         content: str,
         message_type: str = "text",
-        house_ids: Optional[List[int]] = None
+        house_ids: Optional[List[UUID]] = None
     ) -> NestTalkConversationMessage:
         """保存消息"""
         message = NestTalkConversationMessage(
@@ -476,7 +521,7 @@ class ChatService:
     async def process_chat(
         cls,
         db_session: AsyncSession,
-        user_id: int,
+        user_id: UUID,
         data: ChatRequest
     ) -> ChatResponse:
         """处理对话请求"""
@@ -526,15 +571,13 @@ class ChatService:
         full_context = [{"role": "system", "content": cls.NEST_TALK_SYSTEM_PROMPT}] + history
 
         try:
-            # 调用 AI 引擎处理用户意图并提取需求（使用 JSON 模式，如果 supported）
-            ai_response_text = await engine.generate_chat(
-                full_context,
-                response_format={"type": "json_object"}
-            )
-            ai_parsed = json.loads(ai_response_text)
+            # 调用 AI 引擎处理用户意图并提取需求
+            ai_response_text = await engine.generate_chat(full_context)
+            ai_parsed = cls._extract_json_from_ai_response(ai_response_text)
         except Exception as e:
             import traceback
             logger.error(f"AI 调用或解析失败: {str(e)}")
+            logger.error(f"AI 原始返回: {repr(ai_response_text) if 'ai_response_text' in dir() else 'N/A'}")
             logger.error(f"完整错误堆栈:\n{traceback.format_exc()}")
             # 容错处理：使用之前的简单提取逻辑或报错
             ai_parsed = {
@@ -581,12 +624,13 @@ class ChatService:
             rooms_min=current_requirements.get('rooms'),
             rooms_max=current_requirements.get('rooms'),
             preferred_regions=",".join(current_requirements.get('regions')) if current_requirements.get('regions') else None,
-            exclude_top_floor=current_requirements.get('exclude_top_floor'),
-            exclude_ground_floor=current_requirements.get('exclude_ground_floor'),
+            exclude_top_floor=current_requirements.get('exclude_top_floor', False),
+            exclude_ground_floor=current_requirements.get('exclude_ground_floor', False),
             floor_min=current_requirements.get('floor_min'),
             floor_max=current_requirements.get('floor_max'),
             preferred_orientations=",".join(current_requirements.get('orientations')) if current_requirements.get('orientations') else None,
-            bargain_enabled=True # 默认开启捡漏监听
+            bargain_enabled=True, # 默认开启捡漏监听
+            bargain_threshold=current_requirements.get('bargain_threshold', 0.9),
         )
         
         # 尝试更新现有偏好，若无则创建
@@ -644,7 +688,7 @@ class ChatService:
     async def clear_session(
         cls,
         db_session: AsyncSession,
-        user_id: int,
+        user_id: UUID,
         session_id: str
     ) -> bool:
         """清除会话"""
@@ -756,3 +800,141 @@ class RegionService:
 
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+
+class HouseMatchService:
+    """房源匹配服务"""
+
+    @staticmethod
+    async def match_house_to_preferences(
+        session: AsyncSession,
+        house: NestTalkHouse
+    ) -> List[tuple]:
+        """
+        将单个房源与所有活跃用户偏好匹配
+
+        Returns: [(preference, match_score), ...]
+        match_score: 0-100, 越高越匹配
+        """
+        # 查询所有 bargain_enabled=True 的偏好
+        stmt = select(NestTalkUserPreference).where(
+            NestTalkUserPreference.bargain_enabled == True,
+            NestTalkUserPreference.is_deleted == False
+        )
+        result = await session.execute(stmt)
+        preferences = result.scalars().all()
+
+        matches = []
+
+        for pref in preferences:
+            score = HouseMatchService._calculate_match_score(house, pref)
+            if score >= 60:  # 只返回匹配度 >= 60 的
+                matches.append((pref, score))
+
+        return matches
+
+    @staticmethod
+    def _calculate_match_score(house: NestTalkHouse, pref: NestTalkUserPreference) -> float:
+        """计算房源与偏好的匹配度 (0-100)"""
+        score = 0.0
+
+        # 1. 预算范围匹配 (20分)
+        if house.total_price:
+            if pref.budget_min and house.total_price < pref.budget_min:
+                pass  # 低于最低预算，不加分
+            elif pref.budget_max and house.total_price > pref.budget_max:
+                pass  # 高于最高预算，不加分
+            else:
+                score += 20  # 在预算范围内
+
+        # 2. 面积范围匹配 (20分)
+        if house.area:
+            if pref.area_min and house.area < pref.area_min:
+                pass
+            elif pref.area_max and house.area > pref.area_max:
+                pass
+            else:
+                score += 20
+
+        # 3. 居室数匹配 (15分)
+        if house.rooms:
+            if pref.rooms_min and house.rooms < pref.rooms_min:
+                pass
+            elif pref.rooms_max and house.rooms > pref.rooms_max:
+                pass
+            else:
+                score += 15
+
+        # 4. 区域匹配 (20分)
+        if pref.preferred_regions and house.region_name:
+            regions = [r.strip() for r in pref.preferred_regions.split(",")]
+            if house.region_name in regions:
+                score += 20
+
+        # 5. 楼层偏好匹配 (15分)
+        floor_match = True
+        if pref.exclude_top_floor and house.floor and house.total_floors:
+            if house.floor == house.total_floors:
+                floor_match = False
+        if pref.exclude_ground_floor and house.floor == 1:
+            floor_match = False
+        if pref.floor_min and house.floor and house.floor < pref.floor_min:
+            floor_match = False
+        if pref.floor_max and house.floor and house.floor > pref.floor_max:
+            floor_match = False
+
+        if floor_match:
+            score += 15
+
+        # 6. 朝向匹配 (10分)
+        if pref.preferred_orientations and house.orientation:
+            orientations = [o.strip() for o in pref.preferred_orientations.split(",")]
+            if house.orientation in orientations:
+                score += 10
+
+        return min(score, 100.0)
+
+    @staticmethod
+    async def save_matches(
+        session: AsyncSession,
+        house_id: uuid.UUID,
+        matches: List[tuple]
+    ) -> int:
+        """
+        保存匹配结果到 NestTalkUserMatchHouse
+
+        Args:
+            house_id: 房源ID
+            matches: [(preference, score), ...] 列表
+
+        Returns:
+            新增的记录数
+        """
+        count = 0
+
+        for pref, score in matches:
+            # 检查是否已存在
+            stmt = select(NestTalkUserMatchHouse).where(
+                NestTalkUserMatchHouse.user_id == pref.user_id,
+                NestTalkUserMatchHouse.house_id == house_id,
+                NestTalkUserMatchHouse.preference_id == pref.id
+            )
+            result = await session.execute(stmt)
+            existing = result.scalar_one_or_none()
+
+            if not existing:
+                match = NestTalkUserMatchHouse(
+                    user_id=pref.user_id,
+                    house_id=house_id,
+                    preference_id=pref.id,
+                    match_score=score,
+                    match_reason="符合您的购房需求",
+                    is_read=False,
+                    is_notified=False,
+                    matched_at=datetime.utcnow()
+                )
+                session.add(match)
+                count += 1
+
+        return count
+

@@ -2,6 +2,7 @@
 Nest Talk Router - 语筑智能房产顾问
 """
 from typing import List, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Path
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +29,7 @@ from apps.nest_talk.schemas import (
     RegionOut,
     HouseStatistics,
     PriceDistribution,
+    UserMatchHouseOut,
 )
 from apps.nest_talk.services import (
     HouseService,
@@ -120,7 +122,7 @@ async def search_houses(
 
 @router.get("/houses/{house_id}", response_model=ResponseModel[HouseDetailOut])
 async def get_house_detail(
-    house_id: int = Path(..., description="房源ID"),
+    house_id: UUID = Path(..., description="房源ID"),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -370,3 +372,42 @@ async def get_price_distribution(
     """
     distribution = await HouseService.get_price_distribution(db, region)
     return ResponseModel(data=distribution)
+
+
+@router.get("/user/matches", response_model=ResponseModel[List[UserMatchHouseOut]])
+async def get_user_matches(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(10, ge=1, le=50, description="每页数量"),
+    is_read: Optional[bool] = Query(None, description="筛选已读/未读（不传表示全部）")
+):
+    """
+    获取用户的匹配房源列表
+
+    返回根据用户偏好匹配的房源列表，按匹配时间倒序排列。
+    调用此接口会自动标记返回的房源为已读。
+    """
+    from sqlalchemy import select, desc
+    from apps.nest_talk.models import NestTalkUserMatchHouse
+
+    stmt = select(NestTalkUserMatchHouse).where(
+        NestTalkUserMatchHouse.user_id == current_user.id
+    )
+
+    if is_read is not None:
+        stmt = stmt.where(NestTalkUserMatchHouse.is_read == is_read)
+
+    stmt = stmt.order_by(desc(NestTalkUserMatchHouse.matched_at))
+    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+
+    result = await db.execute(stmt)
+    matches = result.scalars().all()
+
+    # 标记为已读
+    for match in matches:
+        match.is_read = True
+    await db.commit()
+
+    return ResponseModel(data=[UserMatchHouseOut.model_validate(m) for m in matches])
+

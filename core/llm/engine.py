@@ -89,6 +89,8 @@ async def generate_chat(
     # 解析响应
     if "choices" in result and len(result["choices"]) > 0:
         content = result["choices"][0]["message"]["content"]
+        if not content:
+            raise Exception(f"LLM 返回空内容, 完整响应: {result}")
         logger.info(f"[LLM] 成功获取回复，长度: {len(content)}")
 
         # 处理 markdown 代码块包装的 JSON（兼容两种情况）
