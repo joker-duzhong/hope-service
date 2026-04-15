@@ -25,21 +25,18 @@ REGISTERED_APPS: Dict[str, AppConfig] = {
         created_at="2026-04-02",
         description="系统超级管理员与运营人员入口",
     ),
-    # 具体业务APP 1
     "hope_nest_talk": AppConfig(
         key="hope_nest_talk",
         name="Hope 语筑APP",
         created_at="2026-04-02",
         description="语筑APP，提供房源监听、房源分析、AI智能对话等功能",
     ),
-    # 具体业务APP 2
     "hope_trade_copilot": AppConfig(
         key="hope_trade_copilot",
         name="Hope Trade 产线APP",
         created_at="2026-04-02",
         description="交易及分析助手应用",
     ),
-    # 具体业务APP 3
     "hope_just_right": AppConfig(
         key="hope_just_right",
         name="Hope 恰好APP",
@@ -51,5 +48,11 @@ REGISTERED_APPS: Dict[str, AppConfig] = {
         name="Hope 时间图书馆APP",
         created_at="2026-04-09",
         description="Travel Through Time. Read the World. 时间图书馆，提供历史事件查询、名人传记、文化百科等功能",
+    ),
+    "hope_sisyphus": AppConfig(
+        key="hope_sisyphus",
+        name="Hope 西西弗斯认知引擎",
+        created_at="2026-04-15",
+        description="基于合意困难与渐隐式支架的生成式学习引擎",
     ),
 }

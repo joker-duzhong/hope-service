@@ -85,6 +85,10 @@ def create_app() -> FastAPI:
     from apps.zaiwen_gaokao.router import router as gaokao_router
     app.include_router(gaokao_router, prefix=f"{settings.API_V1_PREFIX}/zaiwen-gaokao", tags=["在线高考"])
 
+    # Apps: Project Sisyphus (西西弗斯认知引擎)
+    from apps.project_sisyphus.router import router as sisyphus_router
+    app.include_router(sisyphus_router, prefix=f"{settings.API_V1_PREFIX}/sisyphus", tags=["西西弗斯认知引擎"])
+
     # 健康检查
     @app.get("/health", tags=["健康检查"])
     async def health_check():

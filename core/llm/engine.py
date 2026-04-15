@@ -47,6 +47,15 @@ async def generate_chat(
     # 注入基础合规 Prompt
     full_messages = get_base_messages() + messages
 
+    # 合并连续的 system 消息为一条（部分 LLM API 不支持多条 system 消息）
+    merged = []
+    for msg in full_messages:
+        if msg["role"] == "system" and merged and merged[-1]["role"] == "system":
+            merged[-1]["content"] += "\n\n" + msg["content"]
+        else:
+            merged.append(msg.copy())
+    full_messages = merged
+
     # 构建请求体
     payload = {
         "model": model or default_model,
@@ -135,6 +144,15 @@ async def generate_stream_chat(
 
     # 注入基础合规 Prompt
     full_messages = get_base_messages() + messages
+
+    # 合并连续的 system 消息为一条（部分 LLM API 不支持多条 system 消息）
+    merged = []
+    for msg in full_messages:
+        if msg["role"] == "system" and merged and merged[-1]["role"] == "system":
+            merged[-1]["content"] += "\n\n" + msg["content"]
+        else:
+            merged.append(msg.copy())
+    full_messages = merged
 
     # 构建请求体
     payload = {
