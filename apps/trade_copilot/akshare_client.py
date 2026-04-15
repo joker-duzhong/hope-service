@@ -38,9 +38,17 @@ def _http_get(url: str, params: dict = None, timeout: int = 15) -> requests.Resp
 #   深圳: 0/3 开头 → 前缀 0
 # ---------------------------------------------------------------------------
 def _secid(symbol: str) -> str:
+    """东方财富 secid: 常规股票 6/9→上海(1), 0/3→深圳(0)"""
     if symbol.startswith(('6', '9')):
         return f"1.{symbol}"
     return f"0.{symbol}"
+
+
+def _index_secid(symbol: str) -> str:
+    """指数 secid: 399xxx→深圳(0), 其余(如 000001 上证)→上海(1)"""
+    if symbol.startswith('399'):
+        return f"0.{symbol}"
+    return f"1.{symbol}"
 
 
 def _sina_prefix(symbol: str) -> str:
@@ -239,11 +247,11 @@ class AkShareClient:
         默认上证指数 000001
         """
         params = {
-            "secid": _secid(symbol),
+            "secid": _index_secid(symbol),
             "fields1": "f1,f2,f3,f4,f5,f6",
             "fields2": "f51,f52,f53,f54,f55,f56",
-            "klt": "101",       # 日K
-            "fqt": "1",         # 前复权
+            "klt": "101",
+            "fqt": "1",
             "end": "20500101",
             "lmt": str(max(days, 30)),
         }
