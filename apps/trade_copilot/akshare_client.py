@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 from typing import List, Dict, Any, Optional
@@ -14,7 +15,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# 通用 HTTP 请求工具：绕过系统代理 + transport 级重试
+# 通用 HTTP 请求工具
 # ---------------------------------------------------------------------------
 _retry_adapter = HTTPAdapter(
     max_retries=Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
@@ -32,34 +33,15 @@ def _http_get(url: str, params: dict = None, timeout: int = 15) -> requests.Resp
         return resp
 
 
-# ---------------------------------------------------------------------------
-# secid 工具：东方财富 API 需要 "市场前缀.代码" 格式
-#   上海: 6/9 开头 → 前缀 1
-#   深圳: 0/3 开头 → 前缀 0
-# ---------------------------------------------------------------------------
-def _secid(symbol: str) -> str:
-    """东方财富 secid: 常规股票 6/9→上海(1), 0/3→深圳(0)"""
-    if symbol.startswith(('6', '9')):
-        return f"1.{symbol}"
-    return f"0.{symbol}"
-
-
-def _index_secid(symbol: str) -> str:
-    """指数 secid: 399xxx→深圳(0), 其余(如 000001 上证)→上海(1)"""
-    if symbol.startswith('399'):
-        return f"0.{symbol}"
-    return f"1.{symbol}"
-
-
 def _sina_prefix(symbol: str) -> str:
-    """新浪行情前缀: sh / sz"""
+    """新浪行情代码: 6/9开头→sh, 其余→sz"""
     if symbol.startswith(('6', '9')):
         return f"sh{symbol}"
     return f"sz{symbol}"
 
 
 # ---------------------------------------------------------------------------
-# Monkey-patch akshare 请求层（仅用于仍依赖 akshare 的接口，如交易日历）
+# Monkey-patch akshare 请求层（用于交易日历等仍走 akshare 的接口）
 # ---------------------------------------------------------------------------
 import random, time
 from typing import Tuple
@@ -101,7 +83,6 @@ logger.info("已为 akshare 请求层注入 transport 级重试机制")
 # ==================== Pydantic 响应模型 ====================
 
 class StockSpot(BaseModel):
-    """个股实时行情"""
     symbol: str
     name: str
     latest_price: float
@@ -110,7 +91,6 @@ class StockSpot(BaseModel):
 
 
 class IndexKLine(BaseModel):
-    """指数历史日 K 线"""
     date: str
     close: float
     volume: float
@@ -119,7 +99,6 @@ class IndexKLine(BaseModel):
 
 
 class StockKLine(BaseModel):
-    """个股历史日 K 线"""
     date: str
     close: float
     ma5: float
@@ -128,7 +107,6 @@ class StockKLine(BaseModel):
 
 
 class StockBasicInfo(BaseModel):
-    """A股股票基本信息"""
     symbol: str
     name: str
     industry: Optional[str] = None
@@ -141,25 +119,21 @@ class StockBasicInfo(BaseModel):
 
 # ==================== 数据客户端 ====================
 
-# 东方财富 push2his K线 API
-PUSH2HIS_KLINE = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
-# 东方财富 push2his 板块列表 API
-PUSH2HIS_CLIST = "http://push2his.eastmoney.com/api/qt/clist/get"
-# 新浪实时行情 API
+SINA_KLINE = "http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData"
 SINA_HQ_URL = "http://hq.sinajs.cn/list"
 
 
 class AkShareClient:
-    """A股数据异步客户端 — 数据源: push2his(东方财富历史) + 新浪(实时) + akshare(交易日历等)"""
+    """A股数据异步客户端 — 全部走新浪数据源 (Docker 兼容)"""
 
     _trade_dates_cache = None
     _trade_dates_last_update: Optional[str] = None
 
-    # ---------- 交易日历 (akshare / Sina，可用) ----------
+    # ==================== 交易日历 ====================
 
     @classmethod
     async def is_trading_date(cls, target_date: Optional[datetime] = None) -> bool:
-        """检查指定日期是否为真实交易日，利用缓存避免频繁请求"""
+        """检查指定日期是否为真实交易日"""
         if not target_date:
             target_date = datetime.now()
 
@@ -177,7 +151,7 @@ class AkShareClient:
 
         return date_str in cls._trade_dates_cache
 
-    # ---------- 实时行情 (新浪) ----------
+    # ==================== 实时行情 (新浪) ====================
 
     @classmethod
     @retry(
@@ -187,13 +161,12 @@ class AkShareClient:
         reraise=True
     )
     async def get_a_shares_spot(cls, symbol_list: List[str]) -> List[StockSpot]:
-        """通过新浪财经获取 A 股指定股票实时盘口快照"""
+        """通过新浪获取实时行情"""
         if not symbol_list:
             return []
 
         logger.info(f"正在获取实时行情(新浪)，标的: {symbol_list}")
 
-        # 新浪行情接口: hq.sinajs.cn/list=sh600519,sz000001,...
         sina_codes = ",".join(_sina_prefix(s) for s in symbol_list)
         loop = asyncio.get_running_loop()
         resp_text = await loop.run_in_executor(
@@ -202,15 +175,14 @@ class AkShareClient:
 
         results = []
         now = datetime.now()
-        # 解析: var hq_str_sh600519="字段0,字段1,...";
         for line in resp_text.strip().split("\n"):
             line = line.strip()
             if not line or '=""' in line:
                 continue
-            match = re.match(r'var hq_str_(s[hz])(\d+)="(.+)"', line)
+            match = re.match(r'var hq_str_s([hz])(\d+)="(.+)"', line)
             if not match:
                 continue
-            prefix, code, fields_str = match.groups()
+            _, code, fields_str = match.groups()
             fields = fields_str.split(",")
             if len(fields) < 32:
                 continue
@@ -223,16 +195,13 @@ class AkShareClient:
                 pct_change = round((current_price - yesterday_close) / yesterday_close * 100, 2)
 
             results.append(StockSpot(
-                symbol=code,
-                name=name,
-                latest_price=current_price,
-                pct_change=pct_change,
+                symbol=code, name=name,
+                latest_price=current_price, pct_change=pct_change,
                 update_time=now,
             ))
-
         return results
 
-    # ---------- 指数 K 线 (push2his) ----------
+    # ==================== K线数据 (新浪) ====================
 
     @classmethod
     @retry(
@@ -243,43 +212,34 @@ class AkShareClient:
     )
     async def get_index_kline(cls, symbol: str = "000001", days: int = 30) -> Optional[IndexKLine]:
         """
-        通过东方财富 push2his 获取指数日 K 线并计算 MA20
+        通过新浪获取指数日 K 线并计算 MA20
         默认上证指数 000001
         """
         params = {
-            "secid": _index_secid(symbol),
-            "fields1": "f1,f2,f3,f4,f5,f6",
-            "fields2": "f51,f52,f53,f54,f55,f56",
-            "klt": "101",
-            "fqt": "1",
-            "end": "20500101",
-            "lmt": str(max(days, 30)),
+            "symbol": _sina_prefix(symbol),
+            "scale": "240",   # 240分钟=日线
+            "ma": "no",
+            "datalen": str(max(days, 30)),
         }
         loop = asyncio.get_running_loop()
-        data = await loop.run_in_executor(
-            None, lambda: _http_get(PUSH2HIS_KLINE, params=params).json()
+        raw = await loop.run_in_executor(
+            None, lambda: _http_get(SINA_KLINE, params=params).json()
         )
 
-        klines = data.get("data", {}).get("klines", [])
-        if len(klines) < 20:
+        if not raw or len(raw) < 20:
             return None
 
-        # 解析最近 20 根K线的收盘价算 MA20
-        # kline 格式: "日期,开盘,收盘,最高,最低,成交量"
-        closes = [float(k.split(",")[2]) for k in klines]
+        closes = [float(item["close"]) for item in raw]
         ma20 = sum(closes[-20:]) / 20
-        last = klines[-1].split(",")
-        close_price = float(last[2])
+        last = raw[-1]
 
         return IndexKLine(
-            date=last[0],
-            close=close_price,
-            volume=float(last[5]),
+            date=last["day"],
+            close=float(last["close"]),
+            volume=float(last["volume"]),
             ma20=round(ma20, 4),
-            below_ma20=close_price < ma20 if ma20 > 0 else False,
+            below_ma20=float(last["close"]) < ma20 if ma20 > 0 else False,
         )
-
-    # ---------- 个股 K 线 (push2his) ----------
 
     @classmethod
     @retry(
@@ -289,42 +249,36 @@ class AkShareClient:
         reraise=True
     )
     async def get_stock_kline(cls, symbol: str, days: int = 60) -> Optional[StockKLine]:
-        """
-        通过东方财富 push2his 获取个股日 K 线 (前复权)，计算 MA5/MA10/MA20
-        """
+        """通过新浪获取个股日 K 线，计算 MA5/MA10/MA20"""
         params = {
-            "secid": _secid(symbol),
-            "fields1": "f1,f2,f3,f4,f5,f6",
-            "fields2": "f51,f52,f53,f54,f55,f56",
-            "klt": "101",
-            "fqt": "1",
-            "end": "20500101",
-            "lmt": str(max(days, 60)),
+            "symbol": _sina_prefix(symbol),
+            "scale": "240",
+            "ma": "no",
+            "datalen": str(max(days, 60)),
         }
         loop = asyncio.get_running_loop()
-        data = await loop.run_in_executor(
-            None, lambda: _http_get(PUSH2HIS_KLINE, params=params).json()
+        raw = await loop.run_in_executor(
+            None, lambda: _http_get(SINA_KLINE, params=params).json()
         )
 
-        klines = data.get("data", {}).get("klines", [])
-        if len(klines) < 5:
+        if not raw or len(raw) < 5:
             return None
 
-        closes = [float(k.split(",")[2]) for k in klines]
+        closes = [float(item["close"]) for item in raw]
         ma5 = sum(closes[-5:]) / 5
         ma10 = sum(closes[-10:]) / 10 if len(closes) >= 10 else 0.0
         ma20 = sum(closes[-20:]) / 20 if len(closes) >= 20 else 0.0
-        last = klines[-1].split(",")
+        last = raw[-1]
 
         return StockKLine(
-            date=last[0],
-            close=float(last[2]),
+            date=last["day"],
+            close=float(last["close"]),
             ma5=round(ma5, 4),
             ma10=round(ma10, 4),
             ma20=round(ma20, 4),
         )
 
-    # ---------- ST 股票列表 (push2his clist) ----------
+    # ==================== ST 股票列表 ====================
 
     @classmethod
     @retry(
@@ -335,35 +289,22 @@ class AkShareClient:
     )
     async def get_all_st_stocks(cls) -> List[str]:
         """
-        通过东方财富 push2his 获取 ST 股票名单
+        获取 ST 股票名单 — 从全 A 股列表中筛选名称含 ST 的股票
         """
-        params = {
-            "pn": "1",
-            "pz": "500",
-            "po": "1",
-            "np": "1",
-            "fltt": "2",
-            "invt": "2",
-            "fid": "f3",
-            "fs": "b:BK1153",   # ST 板块
-            "fields": "f12,f14",
-        }
         loop = asyncio.get_running_loop()
         try:
-            data = await loop.run_in_executor(
-                None, lambda: _http_get(PUSH2HIS_CLIST, params=params).json()
-            )
-            items = data.get("data", {}).get("diff", {})
-            if isinstance(items, dict):
-                return [v["f12"] for v in items.values() if "f12" in v]
-            elif isinstance(items, list):
-                return [v["f12"] for v in items if "f12" in v]
-            return []
+            df = await loop.run_in_executor(None, ak.stock_info_a_code_name)
+            if df.empty:
+                return []
+            st_df = df[df['name'].str.contains('ST', case=False, na=False)]
+            codes = st_df['code'].astype(str).tolist()
+            logger.info(f"从股票列表中筛选到 {len(codes)} 只 ST 股票")
+            return codes
         except Exception as e:
             logger.error(f"获取 ST 股票列表失败: {e}")
             return []
 
-    # ---------- 全市场温度计 (push2his clist) ----------
+    # ==================== 全市场温度计 ====================
 
     @classmethod
     @retry(
@@ -373,42 +314,59 @@ class AkShareClient:
         reraise=True
     )
     async def get_market_thermometer_data(cls) -> Dict[str, Any]:
-        """通过 push2his 获取全市场个股数据和板块数据"""
-        # 个股数据 (取全部 A 股涨跌幅)
-        spot_params = {
-            "pn": "1",
-            "pz": "6000",
-            "po": "1",
-            "np": "1",
-            "fltt": "2",
-            "invt": "2",
-            "fid": "f3",
-            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
-            "fields": "f2,f3,f12,f14",
-        }
-        # 板块数据
-        board_params = {
-            "pn": "1",
-            "pz": "100",
-            "po": "1",
-            "np": "1",
-            "fltt": "2",
-            "invt": "2",
-            "fid": "f3",
-            "fs": "m:90+t:3",
-            "fields": "f2,f3,f12,f14",
-        }
+        """
+        获取全市场温度计数据 — 批量拉取新浪实时行情
+        返回 {"spot": [{symbol, name, pct_change}, ...], "board": []}
+        新浪单次最多约 800 只，分批拉取
+        """
         loop = asyncio.get_running_loop()
-        spot_data = await loop.run_in_executor(
-            None, lambda: _http_get(PUSH2HIS_CLIST, params=spot_params).json()
-        )
-        board_data = await loop.run_in_executor(
-            None, lambda: _http_get(PUSH2HIS_CLIST, params=board_params).json()
-        )
-        return {"spot": spot_data.get("data", {}).get("diff", {}),
-                "board": board_data.get("data", {}).get("diff", {})}
 
-    # ---------- 全 A 股列表 (akshare，非 push2 接口) ----------
+        # 1. 获取全部股票列表
+        df = await loop.run_in_executor(None, ak.stock_info_a_code_name)
+        if df.empty:
+            raise ValueError("获取股票列表为空")
+
+        all_codes = [(str(row['code']), _sina_prefix(str(row['code']))) for _, row in df.iterrows()]
+
+        # 2. 分批请求新浪行情 (每批 800)
+        batch_size = 800
+        all_items = []
+        for i in range(0, len(all_codes), batch_size):
+            batch = all_codes[i:i + batch_size]
+            sina_codes = ",".join(c[1] for c in batch)
+            try:
+                resp_text = await loop.run_in_executor(
+                    None, lambda sc=sina_codes: _http_get(SINA_HQ_URL, params={"list": sc}).text
+                )
+                for line in resp_text.strip().split("\n"):
+                    line = line.strip()
+                    if not line or '=""' in line:
+                        continue
+                    match = re.match(r'var hq_str_s([hz])(\d+)="(.+)"', line)
+                    if not match:
+                        continue
+                    _, code, fields_str = match.groups()
+                    fields = fields_str.split(",")
+                    if len(fields) < 10:
+                        continue
+                    try:
+                        yesterday_close = float(fields[2] or 0)
+                        current_price = float(fields[3] or 0)
+                        pct = round((current_price - yesterday_close) / yesterday_close * 100, 2) if yesterday_close > 0 else 0.0
+                        all_items.append({
+                            "f12": code, "f14": fields[0],
+                            "f2": current_price, "f3": pct,
+                        })
+                    except (ValueError, TypeError):
+                        continue
+            except Exception as e:
+                logger.warning(f"批量获取行情第 {i // batch_size + 1} 批失败: {e}")
+                continue
+
+        logger.info(f"市场温度计: 共获取到 {len(all_items)} 只股票行情")
+        return {"spot": all_items, "board": []}
+
+    # ==================== 全 A 股列表 ====================
 
     @classmethod
     @retry(
@@ -438,7 +396,7 @@ class AkShareClient:
             logger.error(f"获取A股股票基本信息失败: {e}")
             raise
 
-    # ---------- 个股详情 (akshare，非 push2 接口) ----------
+    # ==================== 个股详情 ====================
 
     @classmethod
     @retry(
@@ -448,28 +406,30 @@ class AkShareClient:
         reraise=True
     )
     async def get_stock_detail_info(cls, symbol: str) -> Optional[StockBasicInfo]:
-        """获取单只股票的详细信息"""
+        """获取单只股票详细信息 (通过新浪实时行情)"""
         loop = asyncio.get_running_loop()
         try:
-            df = await loop.run_in_executor(
-                None, lambda: ak.stock_individual_info_em(symbol=symbol)
+            sina_code = _sina_prefix(symbol)
+            resp_text = await loop.run_in_executor(
+                None, lambda: _http_get(SINA_HQ_URL, params={"list": sina_code}).text
             )
-            if df.empty:
-                return None
-
-            info_dict = {}
-            for _, row in df.iterrows():
-                info_dict[row.get('item', '')] = row.get('value', '')
-
-            return StockBasicInfo(
-                symbol=symbol,
-                name=str(info_dict.get('股票简称', '')),
-                industry=str(info_dict.get('行业', '')) if info_dict.get('行业') else None,
-                list_date=str(info_dict.get('上市时间', '')) if info_dict.get('上市时间') else None,
-                total_market_value=float(info_dict.get('总市值', 0) or 0) if info_dict.get('总市值') else None,
-                circulating_market_value=float(info_dict.get('流通市值', 0) or 0) if info_dict.get('流通市值') else None,
-                is_st='ST' in str(info_dict.get('股票简称', '')),
-            )
+            for line in resp_text.strip().split("\n"):
+                line = line.strip()
+                if not line or '=""' in line:
+                    continue
+                match = re.match(r'var hq_str_s[hz]\d+="(.+)"', line)
+                if not match:
+                    continue
+                fields = match.group(1).split(",")
+                if len(fields) < 32:
+                    continue
+                name = fields[0]
+                return StockBasicInfo(
+                    symbol=symbol,
+                    name=name,
+                    is_st='ST' in name.upper(),
+                )
+            return None
         except Exception as e:
             logger.error(f"获取股票 {symbol} 详细信息失败: {e}")
             return None
