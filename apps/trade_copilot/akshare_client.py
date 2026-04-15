@@ -59,7 +59,7 @@ class AkShareClient:
         if not target_date:
             target_date = datetime.now()
 
-        date_str = target_date.strftime("%Y%m%d")
+        date_str = target_date.strftime("%Y-%m-%d")
 
         # 简单缓存策略：每天获取一次即可
         if cls._trade_dates_cache is None or cls._trade_dates_last_update != target_date.strftime("%Y-%m"):

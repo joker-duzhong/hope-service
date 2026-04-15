@@ -40,7 +40,13 @@
       "Bash(tasklist)",
       "Bash(findstr redis:*)",
       "Bash(netstat -ano)",
-      "Bash(findstr \"8000\\\\|6379\\\\|5432\")"
+      "Bash(findstr \"8000\\\\|6379\\\\|5432\")",
+      "Bash(celery -A worker.celery_app result a5aa3cad-30f0-4367-8d98-1319b98e4462)",
+      "Bash(celery -A worker.celery_app inspect active)",
+      "Bash(celery -A worker.celery_app inspect registered)",
+      "Bash(python -c \"from apps.trade_copilot import tasks; print\\('OK'\\)\")",
+      "Bash(nslookup 80.push2.eastmoney.com 114.114.114.114)",
+      "Bash(curl --http2 \"https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5&fields=f12,f14,f3\" --connect-timeout 10)"
     ]
   }
 }

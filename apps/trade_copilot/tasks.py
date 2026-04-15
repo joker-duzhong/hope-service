@@ -5,8 +5,9 @@ from celery import shared_task
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
+import redis.asyncio as aioredis
+
 from core.config import settings
-from core.redis_client import redis_client
 from apps.trade_copilot.models import Position, DailyMarketLog, Watchlist
 from apps.trade_copilot.akshare_client import AkShareClient
 from apps.trade_copilot.services import send_feishu_alert, MarketService, PositionSizingService, UserTradeSettingsService
@@ -145,14 +146,18 @@ async def run_monitor() -> str:
         await local_engine.dispose()
 
 
-@shared_task(name="apps.trade_copilot.tasks.monitor_positions_task")
-def monitor_positions_task():
+@shared_task(name="apps.trade_copilot.tasks.monitor_positions_task", bind=True, max_retries=3, default_retry_delay=120)
+def monitor_positions_task(self):
     """
     盘中价格监控引擎：
     由 Celery 每 5 分钟触发一次
+    失败重试机制: 默认 2分钟重试一次，最多重试 3 次
     """
-    # Celery 是同步进程，我们用 asyncio.run 驱动异步爬虫和数据库
-    return asyncio.run(run_monitor())
+    try:
+        return asyncio.run(run_monitor())
+    except Exception as e:
+        logger.error(f"盘中监控任务失败，准备重试: {e}")
+        raise self.retry(exc=e)
 
 async def run_daily_settlement() -> str:
     """盘后数据结算引擎异步执行逻辑"""
@@ -162,18 +167,21 @@ async def run_daily_settlement() -> str:
         return "Not trading date"
 
     logger.info("开始执行日常盘后结算引擎...")
-    
+
     # 临时创建基于 NullPool 的异步引擎和 session maker，写入每天的结算记录
     from sqlalchemy.pool import NullPool
     local_engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
     local_session_maker = async_sessionmaker(local_engine, expire_on_commit=False)
 
+    # 创建当前事件循环专用的 Redis 客户端，避免跨 asyncio.run() 复用导致连接失效
+    local_redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
     try:
         # 强制清除旧缓存，保证拿到今天收盘后的最新真实数据
-        await redis_client.delete(MarketService.REDIS_KEY_MARKET_STATUS)
-        await redis_client.delete(MarketService.REDIS_KEY_ST_LIST)
+        await local_redis.delete(MarketService.REDIS_KEY_MARKET_STATUS)
+        await local_redis.delete(MarketService.REDIS_KEY_ST_LIST)
 
-        # 触发重拉与计算，并在服务内自动写入 Redis 保鲜
+        # 触发重拉与计算（MarketService 内部使用全局 redis_client，但会自动创建新连接）
         market_status = await MarketService.get_market_status()
         # 仅调用获取以刷新 Redis 中的黑名单缓存供明天使用，但不再做任何通知和统计
         await MarketService.get_st_list()
@@ -225,6 +233,7 @@ async def run_daily_settlement() -> str:
 
         return "Success"
     finally:
+        await local_redis.aclose()
         await local_engine.dispose()
 
 async def run_sniper_radar() -> str:

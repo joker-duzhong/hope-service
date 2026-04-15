@@ -32,9 +32,18 @@ celery_app.conf.update(
 
 # 显式导入所有任务模块，确保 Celery 能发现它们
 try:
+    from apps.trade_copilot import tasks as trade_copilot_tasks
+except ImportError:
+    pass
+
+try:
     from apps.zaiwen_gaokao import tasks as zaiwen_gaokao_tasks
 except ImportError:
     pass
+
+# 导入 Beat 调度表配置，确保 celery_app.conf.beat_schedule 被填充
+# 必须在 celery_app 创建之后导入，避免循环引用
+import worker.scheduler  # noqa: E402, F401
 
 
 @celery_app.task
