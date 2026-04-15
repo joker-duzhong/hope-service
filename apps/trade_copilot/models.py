@@ -23,7 +23,15 @@ class StockInfo(CoreModel):
     list_date: Mapped[Optional[Date]] = mapped_column(Date, nullable=True, comment="上市日期")
     total_market_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="总市值(元)")
     circulating_market_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="流通市值(元)")
-    is_st: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否ST股票")
+    is_st: Mapped[int] = mapped_column(Integer, default=0, comment="是否ST股票")
+    # 每日盘后更新字段（由温度计任务 15:10 写入）
+    latest_close: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="最新收盘价")
+    yesterday_close: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="昨收价")
+    pct_change: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="涨跌幅(%)")
+    high: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="当日最高价")
+    low: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="当日最低价")
+    volume: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="成交量(手)")
+    amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="成交额(元)")
 
 
 class TradeStrategy(CoreModel):

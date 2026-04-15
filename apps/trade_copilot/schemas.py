@@ -112,6 +112,7 @@ class MarketThermometerOut(BaseModel):
     temperature: str = Field("", description="市场温度描述")
     median_pct_change: float = Field(0.0, description="中位数涨跌幅")
     top_sectors: list[SectorItemOut] = Field(default_factory=list, description="领涨板块")
+    data_scope: str = Field("不含北交所", description="数据范围说明")
     update_time: datetime = Field(default_factory=datetime.now)
 
 class STListOut(BaseModel):

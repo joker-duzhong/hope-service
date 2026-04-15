@@ -29,12 +29,31 @@ _HEADERS = {
 
 
 def _http_get(url: str, params: dict = None, timeout: int = 15) -> requests.Response:
-    """带重试、绕过代理的同步 GET 请求"""
+    """带重试、绕过代理的同步 GET 请求
+
+    注意：新浪行情接口的 list 参数包含逗号，不能被 URL 编码为 %2C，
+    因此对包含逗号的值需要手动拼接到 URL 中而非走 params 序列化。
+    """
     with requests.Session() as s:
         s.trust_env = False
         s.mount("http://", _retry_adapter)
         s.mount("https://", _retry_adapter)
-        resp = s.get(url, params=params, timeout=timeout, headers=_HEADERS)
+        if params:
+            # 新浪 API 要求逗号原样传递，不能被 percent-encode
+            parts = []
+            for k, v in params.items():
+                if isinstance(v, str) and ',' in v:
+                    # 含逗号的值直接拼接到 URL，避免 requests 编码为 %2C
+                    from urllib.parse import quote
+                    parts.append(f"{quote(k, safe='')}={v}")
+                else:
+                    from urllib.parse import urlencode
+                    parts.append(urlencode({k: v}))
+            sep = '&' if '?' in url else '?'
+            url = f"{url}{sep}{'&'.join(parts)}"
+            resp = s.get(url, timeout=timeout, headers=_HEADERS)
+        else:
+            resp = s.get(url, timeout=timeout, headers=_HEADERS)
         resp.raise_for_status()
         return resp
 
@@ -337,13 +356,16 @@ class AkShareClient:
         # 2. 分批请求新浪行情 (每批 200，加延时防反爬)
         batch_size = 200
         all_items = []
+        total_batches = (len(all_codes) + batch_size - 1) // batch_size
         for i in range(0, len(all_codes), batch_size):
+            batch_idx = i // batch_size + 1
             batch = all_codes[i:i + batch_size]
             sina_codes = ",".join(c[1] for c in batch)
             try:
                 resp_text = await loop.run_in_executor(
                     None, lambda sc=sina_codes: _http_get(SINA_HQ_URL, params={"list": sc}).text
                 )
+                batch_count = 0
                 for line in resp_text.strip().split("\n"):
                     line = line.strip()
                     if not line or '=""' in line:
@@ -362,11 +384,21 @@ class AkShareClient:
                         all_items.append({
                             "f12": code, "f14": fields[0],
                             "f2": current_price, "f3": pct,
+                            # 额外字段供 StockInfo 每日更新使用
+                            "open": float(fields[1] or 0),
+                            "yesterday_close": yesterday_close,
+                            "high": float(fields[4] or 0),
+                            "low": float(fields[5] or 0),
+                            "volume": float(fields[7] or 0),
+                            "amount": float(fields[8] or 0),
                         })
+                        batch_count += 1
                     except (ValueError, TypeError):
                         continue
+                if batch_idx <= 2 or batch_count == 0:
+                    logger.info(f"温度计第 {batch_idx}/{total_batches} 批: 获取 {batch_count} 只, 响应长度 {len(resp_text)}")
             except Exception as e:
-                logger.warning(f"批量获取行情第 {i // batch_size + 1} 批失败: {e}")
+                logger.warning(f"批量获取行情第 {batch_idx} 批失败: {e}")
             # 每批之间休眠 0.5s，避免触发反爬
             if i + batch_size < len(all_codes):
                 import time

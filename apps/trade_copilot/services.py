@@ -3,6 +3,7 @@ from typing import List, Optional
 import json
 from datetime import datetime
 import httpx
+import redis.asyncio as aioredis
 import pandas as pd
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -188,9 +189,16 @@ class MarketService:
     REDIS_KEY_ST_LIST = "trade_copilot:st_list"
 
     @classmethod
-    async def get_market_status(cls) -> MarketStatusOut:
-        """获取大盘红绿灯状态，优先从 Redis 缓存获取"""
-        cached_data = await redis_client.get(cls.REDIS_KEY_MARKET_STATUS)
+    async def get_market_status(cls, redis: aioredis.Redis = None) -> MarketStatusOut:
+        """获取大盘红绿灯状态，优先从 Redis 缓存获取
+
+        Args:
+            redis: 可选的 Redis 客户端实例。Celery 任务中需传入独立创建的 local_redis，
+                   以避免全局 redis_client 跨事件循环导致的 "Event loop is closed" 错误。
+                   不传则使用全局 redis_client（适用于 FastAPI 请求上下文）。
+        """
+        r = redis or redis_client
+        cached_data = await r.get(cls.REDIS_KEY_MARKET_STATUS)
         if cached_data:
             try:
                 data = json.loads(cached_data)
@@ -228,20 +236,25 @@ class MarketService:
         )
         
         # 写入缓存，设置 60 分钟过期时间做兜底（实际上主要是由 daily beat 每天 15:05 跑批写入替换，这只是防止没数据的情况）
-        await redis_client.set(
+        await r.set(
             cls.REDIS_KEY_MARKET_STATUS,
             result.model_dump_json(),
             ex=3600
         )
-        
+
         return result
 
     @classmethod
-    async def get_st_list(cls) -> STListOut:
-        """获取并缓存全市场 ST 股票列表"""
+    async def get_st_list(cls, redis: aioredis.Redis = None) -> STListOut:
+        """获取并缓存全市场 ST 股票列表
+
+        Args:
+            redis: 可选的 Redis 客户端实例。Celery 任务中需传入独立创建的 local_redis。
+        """
+        r = redis or redis_client
         # 尝试从 Redis 缓存获取
         try:
-            cached_data = await redis_client.get(cls.REDIS_KEY_ST_LIST)
+            cached_data = await r.get(cls.REDIS_KEY_ST_LIST)
             if cached_data:
                 try:
                     data = json.loads(cached_data)
@@ -267,7 +280,7 @@ class MarketService:
 
         # 尝试写入缓存
         try:
-            await redis_client.set(
+            await r.set(
                 cls.REDIS_KEY_ST_LIST,
                 result.model_dump_json(),
                 ex=86400
@@ -843,6 +856,7 @@ class StockInfoService:
 
             except Exception as e:
                 logger.error(f"同步股票 {stock.symbol} 失败: {e}")
+                await session.rollback()
                 continue
 
         await session.commit()

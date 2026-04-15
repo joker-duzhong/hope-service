@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 import redis.asyncio as aioredis
 
 from core.config import settings
-from apps.trade_copilot.models import Position, DailyMarketLog, Watchlist
+from apps.trade_copilot.models import Position, DailyMarketLog, Watchlist, StockInfo
 from apps.trade_copilot.akshare_client import AkShareClient
 from apps.trade_copilot.services import send_feishu_alert, MarketService, PositionSizingService, UserTradeSettingsService
 from apps.trade_copilot.schemas import MarketThermometerOut, SectorItemOut
@@ -182,10 +182,10 @@ async def run_daily_settlement() -> str:
         await local_redis.delete(MarketService.REDIS_KEY_MARKET_STATUS)
         await local_redis.delete(MarketService.REDIS_KEY_ST_LIST)
 
-        # 触发重拉与计算（MarketService 内部使用全局 redis_client，但会自动创建新连接）
-        market_status = await MarketService.get_market_status()
+        # 触发重拉与计算（传入 local_redis 避免使用全局 redis_client 导致 Event loop is closed）
+        market_status = await MarketService.get_market_status(redis=local_redis)
         # 仅调用获取以刷新 Redis 中的黑名单缓存供明天使用，但不再做任何通知和统计
-        await MarketService.get_st_list()
+        await MarketService.get_st_list(redis=local_redis)
 
         logger.info(f"盘后结算完成: 上证={market_status.sh_status}, 深证={market_status.sz_status}")
         
@@ -284,8 +284,15 @@ async def run_market_thermometer() -> str:
         total_stocks = len(pcts)
         up_count = sum(1 for p in pcts if p > 0)
         down_count = sum(1 for p in pcts if p < 0)
+        flat_count = sum(1 for p in pcts if p == 0)
         limit_up_count = sum(1 for p in pcts if p >= 9.8)
         limit_down_count = sum(1 for p in pcts if p <= -9.8)
+
+        # 中位数涨跌幅
+        sorted_pcts = sorted(pcts)
+        n = len(sorted_pcts)
+        median_pct = sorted_pcts[n // 2] if n % 2 else (sorted_pcts[n // 2 - 1] + sorted_pcts[n // 2]) / 2
+
         score = min(100, max(0, int((up_count / max(1, total_stocks)) * 60 + (limit_up_count / 100) * 40)))
 
         if score < 20:
@@ -316,16 +323,49 @@ async def run_market_thermometer() -> str:
             total_stocks=total_stocks,
             up_count=up_count,
             down_count=down_count,
+            flat_count=flat_count,
             limit_up_count=limit_up_count,
             limit_down_count=limit_down_count,
             score=score,
             temperature=temperature,
+            median_pct_change=round(median_pct, 2),
             top_sectors=top_sectors
         )
 
         # 缓存到 Redis，不过期（每天 15:10 定时覆盖）
         await local_redis.set("trade_copilot:market_thermometer", result.model_dump_json())
-        logger.info(f"温度计预热完成: 共 {total_stocks} 只, 上涨 {up_count}, 下跌 {down_count}, 评分 {score}")
+        logger.info(f"温度计预热完成: 共 {total_stocks} 只, 上涨 {up_count}, 下跌 {down_count}, 平盘 {flat_count}, 评分 {score}")
+
+        # ---- 3. 将今日行情数据同步更新到 StockInfo 表 ----
+        logger.info("开始更新 StockInfo 每日行情数据...")
+        try:
+            async with local_session_maker() as session:
+                # 先构建所有代码到 StockInfo 记录的映射，减少逐条查询
+                stmt = select(StockInfo)
+                all_stock_records = (await session.execute(stmt)).scalars().all()
+                stock_map = {r.symbol: r for r in all_stock_records}
+
+                updated = 0
+                for item in spot_list:
+                    code = str(item.get("f12", ""))
+                    if not code or code not in stock_map:
+                        continue
+                    rec = stock_map[code]
+                    rec.latest_close = item.get("f2")
+                    rec.yesterday_close = item.get("yesterday_close")
+                    rec.pct_change = item.get("f3")
+                    rec.high = item.get("high")
+                    rec.low = item.get("low")
+                    rec.volume = item.get("volume")
+                    rec.amount = item.get("amount")
+                    updated += 1
+                    if updated % 1000 == 0:
+                        await session.commit()
+
+                await session.commit()
+                logger.info(f"StockInfo 行情更新完成: {updated} 只")
+        except Exception as e:
+            logger.error(f"StockInfo 行情更新失败(不影响温度计缓存): {e}")
         return "Success"
     finally:
         await local_redis.aclose()
