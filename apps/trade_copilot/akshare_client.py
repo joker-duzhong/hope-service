@@ -22,13 +22,19 @@ _retry_adapter = HTTPAdapter(
 )
 
 
+_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://finance.sina.com.cn",
+}
+
+
 def _http_get(url: str, params: dict = None, timeout: int = 15) -> requests.Response:
     """带重试、绕过代理的同步 GET 请求"""
     with requests.Session() as s:
         s.trust_env = False
         s.mount("http://", _retry_adapter)
         s.mount("https://", _retry_adapter)
-        resp = s.get(url, params=params, timeout=timeout)
+        resp = s.get(url, params=params, timeout=timeout, headers=_HEADERS)
         resp.raise_for_status()
         return resp
 
@@ -328,8 +334,8 @@ class AkShareClient:
 
         all_codes = [(str(row['code']), _sina_prefix(str(row['code']))) for _, row in df.iterrows()]
 
-        # 2. 分批请求新浪行情 (每批 800)
-        batch_size = 800
+        # 2. 分批请求新浪行情 (每批 200，加延时防反爬)
+        batch_size = 200
         all_items = []
         for i in range(0, len(all_codes), batch_size):
             batch = all_codes[i:i + batch_size]
@@ -361,7 +367,10 @@ class AkShareClient:
                         continue
             except Exception as e:
                 logger.warning(f"批量获取行情第 {i // batch_size + 1} 批失败: {e}")
-                continue
+            # 每批之间休眠 0.5s，避免触发反爬
+            if i + batch_size < len(all_codes):
+                import time
+                await loop.run_in_executor(None, lambda: time.sleep(0.5))
 
         logger.info(f"市场温度计: 共获取到 {len(all_items)} 只股票行情")
         return {"spot": all_items, "board": []}

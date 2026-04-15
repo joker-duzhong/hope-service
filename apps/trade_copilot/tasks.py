@@ -11,6 +11,7 @@ from core.config import settings
 from apps.trade_copilot.models import Position, DailyMarketLog, Watchlist
 from apps.trade_copilot.akshare_client import AkShareClient
 from apps.trade_copilot.services import send_feishu_alert, MarketService, PositionSizingService, UserTradeSettingsService
+from apps.trade_copilot.schemas import MarketThermometerOut, SectorItemOut
 from apps.trade_copilot.feishu_templates import (
     build_trade_alert_card, build_market_status_card, build_sniper_radar_card
 )
@@ -234,6 +235,113 @@ async def run_daily_settlement() -> str:
     finally:
         await local_redis.aclose()
         await local_engine.dispose()
+
+async def run_market_thermometer() -> str:
+    """盘后温度计数据预热 + 同步股票基础信息"""
+    now = datetime.now()
+    if not await AkShareClient.is_trading_date(now):
+        logger.info("今天是非交易日，跳过温度计预热...")
+        return "Not trading date"
+
+    from sqlalchemy.pool import NullPool
+    local_engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
+    local_session_maker = async_sessionmaker(local_engine, expire_on_commit=False)
+    import redis.asyncio as aioredis
+    local_redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
+    try:
+        # ---- 1. 同步全A股基础信息 ----
+        logger.info("开始同步全A股基础信息...")
+        try:
+            async with local_session_maker() as session:
+                from apps.trade_copilot.services import StockInfoService
+                count = await StockInfoService.sync_all_stocks(session)
+                logger.info(f"全A股基础信息同步完成: {count} 只")
+        except Exception as e:
+            logger.error(f"同步股票基础信息失败(不影响温度计): {e}")
+
+        # ---- 2. 计算温度计 ----
+        logger.info("开始计算市场温度计...")
+        await local_redis.delete("trade_copilot:market_thermometer")
+
+        data = await AkShareClient.get_market_thermometer_data()
+        spot_items = data.get('spot')
+        board_items = data.get('board')
+
+        if not spot_items:
+            raise ValueError("获取全市场个股数据为空")
+
+        spot_list = list(spot_items.values()) if isinstance(spot_items, dict) else spot_items
+
+        pcts = []
+        for item in spot_list:
+            try:
+                pct = float(item.get("f3", 0) or 0)
+                pcts.append(pct)
+            except (ValueError, TypeError):
+                continue
+
+        total_stocks = len(pcts)
+        up_count = sum(1 for p in pcts if p > 0)
+        down_count = sum(1 for p in pcts if p < 0)
+        limit_up_count = sum(1 for p in pcts if p >= 9.8)
+        limit_down_count = sum(1 for p in pcts if p <= -9.8)
+        score = min(100, max(0, int((up_count / max(1, total_stocks)) * 60 + (limit_up_count / 100) * 40)))
+
+        if score < 20:
+            temperature = "冰点 (情绪极度低迷，注意杀跌风险)"
+        elif score < 40:
+            temperature = "分歧 (亏钱效应发酵，适合空仓或试错)"
+        elif score < 60:
+            temperature = "弱修复 (局部赚钱效应，控制仓位)"
+        elif score < 80:
+            temperature = "温和 (普涨行情，适宜持股)"
+        else:
+            temperature = "高潮 (情绪亢奋，注意高位落袋或警惕分歧转一致的尾声)"
+
+        top_sectors = []
+        if board_items:
+            board_list = list(board_items.values()) if isinstance(board_items, dict) else board_items
+            try:
+                board_sorted = sorted(board_list, key=lambda x: float(x.get("f3", 0) or 0), reverse=True)
+                for item in board_sorted[:5]:
+                    top_sectors.append(SectorItemOut(
+                        sector_name=str(item.get("f14", "")),
+                        pct_change=float(item.get("f3", 0) or 0)
+                    ))
+            except Exception as e:
+                logger.warning(f"解析板块数据失败: {e}")
+
+        result = MarketThermometerOut(
+            total_stocks=total_stocks,
+            up_count=up_count,
+            down_count=down_count,
+            limit_up_count=limit_up_count,
+            limit_down_count=limit_down_count,
+            score=score,
+            temperature=temperature,
+            top_sectors=top_sectors
+        )
+
+        # 缓存到 Redis，不过期（每天 15:10 定时覆盖）
+        await local_redis.set("trade_copilot:market_thermometer", result.model_dump_json())
+        logger.info(f"温度计预热完成: 共 {total_stocks} 只, 上涨 {up_count}, 下跌 {down_count}, 评分 {score}")
+        return "Success"
+    finally:
+        await local_redis.aclose()
+        await local_engine.dispose()
+
+
+@shared_task(name="apps.trade_copilot.tasks.market_thermometer_task", bind=True, max_retries=3, default_retry_delay=300)
+def market_thermometer_task(self):
+    """
+    市场温度计预热任务: 每天 15:10 执行，数据写入 Redis 缓存供前端读取
+    """
+    try:
+        return asyncio.run(run_market_thermometer())
+    except Exception as e:
+        logger.error(f"温度计预热任务失败，准备重试: {e}")
+        raise self.retry(exc=e)
 
 async def run_sniper_radar() -> str:
     """尾盘狙击雷达判定引擎"""

@@ -279,107 +279,18 @@ class MarketService:
 
     @classmethod
     async def get_market_thermometer(cls) -> MarketThermometerOut:
-        """获取大盘温度计和板块轮动"""
+        """获取大盘温度计（纯缓存读取，数据由定时任务预热）"""
         REDIS_KEY = "trade_copilot:market_thermometer"
 
-        # 尝试从 Redis 缓存获取
         try:
             cached_data = await redis_client.get(REDIS_KEY)
             if cached_data:
-                try:
-                    data = json.loads(cached_data)
-                    return MarketThermometerOut(**data)
-                except Exception as e:
-                    logger.error(f"解析缓存 market_thermometer 失败: {e}")
+                data = json.loads(cached_data)
+                return MarketThermometerOut(**data)
         except Exception as e:
-            logger.warning(f"Redis 读取失败，跳过缓存: {e}")
+            logger.error(f"读取温度计缓存失败: {e}")
 
-        try:
-            # 如果没有缓存，通过 AkShare 获取实时结果
-            # 数据格式已改为 push2his dict: {"spot": {f12: {f2:.., f3:..}}, "board": {...}}
-            data = await AkShareClient.get_market_thermometer_data()
-            spot_items = data.get('spot')
-            board_items = data.get('board')
-
-            if not spot_items:
-                raise ValueError("获取全市场个股数据为空")
-
-            # push2his diff 格式: dict {"0": {f3:涨跌幅, f12:代码, f14:名称}, ...} 或 list
-            if isinstance(spot_items, dict):
-                spot_list = list(spot_items.values())
-            else:
-                spot_list = spot_items
-
-            pcts = []
-            for item in spot_list:
-                try:
-                    pct = float(item.get("f3", 0) or 0)
-                    pcts.append(pct)
-                except (ValueError, TypeError):
-                    continue
-
-            total_stocks = len(pcts)
-            up_count = sum(1 for p in pcts if p > 0)
-            down_count = sum(1 for p in pcts if p < 0)
-            limit_up_count = sum(1 for p in pcts if p >= 9.8)
-            limit_down_count = sum(1 for p in pcts if p <= -9.8)
-
-            # 按照涨停家数和上涨家数综合打分
-            score = min(100, max(0, int((up_count / max(1, total_stocks)) * 60 + (limit_up_count / 100) * 40)))
-
-            # 温度标语
-            if score < 20:
-                temperature = "冰点 (情绪极度低迷，注意杀跌风险)"
-            elif score < 40:
-                temperature = "分歧 (亏钱效应发酵，适合空仓或试错)"
-            elif score < 60:
-                temperature = "弱修复 (局部赚钱效应，控制仓位)"
-            elif score < 80:
-                temperature = "温和 (普涨行情，适宜持股)"
-            else:
-                temperature = "高潮 (情绪亢奋，注意高位落袋或警惕分歧转一致的尾声)"
-
-            # 板块轮动数据 (取涨幅前5)
-            top_sectors = []
-            if board_items:
-                if isinstance(board_items, dict):
-                    board_list = list(board_items.values())
-                else:
-                    board_list = board_items
-
-                try:
-                    board_sorted = sorted(board_list, key=lambda x: float(x.get("f3", 0) or 0), reverse=True)
-                    for item in board_sorted[:5]:
-                        top_sectors.append(
-                            SectorItemOut(
-                                sector_name=str(item.get("f14", "")),
-                                pct_change=float(item.get("f3", 0) or 0)
-                            )
-                        )
-                except Exception as e:
-                    logger.warning(f"解析板块数据失败: {e}")
-
-            result = MarketThermometerOut(
-                total_stocks=total_stocks,
-                up_count=up_count,
-                down_count=down_count,
-                limit_up_count=limit_up_count,
-                limit_down_count=limit_down_count,
-                score=score,
-                temperature=temperature,
-                top_sectors=top_sectors
-            )
-
-            # 尝试写入缓存
-            try:
-                await redis_client.set(REDIS_KEY, result.model_dump_json(), ex=300)
-            except Exception as e:
-                logger.warning(f"Redis 写入失败，跳过缓存: {e}")
-
-            return result
-        except Exception as e:
-            logger.error(f"获取市场温度计数据异常: {e}", exc_info=True)
-            raise AppException(code=503, message=f"获取市场温度计数据失败: {str(e)}")
+        raise AppException(code=504, message="市场温度计数据尚未就绪，盘后 15:10 后可查看")
 
 class WatchlistService:
     """观察池 CRUD 逻辑"""

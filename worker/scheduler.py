@@ -21,6 +21,11 @@ celery_app.conf.beat_schedule = {
         # 每天收盘后执行一次 (15:05 分)
         "schedule": crontab(minute=5, hour=15, day_of_week="1-5"),
     },
+    "trade_copilot_market_thermometer": {
+        "task": "apps.trade_copilot.tasks.market_thermometer_task",
+        # 盘后结算之后执行 (15:10)，数据写入 Redis 供前端读取
+        "schedule": crontab(minute=10, hour=15, day_of_week="1-5"),
+    },
     "trade_copilot_sniper_radar": {
         "task": "apps.trade_copilot.tasks.sniper_radar_task",
         # 每天尾盘执行两次 (14:50 和 14:55)
