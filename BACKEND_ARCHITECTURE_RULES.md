@@ -84,22 +84,32 @@ backend_universe/
        "data": { ... }             // 实际载荷，列表或对象
    }
    ```
-3. **安全与跨域**：必须在 `main.py` 中配置 `CORSMiddleware`。API 严禁在未经 JWT Token 验证的情况下暴露敏感业务。
+3. **安全与跨域**：必须在 `main.py` 中配置 `CORSMiddleware`。API 严禁在未经 JWT Token 验证的情况下暴露敏感业务。**甚至对于 SSE (Server-Sent Events) 或 WebSocket 等长连接流式接口，也绝对不允许裸奔，必须通过 `Depends(get_current_user)` 或其他有效手段进行 Token 与资源归属权鉴权。**
 
 ## 6. 后台与定时任务规范 (Worker Rules)
 
-1. **任务注册**：每个 App 可以在自己的 `tasks.py` 中定义业务任务（如拉取股票数据）。
+1. **任务注册**：每个 App 可以在自己的 `tasks.py` 中定义业务任务（如拉取股票数据、AI 轮询）。
 2. **调度统一管理**：定时任务的触发频率（Cron 表达式）严禁分散在各个应用中，必须在全局统一的 `worker/scheduler.py` 中集中配置，方便维护和一键暂停。
 3. **独立进程运行**：在部署时，Worker（后台任务）与 Beat（定时触发器）必须独立于 API 服务运行，保证爬虫/发消息等重型任务不拖垮前端的接口响应。
+4. **【避坑】Celery 与 Async 桥接**：Celery Worker 环境默认是同步的。如果你在 `tasks.py` 中调用了 `services.py` 里的异步操作（`async def`），**严禁直接 await** 或导致协程挂起报错，必须通过 `asyncio.get_event_loop().run_until_complete(...)` 进行手动的 Async-to-Sync 包装。
 
-## 7. 给 AI 助手的特别指令 (System Prompts for AI)
+## 7. 测试与异步运行规范 (Testing & Async Rules)
 
-当 AI 助手阅读到本段时，代表你已被注入上述架构灵魂。在接下来为用户生成代码时：
+1. **测试隔离**：所有测试文件必须放在 `tests/` 下，按应用模块隔离（如 `test_shadow_board.py`）。
+2. **异步钩子配置**：针对 `pytest-asyncio` 经常出现的 `Loop closed` 或跨 Loop 报错，项目在 `pytest.ini` 中已全局设定 `asyncio_default_fixture_loop_scope = session`，编写测试时一律使用 `@pytest.mark.asyncio` 并注入全局 `db_session` fixture。
+3. **Redis/数据库连接管理**：如果业务中使用 `redis.asyncio` 写了 Pub/Sub 或手动管理 DB 连接，**必须明确释放或关闭 (`await r.close()`)**，避免连接池因热更新或重复测试而溢出宕机。
 
-1. 请先思考**要修改的是 Core 还是具体的 App**？
-2. 如果用户要求写一个 API 接口，你需要**按顺序**生成或修改：`schemas.py` (定义入参出参) -> `services.py` (写 DB 操作和核心逻辑) -> `router.py` (写 API 暴露端点)。
-3. 使用 `SQLAlchemy 2.0` 的现代语法（`select()`, `execute()`, 等），避免使用旧版的 `.query()`。
-4. 在需要调用外部网络（如 requests, httpx, akshare）的地方，如果是同步库，请务必使用 `run_in_threadpool` 或将其放入后台 Celery 任务，严禁阻塞 FastAPI 的主事件循环。
+## 8. 给 AI 助手的特别指令 (System Prompts for AI)
+
+当 AI 助手阅读到本段时，代表你已被注入上述架构灵魂。在接下来为用户开发或者生成代码时，请无条件遵守以下指令：
+
+1. **先思考架构落点**：首先思考你要修改或者新增的代码是属于底层 Core，还是具体的独立 App 业务。
+2. **标准开发流**：如果用户要求写一个 API 接口，你需要**严格按顺序**生成或修改：`schemas.py` (定义入参出参) -> `services.py` (写 DB 操作和核心逻辑) -> `router.py` (写 API 暴露端点)。
+3. **技术栈与语法**：永远使用 `SQLAlchemy 2.0` 的现代语法（`select()`, `execute()` 等），避免使用旧版的 `.query()`。
+4. **防阻塞控制**：在需要调用外部网络（如 requests, httpx, akshare）的地方，如果是同步库，请务必使用 `run_in_threadpool` 或将其放入后台 Celery 任务，**严禁阻塞 FastAPI 的主事件循环**。
+5. **全程中文沟通**：与我对话、写注释、写 commit message 或返回报告时，**全程使用中文**。
+6. **谋定而后动 (Ask Before Coding)**：在看完了开发规则、所有的业务需求和 `todo.md` 之后，**哪怕只有一点疑问、觉得需求模糊或边界不清，请立即停止编码，先向我提问**。等我回答明确后，再进行一次性的完整代码开发。不要盲目瞎猜。
+7. **自动化质量门禁 (Self Code Review)**：开发完成之后，**必须自我审查一遍**本次的 File Change (全量回归检测)。主动去检查和修正那些隐藏在底层的隐形 Bug (例如：未拦截的空数据异常、超时阻塞、死锁等)，确保不会被任何小概率的极端异常打断流程，并顺手将可以精简的代码进行优化。
 
 ---
 

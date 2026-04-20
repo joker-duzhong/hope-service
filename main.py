@@ -89,6 +89,10 @@ def create_app() -> FastAPI:
     from apps.project_sisyphus.router import router as sisyphus_router
     app.include_router(sisyphus_router, prefix=f"{settings.API_V1_PREFIX}/sisyphus", tags=["西西弗斯认知引擎"])
 
+    # Apps: 影子董事会 (Shadow Board AI)
+    from apps.shadow_board.router import router as shadow_board_router
+    app.include_router(shadow_board_router, prefix=f"{settings.API_V1_PREFIX}/shadow-board", tags=["影子董事会"])
+
     # 健康检查
     @app.get("/health", tags=["健康检查"])
     async def health_check():

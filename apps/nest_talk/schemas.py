@@ -132,7 +132,7 @@ class UserPreferenceOut(UserPreferenceBase):
 # ==================== AI 对话 Schemas ====================
 class ChatRequest(BaseModel):
     """对话请求"""
-    session_id: Optional[str] = Field(None, description="会话ID(首次对话不传)")
+    session_id: Optional[UUID] = Field(None, description="会话ID(首次对话不传)")
     message: str = Field(..., description="用户消息", min_length=1, max_length=2000)
 
 
@@ -153,7 +153,7 @@ class ExtractedRequirements(BaseModel):
 
 class ChatResponse(BaseModel):
     """对话响应"""
-    session_id: str = Field(..., description="会话ID")
+    session_id: UUID = Field(..., description="会话ID")
     response_type: str = Field(..., description="响应类型: clarification(追问) / results(结果)")
     message: str = Field(..., description="AI回复消息")
     houses: Optional[List[HouseOut]] = Field(None, description="匹配的房源列表(仅results类型)")
@@ -162,7 +162,7 @@ class ChatResponse(BaseModel):
 
 class ChatClearResponse(BaseModel):
     """清除会话响应"""
-    session_id: str
+    session_id: UUID
     message: str = "会话已清除"
 
 
@@ -206,20 +206,6 @@ class RegionPriceLogOut(BaseModel):
     record_date: date
     average_price: float
     change_rate: Optional[float] = None
-
-    class Config:
-        from_attributes = True
-
-
-class UserMatchHouseOut(BaseModel):
-    """用户匹配房源输出"""
-    id: UUID
-    house_id: UUID
-    match_score: float
-    match_reason: str
-    is_read: bool
-    matched_at: datetime
-    house: HouseOut
 
     class Config:
         from_attributes = True

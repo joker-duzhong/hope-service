@@ -31,18 +31,23 @@ celery_app.conf.update(
 )
 
 # 显式导入所有任务模块，确保 Celery 能发现它们
-# try:
-#     from apps.trade_copilot import tasks as trade_copilot_tasks
-# except ImportError:
-#     pass
+try:
+    from apps.trade_copilot import tasks as trade_copilot_tasks
+except ImportError:
+    pass
 
-# try:
-#     from apps.zaiwen_gaokao import tasks as zaiwen_gaokao_tasks
-# except ImportError:
-#     pass
+try:
+    from apps.zaiwen_gaokao import tasks as zaiwen_gaokao_tasks
+except ImportError:
+    pass
 
 try:
     from apps.nest_talk import tasks as nest_talk_tasks
+except ImportError:
+    pass
+
+try:
+    from apps.shadow_board import tasks as shadow_board_tasks
 except ImportError:
     pass
 
