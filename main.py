@@ -93,6 +93,10 @@ def create_app() -> FastAPI:
     from apps.shadow_board.router import router as shadow_board_router
     app.include_router(shadow_board_router, prefix=f"{settings.API_V1_PREFIX}/shadow-board", tags=["影子董事会"])
 
+    # Apps: TypoCraft (言图)
+    from apps.typo_craft.router import router as typo_craft_router
+    app.include_router(typo_craft_router, prefix=f"{settings.API_V1_PREFIX}/typo-craft", tags=["言图引擎"])
+
     # 健康检查
     @app.get("/health", tags=["健康检查"])
     async def health_check():

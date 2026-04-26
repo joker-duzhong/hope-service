@@ -59,4 +59,10 @@ celery_app.conf.beat_schedule = {
         # 每 5 分钟检查一次房间状态
         "schedule": crontab(minute="*/5"),
     },
+    # ==================== 言图 (TypoCraft) 定时任务 ====================
+    "typo_craft_auto_tag": {
+        "task": "typo_craft.auto_tag_successful_assets",
+        # 每 1 小时扫表一次打标
+        "schedule": crontab(minute=0, hour="*/1"),
+    },
 }
