@@ -228,12 +228,12 @@ async def generate_image(
     api_key = config.get("api_key")
     
     # 手动配置的生成和查询URL
-    generation_url = config.get("image_generation_url")
+    generation_url = config.get("base_url")
     
     if not generation_url:
         raise ValueError(
-            f"提供商 {provider} 缺少图像生成 URL 配置。请在 LLM_PROVIDERS 设定中补充 "
-            f"'image_generation_url'。"
+            f"提供商 {provider} 缺少base_url 配置。请在 LLM_PROVIDERS 设定中补充 "
+            f"'base_url'。"
         )
 
     # 默认模型名
