@@ -155,14 +155,21 @@ class PositionService:
         position = await cls.get_position(session, user_id, position_id)
         if not position:
             return None
-            
+
         if data.high_water_mark is not None:
             position.high_water_mark = data.high_water_mark
         if data.status is not None:
+            # 数据一致性校验：如果要设置为 closed，确保 quantity 为 0
+            if data.status == "closed" and position.quantity > 0:
+                logger.warning(f"尝试将持仓 {position.name}({position.symbol}) 设置为 closed，但 quantity={position.quantity} > 0，自动将 quantity 设为 0")
+                position.quantity = 0
+            # 如果要设置为 holding，确保 quantity > 0
+            elif data.status == "holding" and position.quantity <= 0:
+                raise ValueError(f"无法将持仓设置为 holding：当前 quantity={position.quantity}，请先通过交易流水增加持仓数量")
             position.status = data.status
         if data.strategy_id is not None:
             position.strategy_id = data.strategy_id
-            
+
         await session.commit()
         await session.refresh(position)
         return position
@@ -755,12 +762,13 @@ class TradeTransactionService:
         elif data.action == "sell":
             if data.quantity > old_qty:
                 raise ValueError(f"卖出数量({data.quantity})不能大于当前持仓数量({old_qty})")
-                
+
             new_qty = old_qty - data.quantity
             if new_qty == 0:
-                # 清仓
+                # 清仓：同时更新数量和状态
                 pos.quantity = 0
                 pos.status = "closed"
+                logger.info(f"持仓已清仓: {pos.name}({pos.symbol}), 状态已更新为 closed")
             else:
                 # 摊薄成本计算: (旧总成本 - 这部分卖出套现到的净回笼资金) -> 这部分净回笼指的是 卖出总价 - 卖出手续费
                 # 量化里经常把盈利减仓用来降成本: (旧总成本 - (现价 * 数量 - 手续费)) / 剩余数量
@@ -768,6 +776,10 @@ class TradeTransactionService:
                 new_cost = ((old_cost * old_qty) - (trade_amount - total_fee)) / new_qty
                 # 如果套利极好，成本可能降为负数，真实量化允许成本为负
                 pos.cost_price = new_cost
+                # 确保部分卖出时状态保持为 holding
+                if pos.status != "holding":
+                    pos.status = "holding"
+                    logger.warning(f"持仓状态异常修正: {pos.name}({pos.symbol}), 已修正为 holding")
 
         await session.commit()
         await session.refresh(txn)

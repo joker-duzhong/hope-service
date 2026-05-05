@@ -102,10 +102,25 @@ class MemoUpdate(BaseModel):
     """更新备忘录"""
     content: Optional[str] = None
     resource_ids: Optional[List[UUID]] = None
+    is_pinned: Optional[bool] = None
+
+
+class MemoSearchParams(BaseModel):
+    """备忘录搜索参数"""
+    keyword: Optional[str] = Field(None, description="内容关键词搜索")
+    start_date: Optional[date] = Field(None, description="开始日期")
+    end_date: Optional[date] = Field(None, description="结束日期")
+    page: int = Field(1, ge=1, description="页码")
+    page_size: int = Field(20, ge=1, le=100, description="每页数量")
 
 
 class MemoCommentCreate(BaseModel):
     """创建备忘录评论"""
+    content: str = Field(..., description="评论内容")
+
+
+class MemoCommentUpdate(BaseModel):
+    """更新备忘录评论"""
     content: str = Field(..., description="评论内容")
 
 
@@ -241,6 +256,12 @@ class WishlistItemUpdate(BaseModel):
     url: Optional[str] = None
     price: Optional[float] = None
     image_url: Optional[str] = None
+
+
+class WishlistFulfillRequest(BaseModel):
+    """心愿实现请求（带照片记录）"""
+    note: Optional[str] = Field(None, description="实现备注", max_length=500)
+    resource_ids: Optional[List[UUID]] = Field(None, description="实现照片资源ID列表")
 
 
 class WishlistItemOut(WishlistItemBase):
@@ -385,6 +406,14 @@ class CoupleStateOut(BaseModel):
 
 # ==================== 首页聚合数据 ====================
 
+class HomeStatsOut(BaseModel):
+    """首页统计数据"""
+    completed_todos: int = Field(..., description="已完成的待办数量")
+    total_memos: int = Field(..., description="备忘录总数")
+    fulfilled_wishes: int = Field(..., description="已实现的心愿数量")
+    mood_logs_count: int = Field(..., description="心情日记数量")
+
+
 class HomeDataOut(BaseModel):
     """首页聚合数据"""
     # 情侣信息
@@ -397,3 +426,61 @@ class HomeDataOut(BaseModel):
     state: CoupleStateOut
     # 双方说明书
     manuals: CoupleManualsOut
+    # 统计数据
+    stats: HomeStatsOut
+
+
+# ==================== 模块五：心情日记 ====================
+
+class MoodLogCreate(BaseModel):
+    """创建心情日记"""
+    mood: str = Field(..., description="心情状态", max_length=50)
+    note: Optional[str] = Field(None, description="心情备注", max_length=500)
+    tags: Optional[List[str]] = Field(None, description="标签列表")
+
+
+class MoodLogOut(BaseModel):
+    """心情日记输出"""
+    id: UUID
+    couple_id: UUID
+    uid: UUID
+    mood: str
+    note: Optional[str]
+    tags: Optional[List[str]]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class MoodStatsOut(BaseModel):
+    """心情统计输出"""
+    total_logs: int = Field(..., description="总记录数")
+    mood_distribution: dict = Field(..., description="心情分布 {mood: count}")
+    recent_trend: List[MoodLogOut] = Field(..., description="最近趋势")
+    most_common_mood: Optional[str] = Field(None, description="最常见心情")
+
+
+# ==================== 模块六：通知系统 ====================
+
+class NotificationOut(BaseModel):
+    """通知输出"""
+    id: UUID
+    type: str
+    title: str
+    content: str
+    data: Optional[dict]
+    is_read: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ==================== 全局搜索 ====================
+
+class GlobalSearchResult(BaseModel):
+    """全局搜索结果"""
+    memos: List[MemoOut] = Field(default_factory=list, description="备忘录结果")
+    todos: List[TodoItemOut] = Field(default_factory=list, description="待办结果")
+    total: int = Field(..., description="总结果数")

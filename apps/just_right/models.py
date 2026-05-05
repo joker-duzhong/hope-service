@@ -51,6 +51,10 @@ class Memo(CoreModel):
     likes: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True, comment="点赞用户ID列表")
     comments: Mapped[Optional[list]] = mapped_column(JSON, nullable=True, comment="评论列表")
 
+    # 置顶功能
+    is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否置顶")
+    pinned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, comment="置顶时间")
+
 
 # ==================== 模块二：Ta的说明书 ====================
 
@@ -105,6 +109,11 @@ class WishlistItem(CoreModel):
     status: Mapped[str] = mapped_column(String(20), default="unclaimed", comment="状态: unclaimed(未认领), claimed(已认领/准备中), fulfilled(已实现)")
     claimer_uid: Mapped[Optional[uuid.UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True, comment="认领者用户ID (另一方)")
 
+    # 实现记录
+    fulfilled_note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True, comment="实现备注")
+    fulfilled_resource_ids: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True, comment="实现照片资源ID列表")
+    fulfilled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, comment="实现时间")
+
 
 # ==================== 模块四：纪念日与首页互动 ====================
 
@@ -144,3 +153,33 @@ class CoupleState(CoreModel):
     fridge_note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True, comment="冰箱贴内容")
     fridge_note_by: Mapped[Optional[uuid.UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True, comment="冰箱贴最后修改者")
     fridge_note_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, comment="冰箱贴最后修改时间")
+
+
+# ==================== 模块五：心情日记 ====================
+
+class MoodLog(CoreModel):
+    """心情日记表"""
+    __tablename__ = "just_right_mood_logs"
+
+    couple_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("just_right_couples.id"), index=True, comment="情侣ID")
+    uid: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), index=True, comment="用户ID")
+    mood: Mapped[str] = mapped_column(String(50), comment="心情状态")
+    note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True, comment="心情备注")
+    tags: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True, comment="标签列表")
+
+
+# ==================== 模块六：通知系统 ====================
+
+class Notification(CoreModel):
+    """通知记录表"""
+    __tablename__ = "just_right_notifications"
+
+    couple_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("just_right_couples.id"), index=True, comment="情侣ID")
+    recipient_uid: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), index=True, comment="接收者用户ID")
+    type: Mapped[str] = mapped_column(String(50), comment="通知类型: anniversary_reminder, state_update, wishlist_fulfilled, etc.")
+    title: Mapped[str] = mapped_column(String(200), comment="通知标题")
+    content: Mapped[str] = mapped_column(Text, comment="通知内容")
+    data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, comment="附加数据")
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否已读")
+    is_sent: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否已发送 (微信推送)")
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, comment="发送时间")

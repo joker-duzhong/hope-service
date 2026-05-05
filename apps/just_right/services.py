@@ -7,7 +7,7 @@ import random
 import secrets
 from datetime import datetime, timedelta, date, timezone
 from typing import List, Optional, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select, or_, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -313,17 +313,82 @@ class MemoService:
         )
         total = (await session.execute(count_stmt)).scalar() or 0
 
-        # 查询列表
+        # 查询列表 - 置顶的排在前面
         stmt = select(Memo).where(
             Memo.couple_id == couple_id,
             Memo.is_deleted == False
-        ).order_by(Memo.created_at.desc()).offset(offset).limit(page_size)
+        ).order_by(
+            Memo.is_pinned.desc(),
+            Memo.pinned_at.desc().nullslast(),
+            Memo.created_at.desc()
+        ).offset(offset).limit(page_size)
         result = await session.execute(stmt)
         memos = list(result.scalars().all())
 
         # 批量构建 MemoOut（含资源预签名 URL）
         memo_outs = [await cls._build_memo_out(session, m) for m in memos]
         return memo_outs, total
+
+    @classmethod
+    async def search_memos(
+        cls, session: AsyncSession, couple_id: UUID, keyword: Optional[str] = None,
+        start_date: Optional[date] = None, end_date: Optional[date] = None,
+        page: int = 1, page_size: int = 20
+    ) -> Tuple[List[MemoOut], int]:
+        """搜索备忘录"""
+        offset = (page - 1) * page_size
+
+        # 构建查询条件
+        conditions = [
+            Memo.couple_id == couple_id,
+            Memo.is_deleted == False
+        ]
+
+        # 关键词搜索
+        if keyword:
+            conditions.append(Memo.content.ilike(f"%{keyword}%"))
+
+        # 日期范围
+        if start_date:
+            conditions.append(func.date(Memo.created_at) >= start_date)
+        if end_date:
+            conditions.append(func.date(Memo.created_at) <= end_date)
+
+        # 查询总数
+        count_stmt = select(func.count(Memo.id)).where(*conditions)
+        total = (await session.execute(count_stmt)).scalar() or 0
+
+        # 查询列表 - 置顶的排在前面
+        stmt = select(Memo).where(*conditions).order_by(
+            Memo.is_pinned.desc(),
+            Memo.pinned_at.desc().nullslast(),
+            Memo.created_at.desc()
+        ).offset(offset).limit(page_size)
+        result = await session.execute(stmt)
+        memos = list(result.scalars().all())
+
+        memo_outs = [await cls._build_memo_out(session, m) for m in memos]
+        return memo_outs, total
+
+    @classmethod
+    async def toggle_pin(
+        cls, session: AsyncSession, couple_id: UUID, memo_id: UUID
+    ) -> Optional[MemoOut]:
+        """切换备忘录置顶状态"""
+        stmt = select(Memo).where(
+            Memo.id == memo_id,
+            Memo.couple_id == couple_id,
+            Memo.is_deleted == False
+        )
+        memo = (await session.execute(stmt)).scalars().first()
+        if not memo:
+            return None
+
+        memo.is_pinned = not memo.is_pinned
+        memo.pinned_at = datetime.now(timezone.utc) if memo.is_pinned else None
+
+        await session.commit()
+        return await cls._build_memo_out(session, memo)
 
     @classmethod
     async def delete_memo(cls, session: AsyncSession, couple_id: UUID, memo_id: UUID) -> bool:
@@ -358,6 +423,9 @@ class MemoService:
             memo.content = data.content
         if data.resource_ids is not None:
             memo.resource_ids = [str(rid) for rid in data.resource_ids]
+        if data.is_pinned is not None:
+            memo.is_pinned = data.is_pinned
+            memo.pinned_at = datetime.now(timezone.utc) if data.is_pinned else None
         await session.commit()
         return await cls._build_memo_out(session, memo)
 
@@ -370,18 +438,18 @@ class MemoService:
         memo = (await session.execute(stmt)).scalars().first()
         if not memo:
             return None
-        
+
         likes = memo.likes or []
         uid_str = str(user_id)
         if uid_str in likes:
             likes.remove(uid_str)
         else:
             likes.append(uid_str)
-            
+
         memo.likes = likes
         from sqlalchemy.orm.attributes import flag_modified
         flag_modified(memo, "likes")
-        
+
         await session.commit()
         return await cls._build_memo_out(session, memo)
 
@@ -394,17 +462,69 @@ class MemoService:
         memo = (await session.execute(stmt)).scalars().first()
         if not memo:
             return None
-            
+
         comments = memo.comments or []
+        comment_id = str(uuid4())
         comments.append({
+            "id": comment_id,
             "uid": str(user_id),
             "content": content,
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
         })
         memo.comments = comments
         from sqlalchemy.orm.attributes import flag_modified
         flag_modified(memo, "comments")
-        
+
+        await session.commit()
+        return await cls._build_memo_out(session, memo)
+
+    @classmethod
+    async def update_comment(
+        cls, session: AsyncSession, couple_id: UUID, memo_id: UUID, comment_id: str, user_id: UUID, content: str
+    ) -> Optional[MemoOut]:
+        """修改评论（只能修改自己的）"""
+        stmt = select(Memo).where(Memo.id == memo_id, Memo.couple_id == couple_id, Memo.is_deleted == False)
+        memo = (await session.execute(stmt)).scalars().first()
+        if not memo:
+            return None
+
+        comments = memo.comments or []
+        for comment in comments:
+            if comment.get("id") == comment_id and comment.get("uid") == str(user_id):
+                comment["content"] = content
+                comment["updated_at"] = datetime.now(timezone.utc).isoformat()
+                break
+        else:
+            return None  # 评论不存在或无权限
+
+        memo.comments = comments
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(memo, "comments")
+
+        await session.commit()
+        return await cls._build_memo_out(session, memo)
+
+    @classmethod
+    async def delete_comment(
+        cls, session: AsyncSession, couple_id: UUID, memo_id: UUID, comment_id: str, user_id: UUID
+    ) -> Optional[MemoOut]:
+        """删除评论（只能删除自己的）"""
+        stmt = select(Memo).where(Memo.id == memo_id, Memo.couple_id == couple_id, Memo.is_deleted == False)
+        memo = (await session.execute(stmt)).scalars().first()
+        if not memo:
+            return None
+
+        comments = memo.comments or []
+        new_comments = [c for c in comments if not (c.get("id") == comment_id and c.get("uid") == str(user_id))]
+
+        if len(new_comments) == len(comments):
+            return None  # 评论不存在或无权限
+
+        memo.comments = new_comments
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(memo, "comments")
+
         await session.commit()
         return await cls._build_memo_out(session, memo)
 
@@ -705,6 +825,32 @@ class WishlistService:
         return item
 
     @classmethod
+    async def fulfill_item_with_record(
+        cls, session: AsyncSession, couple_id: UUID, item_id: UUID, user_id: UUID,
+        note: Optional[str] = None, resource_ids: Optional[List[UUID]] = None
+    ) -> WishlistItem:
+        """标记心愿已实现（带照片记录）"""
+        stmt = select(WishlistItem).where(
+            WishlistItem.id == item_id,
+            WishlistItem.couple_id == couple_id,
+            WishlistItem.creator_uid == user_id,
+            WishlistItem.is_deleted == False
+        )
+        item = (await session.execute(stmt)).scalars().first()
+
+        if not item:
+            raise NotFoundException("心愿不存在或只能由创建者标记完成")
+
+        item.status = "fulfilled"
+        item.fulfilled_note = note
+        item.fulfilled_resource_ids = [str(rid) for rid in resource_ids] if resource_ids else None
+        item.fulfilled_at = datetime.now(timezone.utc)
+
+        await session.commit()
+        await session.refresh(item)
+        return item
+
+    @classmethod
     async def unclaim_item(
         cls, session: AsyncSession, couple_id: UUID, item_id: UUID, user_id: UUID
     ) -> WishlistItem:
@@ -993,3 +1139,280 @@ class CoupleStateService:
             "partner_id": partner_id,
             "partner_white_flag": partner_white_flag
         }
+
+
+# ==================== 模块五：心情日记服务 ====================
+
+class MoodLogService:
+    """心情日记服务"""
+
+    @classmethod
+    async def create_log(
+        cls, session: AsyncSession, couple_id: UUID, user_id: UUID,
+        mood: str, note: Optional[str] = None, tags: Optional[List[str]] = None
+    ):
+        """创建心情日记"""
+        from apps.just_right.models import MoodLog
+
+        log = MoodLog(
+            couple_id=couple_id,
+            uid=user_id,
+            mood=mood,
+            note=note,
+            tags=tags
+        )
+        session.add(log)
+        await session.commit()
+        await session.refresh(log)
+        return log
+
+    @classmethod
+    async def list_logs(
+        cls, session: AsyncSession, couple_id: UUID, user_id: UUID, days: int = 30
+    ):
+        """获取心情历史记录"""
+        from apps.just_right.models import MoodLog
+
+        start_date = datetime.now(timezone.utc) - timedelta(days=days)
+        stmt = select(MoodLog).where(
+            MoodLog.couple_id == couple_id,
+            MoodLog.uid == user_id,
+            MoodLog.is_deleted == False,
+            MoodLog.created_at >= start_date
+        ).order_by(MoodLog.created_at.desc())
+
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    async def get_stats(
+        cls, session: AsyncSession, couple_id: UUID, user_id: UUID, days: int = 30
+    ) -> dict:
+        """获取心情统计分析"""
+        from apps.just_right.models import MoodLog
+
+        logs = await cls.list_logs(session, couple_id, user_id, days)
+
+        # 统计心情分布
+        mood_distribution = {}
+        for log in logs:
+            mood_distribution[log.mood] = mood_distribution.get(log.mood, 0) + 1
+
+        # 最常见心情
+        most_common_mood = max(mood_distribution, key=mood_distribution.get) if mood_distribution else None
+
+        # 最近7天趋势
+        recent_start = datetime.now(timezone.utc) - timedelta(days=7)
+        recent_trend = [log for log in logs if log.created_at >= recent_start]
+
+        return {
+            "total_logs": len(logs),
+            "mood_distribution": mood_distribution,
+            "recent_trend": recent_trend[:10],  # 最多返回10条
+            "most_common_mood": most_common_mood
+        }
+
+
+# ==================== 模块六：通知服务 ====================
+
+class NotificationService:
+    """通知服务"""
+
+    @classmethod
+    async def create_notification(
+        cls, session: AsyncSession, couple_id: UUID, recipient_uid: UUID,
+        type: str, title: str, content: str, data: Optional[dict] = None
+    ):
+        """创建通知记录"""
+        from apps.just_right.models import Notification
+
+        notification = Notification(
+            couple_id=couple_id,
+            recipient_uid=recipient_uid,
+            type=type,
+            title=title,
+            content=content,
+            data=data,
+            is_read=False,
+            is_sent=False
+        )
+        session.add(notification)
+        await session.commit()
+        await session.refresh(notification)
+        return notification
+
+    @classmethod
+    async def list_notifications(
+        cls, session: AsyncSession, user_id: UUID, unread_only: bool = False, limit: int = 50
+    ):
+        """获取通知列表"""
+        from apps.just_right.models import Notification
+
+        stmt = select(Notification).where(
+            Notification.recipient_uid == user_id,
+            Notification.is_deleted == False
+        )
+
+        if unread_only:
+            stmt = stmt.where(Notification.is_read == False)
+
+        stmt = stmt.order_by(Notification.created_at.desc()).limit(limit)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    async def mark_as_read(cls, session: AsyncSession, notification_id: UUID, user_id: UUID) -> bool:
+        """标记通知为已读"""
+        from apps.just_right.models import Notification
+
+        stmt = select(Notification).where(
+            Notification.id == notification_id,
+            Notification.recipient_uid == user_id,
+            Notification.is_deleted == False
+        )
+        notification = (await session.execute(stmt)).scalars().first()
+
+        if not notification:
+            return False
+
+        notification.is_read = True
+        await session.commit()
+        return True
+
+    @classmethod
+    async def send_wechat_notification(cls, session: AsyncSession, notification_id: UUID):
+        """通过微信客户服务消息发送通知"""
+        from apps.just_right.models import Notification
+        from core.wechat.services import WeChatService
+        from core.users.models import User
+
+        stmt = select(Notification).where(
+            Notification.id == notification_id,
+            Notification.is_sent == False
+        )
+        notification = (await session.execute(stmt)).scalars().first()
+
+        if not notification:
+            return False
+
+        # 获取用户信息
+        user_stmt = select(User).where(User.id == notification.recipient_uid)
+        user = (await session.execute(user_stmt)).scalars().first()
+
+        if not user or not user.openid:
+            logger.warning(f"User {notification.recipient_uid} has no openid, skip notification")
+            return False
+
+        # 发送微信消息
+        try:
+            message = f"{notification.title}\n\n{notification.content}"
+            await WeChatService.send_customer_message(
+                appid=user.appid,
+                openid=user.openid,
+                content=message
+            )
+
+            notification.is_sent = True
+            notification.sent_at = datetime.now(timezone.utc)
+            await session.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send wechat notification: {e}")
+            return False
+
+
+# ==================== 统计服务 ====================
+
+class StatsService:
+    """统计服务"""
+
+    @classmethod
+    async def get_home_stats(cls, session: AsyncSession, couple_id: UUID) -> dict:
+        """获取首页统计数据"""
+        # 统计已完成的待办数量
+        completed_todos_stmt = select(func.count(TodoItem.id)).where(
+            TodoItem.couple_id == couple_id,
+            TodoItem.status == "completed",
+            TodoItem.is_deleted == False
+        )
+        completed_todos = (await session.execute(completed_todos_stmt)).scalar() or 0
+
+        # 统计备忘录总数
+        total_memos_stmt = select(func.count(Memo.id)).where(
+            Memo.couple_id == couple_id,
+            Memo.is_deleted == False
+        )
+        total_memos = (await session.execute(total_memos_stmt)).scalar() or 0
+
+        # 统计已实现的心愿数量
+        fulfilled_wishes_stmt = select(func.count(WishlistItem.id)).where(
+            WishlistItem.couple_id == couple_id,
+            WishlistItem.status == "fulfilled",
+            WishlistItem.is_deleted == False
+        )
+        fulfilled_wishes = (await session.execute(fulfilled_wishes_stmt)).scalar() or 0
+
+        # 统计心情日记数量
+        from apps.just_right.models import MoodLog
+        mood_logs_stmt = select(func.count(MoodLog.id)).where(
+            MoodLog.couple_id == couple_id,
+            MoodLog.is_deleted == False
+        )
+        mood_logs_count = (await session.execute(mood_logs_stmt)).scalar() or 0
+
+        return {
+            "completed_todos": completed_todos,
+            "total_memos": total_memos,
+            "fulfilled_wishes": fulfilled_wishes,
+            "mood_logs_count": mood_logs_count
+        }
+
+
+# ==================== 搜索服务 ====================
+
+class SearchService:
+    """全局搜索服务"""
+
+    @classmethod
+    async def global_search(
+        cls, session: AsyncSession, couple_id: UUID, keyword: str,
+        search_type: Optional[str] = None, limit: int = 20
+    ) -> dict:
+        """全局搜索（备忘录+待办）"""
+        results = {
+            "memos": [],
+            "todos": [],
+            "total": 0
+        }
+
+        # 搜索备忘录
+        if search_type in [None, "memo", "all"]:
+            memo_stmt = select(Memo).where(
+                Memo.couple_id == couple_id,
+                Memo.content.ilike(f"%{keyword}%"),
+                Memo.is_deleted == False
+            ).order_by(
+                Memo.is_pinned.desc(),
+                Memo.created_at.desc()
+            ).limit(limit)
+
+            memo_result = await session.execute(memo_stmt)
+            memos = list(memo_result.scalars().all())
+
+            # 构建 MemoOut
+            memo_outs = [await MemoService._build_memo_out(session, m) for m in memos]
+            results["memos"] = memo_outs
+
+        # 搜索待办
+        if search_type in [None, "todo", "all"]:
+            todo_stmt = select(TodoItem).where(
+                TodoItem.couple_id == couple_id,
+                TodoItem.content.ilike(f"%{keyword}%"),
+                TodoItem.is_deleted == False
+            ).order_by(TodoItem.created_at.desc()).limit(limit)
+
+            todo_result = await session.execute(todo_stmt)
+            results["todos"] = list(todo_result.scalars().all())
+
+        results["total"] = len(results["memos"]) + len(results["todos"])
+        return results

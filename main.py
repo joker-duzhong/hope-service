@@ -32,6 +32,18 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,
+        # 优化 OpenAPI 配置，便于前端 SDK 生成
+        servers=[
+            {"url": f"http://localhost:{settings.PORT}", "description": "本地开发环境"},
+            {"url": "https://bjx.zaiwenai.com", "description": "生产环境"},
+        ],
+        contact={
+            "name": "API Support",
+            "email": "support@example.com",
+        },
+        license_info={
+            "name": "Private",
+        },
     )
 
     # CORS 中间件

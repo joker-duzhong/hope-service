@@ -65,4 +65,15 @@ celery_app.conf.beat_schedule = {
         # 每 1 小时扫表一次打标
         "schedule": crontab(minute=0, hour="*/1"),
     },
+    # ==================== JustRight (情侣应用) 定时任务 ====================
+    "justright_anniversary_reminders": {
+        "task": "apps.just_right.tasks.send_anniversary_reminders",
+        # 每天早上 8:00 发送纪念日提醒
+        "schedule": crontab(minute=0, hour=8),
+    },
+    "justright_state_update_notifications": {
+        "task": "apps.just_right.tasks.notify_state_updates",
+        # 每 10 分钟检查状态更新并发送通知
+        "schedule": crontab(minute="*/10"),
+    },
 }

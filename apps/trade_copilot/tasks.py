@@ -56,8 +56,10 @@ async def run_monitor() -> str:
     try:
         async with local_session_maker() as session:
             # 查询所有持仓中股票，使用 joinedload 预加载关联的 strategy
+            # 增加 quantity > 0 过滤，避免监控已清仓但状态未同步的持仓
             stmt = select(Position).options(joinedload(Position.strategy)).where(
                 Position.status == "holding",
+                Position.quantity > 0,
                 Position.is_deleted == False
             )
             result = await session.execute(stmt)
@@ -79,11 +81,16 @@ async def run_monitor() -> str:
 
             # 监控规则应用
             for pos in positions:
+                # 双重保险：跳过已清仓的持仓（quantity <= 0）
+                if pos.quantity <= 0:
+                    logger.warning(f"跳过已清仓持仓: {pos.name}({pos.symbol}), quantity={pos.quantity}")
+                    continue
+
                 spot = spot_map.get(pos.symbol)
                 if not spot:
                     logger.warning(f"未能获取到 {pos.symbol}({pos.name}) 的实时行情")
                     continue
-                
+
                 curr_price = spot.latest_price
                 cost_price = pos.cost_price
                 hwm = pos.high_water_mark or cost_price

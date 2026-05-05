@@ -1,0 +1,12 @@
+{
+  "$schema": "https://hey-api.dev/openapi-ts.config.json",
+  "input": "http://localhost:8000/api/v1/openapi.json",
+  "output": "client",
+  "client": "@hey-api/client-fetch",
+  "types": {
+    "enums": "javascript"
+  },
+  "services": {
+    "asClass": true
+  }
+}

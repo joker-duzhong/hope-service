@@ -20,17 +20,21 @@ from apps.just_right.models import Couple
 from apps.just_right.schemas import (
     CoupleOut, CoupleJoin, CoupleUpdate,
     TodoItemCreate, TodoItemUpdate, TodoItemOut,
-    MemoCreate, MemoUpdate, MemoOut, MemoCommentCreate,
+    MemoCreate, MemoUpdate, MemoOut, MemoCommentCreate, MemoCommentUpdate, MemoSearchParams,
     UserManualOut, UserManualUpdate, CoupleManualsOut,
     RouletteOptionCreate, RouletteOptionUpdate, RouletteOptionOut, RouletteSpinResult,
-    WishlistItemCreate, WishlistItemUpdate, WishlistItemOut, WishlistItemOutHidden,
+    WishlistItemCreate, WishlistItemUpdate, WishlistItemOut, WishlistItemOutHidden, WishlistFulfillRequest,
     AnniversaryCreate, AnniversaryUpdate, AnniversaryOut, AnniversaryCountdown,
     CoupleStateUpdate, FridgeNoteUpdate, CoupleStateOut, UserState,
-    HomeDataOut
+    HomeDataOut, HomeStatsOut,
+    MoodLogCreate, MoodLogOut, MoodStatsOut,
+    NotificationOut,
+    GlobalSearchResult
 )
 from apps.just_right.services import (
     CoupleService, TodoService, MemoService, UserManualService,
-    RouletteService, WishlistService, AnniversaryService, CoupleStateService
+    RouletteService, WishlistService, AnniversaryService, CoupleStateService,
+    MoodLogService, NotificationService, StatsService, SearchService
 )
 
 
@@ -302,6 +306,79 @@ async def delete_memo(
     return ResponseModel(data=True, message="删除成功")
 
 
+@router.post("/memos/{memo_id}/pin", response_model=ResponseModel[MemoOut])
+async def toggle_pin_memo(
+    memo_id: PyUUID = Path(..., description="备忘录ID"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """置顶/取消置顶备忘录"""
+    couple = await get_couple_or_raise(db, current_user.id)
+    memo = await MemoService.toggle_pin(db, couple.id, memo_id)
+    if not memo:
+        return ResponseModel(code=404, message="备忘录不存在", data=None)
+    message = "已置顶" if memo.is_pinned else "已取消置顶"
+    return ResponseModel(data=memo, message=message)
+
+
+@router.get("/memos/search", response_model=PaginatedResponse[MemoOut])
+async def search_memos(
+    keyword: Optional[str] = Query(None, description="内容关键词"),
+    start_date: Optional[date] = Query(None, description="开始日期"),
+    end_date: Optional[date] = Query(None, description="结束日期"),
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """搜索备忘录"""
+    couple = await get_couple_or_raise(db, current_user.id)
+    memos, total = await MemoService.search_memos(
+        db, couple.id, keyword, start_date, end_date, page, page_size
+    )
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+    return PaginatedResponse(
+        data=PaginatedData(
+            items=memos,
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages
+        )
+    )
+
+
+@router.put("/memos/{memo_id}/comments/{comment_id}", response_model=ResponseModel[MemoOut])
+async def update_memo_comment(
+    data: MemoCommentUpdate,
+    memo_id: PyUUID = Path(..., description="备忘录ID"),
+    comment_id: str = Path(..., description="评论ID"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """修改评论（只能修改自己的）"""
+    couple = await get_couple_or_raise(db, current_user.id)
+    memo = await MemoService.update_comment(db, couple.id, memo_id, comment_id, current_user.id, data.content)
+    if not memo:
+        return ResponseModel(code=404, message="评论不存在或无权限", data=None)
+    return ResponseModel(data=memo, message="评论修改成功")
+
+
+@router.delete("/memos/{memo_id}/comments/{comment_id}", response_model=ResponseModel[MemoOut])
+async def delete_memo_comment(
+    memo_id: PyUUID = Path(..., description="备忘录ID"),
+    comment_id: str = Path(..., description="评论ID"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """删除评论（只能删除自己的）"""
+    couple = await get_couple_or_raise(db, current_user.id)
+    memo = await MemoService.delete_comment(db, couple.id, memo_id, comment_id, current_user.id)
+    if not memo:
+        return ResponseModel(code=404, message="评论不存在或无权限", data=None)
+    return ResponseModel(data=memo, message="评论删除成功")
+
+
 # ==================== 模块二：Ta的说明书 ====================
 
 @router.get("/manuals", response_model=ResponseModel[CoupleManualsOut])
@@ -505,6 +582,24 @@ async def fulfill_wishlist_item(
         return ResponseModel(code=400, message=str(e), data=None)
 
 
+@router.post("/wishlist/{item_id}/fulfill-with-record", response_model=ResponseModel[WishlistItemOut])
+async def fulfill_wishlist_item_with_record(
+    data: WishlistFulfillRequest,
+    item_id: PyUUID = Path(..., description="心愿ID"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """标记心愿已实现（带照片记录）"""
+    couple = await get_couple_or_raise(db, current_user.id)
+    try:
+        item = await WishlistService.fulfill_item_with_record(
+            db, couple.id, item_id, current_user.id, data.note, data.resource_ids
+        )
+        return ResponseModel(data=item, message="心愿实现！已保存美好瞬间~ 💕")
+    except BadRequestException as e:
+        return ResponseModel(code=400, message=str(e), data=None)
+
+
 # ==================== 模块四：纪念日与首页互动 ====================
 
 # --- Anniversary ---
@@ -685,10 +780,100 @@ async def get_home_data(
     # 双方说明书
     manuals = await UserManualService.get_couple_manuals(db, current_user.id, couple.id)
 
+    # 统计数据
+    stats_data = await StatsService.get_home_stats(db, couple.id)
+    stats = HomeStatsOut(**stats_data)
+
     return ResponseModel(data=HomeDataOut(
         couple=couple,
         together_days=together_days,
         upcoming_anniversaries=upcoming,
         state=state_out,
-        manuals=manuals
+        manuals=manuals,
+        stats=stats
     ))
+
+
+# ==================== 模块五：心情日记 ====================
+
+@router.post("/mood-logs", response_model=ResponseModel[MoodLogOut])
+async def create_mood_log(
+    data: MoodLogCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """创建心情日记"""
+    couple = await get_couple_or_raise(db, current_user.id)
+    log = await MoodLogService.create_log(
+        db, couple.id, current_user.id, data.mood, data.note, data.tags
+    )
+    return ResponseModel(data=log, message="心情记录成功")
+
+
+@router.get("/mood-logs", response_model=ResponseModel[List[MoodLogOut]])
+async def list_mood_logs(
+    days: int = Query(30, ge=1, le=365, description="查询天数"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取心情历史记录"""
+    couple = await get_couple_or_raise(db, current_user.id)
+    logs = await MoodLogService.list_logs(db, couple.id, current_user.id, days)
+    return ResponseModel(data=logs)
+
+
+@router.get("/mood-logs/stats", response_model=ResponseModel[MoodStatsOut])
+async def get_mood_stats(
+    days: int = Query(30, ge=1, le=365, description="统计天数"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取心情统计分析"""
+    couple = await get_couple_or_raise(db, current_user.id)
+    stats = await MoodLogService.get_stats(db, couple.id, current_user.id, days)
+    return ResponseModel(data=MoodStatsOut(**stats))
+
+
+# ==================== 模块六：通知系统 ====================
+
+@router.get("/notifications", response_model=ResponseModel[List[NotificationOut]])
+async def list_notifications(
+    unread_only: bool = Query(False, description="仅未读"),
+    limit: int = Query(50, ge=1, le=100, description="数量限制"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取通知列表"""
+    notifications = await NotificationService.list_notifications(
+        db, current_user.id, unread_only, limit
+    )
+    return ResponseModel(data=notifications)
+
+
+@router.post("/notifications/{notification_id}/read", response_model=ResponseModel[bool])
+async def mark_notification_read(
+    notification_id: PyUUID = Path(..., description="通知ID"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """标记通知已读"""
+    success = await NotificationService.mark_as_read(db, notification_id, current_user.id)
+    if not success:
+        return ResponseModel(code=404, message="通知不存在", data=False)
+    return ResponseModel(data=True, message="已标记为已读")
+
+
+# ==================== 全局搜索 ====================
+
+@router.get("/search", response_model=ResponseModel[GlobalSearchResult])
+async def global_search(
+    keyword: str = Query(..., description="搜索关键词", min_length=1),
+    type: Optional[str] = Query(None, description="搜索类型: memo, todo, all"),
+    limit: int = Query(20, ge=1, le=50, description="每类结果数量限制"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """全局搜索（备忘录+待办）"""
+    couple = await get_couple_or_raise(db, current_user.id)
+    results = await SearchService.global_search(db, couple.id, keyword, type, limit)
+    return ResponseModel(data=GlobalSearchResult(**results))
