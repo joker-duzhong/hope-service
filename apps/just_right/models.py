@@ -48,6 +48,8 @@ class Memo(CoreModel):
     creator_uid: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), comment="创建者用户ID")
     content: Mapped[str] = mapped_column(Text, comment="备忘录内容")
     resource_ids: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True, comment="关联资源ID列表")
+    likes: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True, comment="点赞用户ID列表")
+    comments: Mapped[Optional[list]] = mapped_column(JSON, nullable=True, comment="评论列表")
 
 
 # ==================== 模块二：Ta的说明书 ====================

@@ -5,7 +5,7 @@ JustRight Services
 import logging
 import random
 import secrets
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from typing import List, Optional, Tuple
 from uuid import UUID
 
@@ -19,7 +19,7 @@ from apps.just_right.models import (
 )
 from apps.just_right.schemas import (
     TodoItemCreate, TodoItemUpdate,
-    MemoCreate, MemoOut,
+    MemoCreate, MemoUpdate, MemoOut,
     UserManualCreate, UserManualUpdate,
     RouletteOptionCreate, RouletteOptionUpdate,
     WishlistItemCreate, WishlistItemUpdate,
@@ -146,6 +146,20 @@ class CoupleService:
         await session.refresh(couple)
         return couple
 
+    @classmethod
+    async def dissolve_couple(cls, session: AsyncSession, couple_id: UUID, user_id: UUID) -> bool:
+        """解除情侣关系"""
+        couple = await cls.get_couple_by_id(session, couple_id)
+        if not couple:
+            raise NotFoundException("情侣关系不存在")
+        if couple.user1_id != user_id and couple.user2_id != user_id:
+            raise BadRequestException("无权限操作")
+
+        couple.status = "inactive"
+        couple.is_deleted = True
+        await session.commit()
+        return True
+
 
 # ==================== 模块一：清单与备忘 ====================
 
@@ -202,8 +216,11 @@ class TodoService:
             todo.content = data.content
         if data.status is not None:
             if data.status == "completed" and todo.status != "completed":
-                todo.completed_at = datetime.now()
+                todo.completed_at = datetime.now(timezone.utc)
                 todo.completed_by = user_id
+            elif data.status == "pending" and todo.status != "pending":
+                todo.completed_at = None
+                todo.completed_by = None
             todo.status = data.status
 
         await session.commit()
@@ -259,6 +276,8 @@ class MemoService:
             creator_uid=memo.creator_uid,
             content=memo.content,
             resources=resources or None,
+            likes=[UUID(uid) for uid in memo.likes] if memo.likes else [],
+            comments=memo.comments or [],
             created_at=memo.created_at,
             updated_at=memo.updated_at,
             is_deleted=memo.is_deleted,
@@ -320,6 +339,74 @@ class MemoService:
         memo.is_deleted = True
         await session.commit()
         return True
+
+    @classmethod
+    async def update_memo(
+        cls, session: AsyncSession, couple_id: UUID, memo_id: UUID, user_id: UUID, data: MemoUpdate
+    ) -> Optional[MemoOut]:
+        """更新备忘录"""
+        stmt = select(Memo).where(
+            Memo.id == memo_id,
+            Memo.couple_id == couple_id,
+            Memo.creator_uid == user_id,
+            Memo.is_deleted == False
+        )
+        memo = (await session.execute(stmt)).scalars().first()
+        if not memo:
+            return None
+        if data.content is not None:
+            memo.content = data.content
+        if data.resource_ids is not None:
+            memo.resource_ids = [str(rid) for rid in data.resource_ids]
+        await session.commit()
+        return await cls._build_memo_out(session, memo)
+
+    @classmethod
+    async def toggle_like(
+        cls, session: AsyncSession, couple_id: UUID, memo_id: UUID, user_id: UUID
+    ) -> Optional[MemoOut]:
+        """点赞/取消点赞备忘录"""
+        stmt = select(Memo).where(Memo.id == memo_id, Memo.couple_id == couple_id, Memo.is_deleted == False)
+        memo = (await session.execute(stmt)).scalars().first()
+        if not memo:
+            return None
+        
+        likes = memo.likes or []
+        uid_str = str(user_id)
+        if uid_str in likes:
+            likes.remove(uid_str)
+        else:
+            likes.append(uid_str)
+            
+        memo.likes = likes
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(memo, "likes")
+        
+        await session.commit()
+        return await cls._build_memo_out(session, memo)
+
+    @classmethod
+    async def add_comment(
+        cls, session: AsyncSession, couple_id: UUID, memo_id: UUID, user_id: UUID, content: str
+    ) -> Optional[MemoOut]:
+        """评论备忘录"""
+        stmt = select(Memo).where(Memo.id == memo_id, Memo.couple_id == couple_id, Memo.is_deleted == False)
+        memo = (await session.execute(stmt)).scalars().first()
+        if not memo:
+            return None
+            
+        comments = memo.comments or []
+        comments.append({
+            "uid": str(user_id),
+            "content": content,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+        memo.comments = comments
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(memo, "comments")
+        
+        await session.commit()
+        return await cls._build_memo_out(session, memo)
 
 
 # ==================== 模块二：Ta的说明书 ====================
@@ -509,13 +596,16 @@ class WishlistService:
 
     @classmethod
     async def list_items(
-        cls, session: AsyncSession, couple_id: UUID, user_id: UUID
+        cls, session: AsyncSession, couple_id: UUID, user_id: UUID, status: Optional[str] = None
     ) -> List[WishlistItem]:
         """获取心愿单列表"""
         stmt = select(WishlistItem).where(
             WishlistItem.couple_id == couple_id,
             WishlistItem.is_deleted == False
-        ).order_by(WishlistItem.created_at.desc())
+        )
+        if status:
+            stmt = stmt.where(WishlistItem.status == status)
+        stmt = stmt.order_by(WishlistItem.created_at.desc())
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
@@ -597,7 +687,28 @@ class WishlistService:
     async def fulfill_item(
         cls, session: AsyncSession, couple_id: UUID, item_id: UUID, user_id: UUID
     ) -> WishlistItem:
-        """标记心愿已实现 (只有认领者可以操作)"""
+        """标记心愿已实现 (只能由创建者操作)"""
+        stmt = select(WishlistItem).where(
+            WishlistItem.id == item_id,
+            WishlistItem.couple_id == couple_id,
+            WishlistItem.creator_uid == user_id,
+            WishlistItem.is_deleted == False
+        )
+        item = (await session.execute(stmt)).scalars().first()
+
+        if not item:
+            raise NotFoundException("心愿不存在或只能由创建者标记完成")
+
+        item.status = "fulfilled"
+        await session.commit()
+        await session.refresh(item)
+        return item
+
+    @classmethod
+    async def unclaim_item(
+        cls, session: AsyncSession, couple_id: UUID, item_id: UUID, user_id: UUID
+    ) -> WishlistItem:
+        """取消认领心愿 (只有认领者可以操作)"""
         stmt = select(WishlistItem).where(
             WishlistItem.id == item_id,
             WishlistItem.couple_id == couple_id,
@@ -607,9 +718,10 @@ class WishlistService:
         item = (await session.execute(stmt)).scalars().first()
 
         if not item:
-            raise NotFoundException("心愿不存在或您不是认领者")
-
-        item.status = "fulfilled"
+            raise NotFoundException("心愿不存在或您未认领此心愿")
+            
+        item.status = "unclaimed"
+        item.claimer_uid = None
         await session.commit()
         await session.refresh(item)
         return item
@@ -827,7 +939,7 @@ class CoupleStateService:
         if data.white_flag is not None:
             setattr(state, f"{prefix}_white_flag", data.white_flag)
             if data.white_flag:
-                setattr(state, f"{prefix}_white_flag_at", datetime.now())
+                setattr(state, f"{prefix}_white_flag_at", datetime.now(timezone.utc))
             else:
                 setattr(state, f"{prefix}_white_flag_at", None)
 
@@ -846,7 +958,7 @@ class CoupleStateService:
 
         state.fridge_note = data.fridge_note
         state.fridge_note_by = user_id
-        state.fridge_note_at = datetime.now()
+        state.fridge_note_at = datetime.now(timezone.utc)
 
         await session.commit()
         await session.refresh(state)
@@ -872,7 +984,7 @@ class CoupleStateService:
         # 如果对方举了白旗，且在最近1分钟内 (避免每次刷新都弹)
         show_animation = False
         if partner_white_flag and partner_white_flag_at:
-            time_diff = datetime.now() - partner_white_flag_at
+            time_diff = datetime.now(timezone.utc) - partner_white_flag_at
             if time_diff < timedelta(minutes=1):
                 show_animation = True
 

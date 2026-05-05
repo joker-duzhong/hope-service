@@ -104,12 +104,26 @@ class MemoUpdate(BaseModel):
     resource_ids: Optional[List[UUID]] = None
 
 
+class MemoCommentCreate(BaseModel):
+    """创建备忘录评论"""
+    content: str = Field(..., description="评论内容")
+
+
+class MemoCommentOut(BaseModel):
+    """备忘录评论输出"""
+    uid: UUID
+    content: str
+    created_at: datetime
+
+
 class MemoOut(MemoBase):
     """备忘录输出"""
     id: UUID
     couple_id: UUID
     creator_uid: UUID
     resources: Optional[List[ResourceResponse]] = None
+    likes: Optional[List[UUID]] = None
+    comments: Optional[List[MemoCommentOut]] = None
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -275,7 +289,7 @@ class WishlistItemOutHidden(BaseModel):
             "is_deleted": item.is_deleted,
         }
         if is_creator and item.status == "claimed":
-            data["status"] = "preparing"
+            data["status"] = "unclaimed"
             data["claimer_uid"] = None
         else:
             data["status"] = item.status

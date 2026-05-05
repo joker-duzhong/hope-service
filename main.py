@@ -101,6 +101,10 @@ def create_app() -> FastAPI:
     from apps.typo_craft.router import router as typo_craft_router
     app.include_router(typo_craft_router, prefix=f"{settings.API_V1_PREFIX}/typo-craft", tags=["言图引擎"])
 
+    # Apps: AuraKey (AI 绘画)
+    from apps.aurakey.router import router as aurakey_router
+    app.include_router(aurakey_router, prefix=f"{settings.API_V1_PREFIX}/aurakey", tags=["AuraKey AI 绘画"])
+
     # 健康检查
     @app.get("/health", tags=["健康检查"])
     async def health_check():

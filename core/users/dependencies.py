@@ -14,6 +14,27 @@ from core.users.models import User
 from core.users.services import UserService
 
 security = HTTPBearer()
+security_optional = HTTPBearer(auto_error=False)
+
+
+async def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+    db: AsyncSession = Depends(get_db),
+) -> Optional[User]:
+    """获取当前登录用户（可选），未登录时返回 None"""
+    if not credentials:
+        return None
+    try:
+        payload = decode_token(credentials.credentials)
+        if payload is None or payload.get("type") != "access":
+            return None
+        user_id_str: Optional[str] = payload.get("sub")
+        if not user_id_str:
+            return None
+        user_id = UUID(user_id_str)
+        return await UserService.get_by_id(db, user_id)
+    except Exception:
+        return None
 
 
 async def get_current_user(

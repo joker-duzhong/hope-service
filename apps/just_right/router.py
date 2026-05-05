@@ -20,7 +20,7 @@ from apps.just_right.models import Couple
 from apps.just_right.schemas import (
     CoupleOut, CoupleJoin, CoupleUpdate,
     TodoItemCreate, TodoItemUpdate, TodoItemOut,
-    MemoCreate, MemoOut,
+    MemoCreate, MemoUpdate, MemoOut, MemoCommentCreate,
     UserManualOut, UserManualUpdate, CoupleManualsOut,
     RouletteOptionCreate, RouletteOptionUpdate, RouletteOptionOut, RouletteSpinResult,
     WishlistItemCreate, WishlistItemUpdate, WishlistItemOut, WishlistItemOutHidden,
@@ -50,11 +50,11 @@ router = APIRouter(dependencies=[Depends(get_app_key)])
 
 # ==================== 辅助函数 ====================
 
-async def get_couple_or_raise(session: AsyncSession, user_id: PyUUID) -> Couple:
-    """获取当前用户的情侣关系，如果不存在则抛出异常"""
+async def get_couple_or_raise(session: AsyncSession, user_id: PyUUID, require_active: bool = True) -> Couple:
+    """获取当前用户的情侣关系，如果不存在或状态不匹配则抛出异常"""
     couple = await CoupleService.get_couple_by_user(session, user_id)
-    if not couple:
-        raise BadRequestException("您还没有伴侣，请先创建/加入情侣关系")
+    if not couple or (require_active and couple.status != "active"):
+        raise BadRequestException("您还没有配对成功的伴侣，请先邀请或加入")
     return couple
 
 
@@ -118,7 +118,7 @@ async def get_my_couple(
     db: AsyncSession = Depends(get_db)
 ):
     """获取当前用户的情侣关系"""
-    couple = await get_couple_or_raise(db, current_user.id)
+    couple = await get_couple_or_raise(db, current_user.id, require_active=False)
     return ResponseModel(data=couple)
 
 
@@ -129,11 +129,22 @@ async def update_my_couple(
     db: AsyncSession = Depends(get_db)
 ):
     """更新情侣关系信息"""
-    couple = await get_couple_or_raise(db, current_user.id)
+    couple = await get_couple_or_raise(db, current_user.id, require_active=False)
     updated = await CoupleService.update_couple(
         db, couple.id, current_user.id, data.anniversary_date
     )
     return ResponseModel(data=updated)
+
+
+@router.post("/couples/me/dissolve", response_model=ResponseModel[bool])
+async def dissolve_my_couple(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """解除情侣关系"""
+    couple = await get_couple_or_raise(db, current_user.id, require_active=False)
+    await CoupleService.dissolve_couple(db, couple.id, current_user.id)
+    return ResponseModel(data=True, message="解除关系成功")
 
 
 # ==================== 模块一：清单与备忘 ====================
@@ -231,6 +242,50 @@ async def list_memos(
             total_pages=total_pages
         )
     )
+
+
+@router.put("/memos/{memo_id}", response_model=ResponseModel[MemoOut])
+async def update_memo(
+    data: MemoUpdate,
+    memo_id: PyUUID = Path(..., description="备忘录ID"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """修改备忘录内容/图片 (只能修改自己的)"""
+    couple = await get_couple_or_raise(db, current_user.id)
+    memo = await MemoService.update_memo(db, couple.id, memo_id, current_user.id, data)
+    if not memo:
+        return ResponseModel(code=404, message="备忘录不存在或无权限", data=None)
+    return ResponseModel(data=memo, message="修改成功")
+
+
+@router.post("/memos/{memo_id}/like", response_model=ResponseModel[MemoOut])
+async def toggle_like_memo(
+    memo_id: PyUUID = Path(..., description="备忘录ID"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """点赞/取消点赞备忘录"""
+    couple = await get_couple_or_raise(db, current_user.id)
+    memo = await MemoService.toggle_like(db, couple.id, memo_id, current_user.id)
+    if not memo:
+        return ResponseModel(code=404, message="备忘录不存在", data=None)
+    return ResponseModel(data=memo)
+
+
+@router.post("/memos/{memo_id}/comment", response_model=ResponseModel[MemoOut])
+async def comment_on_memo(
+    data: MemoCommentCreate,
+    memo_id: PyUUID = Path(..., description="备忘录ID"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """评论备忘录"""
+    couple = await get_couple_or_raise(db, current_user.id)
+    memo = await MemoService.add_comment(db, couple.id, memo_id, current_user.id, data.content)
+    if not memo:
+        return ResponseModel(code=404, message="备忘录不存在", data=None)
+    return ResponseModel(data=memo, message="评论成功")
 
 
 @router.delete("/memos/{memo_id}", response_model=ResponseModel[bool])
@@ -362,12 +417,13 @@ async def create_wishlist_item(
 
 @router.get("/wishlist", response_model=ResponseModel[List[WishlistItemOutHidden]])
 async def list_wishlist(
+    status: Optional[str] = Query(None, description="状态筛选: unclaimed/claimed/fulfilled"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """获取心愿单列表"""
     couple = await get_couple_or_raise(db, current_user.id)
-    items = await WishlistService.list_items(db, couple.id, current_user.id)
+    items = await WishlistService.list_items(db, couple.id, current_user.id, status=status)
     # 根据是否是创建者转换输出 (隐藏认领状态保持惊喜)
     hidden_items = [
         WishlistItemOutHidden.from_item(item, item.creator_uid == current_user.id)
@@ -419,6 +475,20 @@ async def claim_wishlist_item(
     except BadRequestException as e:
         return ResponseModel(code=400, message=str(e), data=None)
 
+
+@router.post("/wishlist/{item_id}/unclaim", response_model=ResponseModel[WishlistItemOut])
+async def unclaim_wishlist_item(
+    item_id: PyUUID = Path(..., description="心愿ID"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """取消认领心愿"""
+    couple = await get_couple_or_raise(db, current_user.id)
+    try:
+        item = await WishlistService.unclaim_item(db, couple.id, item_id, current_user.id)
+        return ResponseModel(data=item, message="已取消认领")
+    except Exception as e:
+        return ResponseModel(code=400, message=str(e), data=None)
 
 @router.post("/wishlist/{item_id}/fulfill", response_model=ResponseModel[WishlistItemOut])
 async def fulfill_wishlist_item(
