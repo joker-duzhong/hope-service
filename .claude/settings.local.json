@@ -56,7 +56,21 @@
       "Bash(curl -v \"https://oneapi.zaiwenai.com/v1/chat/completions\" -X POST -H \"Authorization: Bearer sk-i3nxzgcvxv3i0q28kwpwrgxvv6ohpqabrgeh7ze73280n23i\" -H \"Content-Type: application/json\" -d \"{\\\\\"model\\\\\":\\\\\"glm-5\\\\\",\\\\\"messages\\\\\":[{\\\\\"role\\\\\":\\\\\"user\\\\\",\\\\\"content\\\\\":\\\\\"hi\\\\\"}],\\\\\"stream\\\\\":false}\" --max-time 30)",
       "Bash(python -m py_compile apps/trade_copilot/tasks.py apps/trade_copilot/services.py)",
       "Bash(python -c \"from core.redis_client import redis_client; import asyncio; import json; result = asyncio.run\\(redis_client.get\\('wechat_scan:54d485bc-1c3d-4d9e-88dc-d6eb38519c64'\\)\\); print\\(result if result else 'Key not found or expired'\\)\")",
-      "Bash(python -c \"from core.config import settings; import json; config = settings.get_wechat_config\\('wx29ee8c1ad373bafa'\\); print\\(json.dumps\\(config, indent=2, ensure_ascii=False\\) if config else 'Config not found'\\)\")"
+      "Bash(python -c \"from core.config import settings; import json; config = settings.get_wechat_config\\('wx29ee8c1ad373bafa'\\); print\\(json.dumps\\(config, indent=2, ensure_ascii=False\\) if config else 'Config not found'\\)\")",
+      "Bash(curl -s \"https://api.lxyy.fun/api/v1/health\")",
+      "Bash(curl -s \"https://api.lxyy.fun/health\")",
+      "Bash(curl -s \"https://api.lxyy.fun/api/v1/wechat/callback/wx29ee8c1ad373bafa?signature=test&timestamp=123&nonce=456&echostr=hello\")",
+      "Bash(alembic current:*)",
+      "Bash(python debug_wechat_scan.py)",
+      "Bash(python -m alembic heads)",
+      "Bash(curl -s \"https://api.lxyy.fun/api/v1/auth/wechat/qrcode?appid=wx29ee8c1ad373bafa\")",
+      "Bash(python -m alembic upgrade head)",
+      "Bash(curl -s \"https://api.lxyy.fun/api/v1/auth/wechat/status?scene_id=6f53edf4-53ef-4f41-9bd1-6dc9af203a69\")",
+      "Bash(python -m alembic stamp 59fa4de6b8ee)",
+      "Bash(python -m alembic stamp heads)",
+      "Bash(python test_wechat_callback.py)",
+      "Bash(python -m alembic revision --autogenerate -m \"add_aurakey_tables\")",
+      "Bash(python -c \"from sqlalchemy import text; from core.database import async_session_maker; import asyncio; async def test\\(\\): async with async_session_maker\\(\\) as db: result = await db.execute\\(text\\('SELECT COUNT\\(*\\) FROM aurakey_gallery'\\)\\); print\\(f'aurakey_gallery table exists, count: {result.scalar\\(\\)}'\\); asyncio.run\\(test\\(\\)\\)\")"
     ]
   }
 }

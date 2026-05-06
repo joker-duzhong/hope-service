@@ -62,6 +62,11 @@ async def handle_wechat_event(appid: str, request: Request, msg_signature: str =
     body = await request.body()
     body_str = body.decode("utf-8")
 
+    # 详细日志记录
+    print(f"[WeChat Callback] Received event for appid: {appid}")
+    print(f"[WeChat Callback] Body length: {len(body_str)}")
+    print(f"[WeChat Callback] msg_signature: {msg_signature}, timestamp: {timestamp}, nonce: {nonce}")
+
     try:
         root = ET.fromstring(body_str)
 
@@ -69,32 +74,48 @@ async def handle_wechat_event(appid: str, request: Request, msg_signature: str =
         encrypt = root.findtext("Encrypt", default="")
 
         if encrypt:
+            print(f"[WeChat Callback] Encrypted message detected")
             # 安全模式：解密消息
             config = settings.get_wechat_config(appid)
             if config and config.get("encoding_aes_key") and msg_signature and timestamp and nonce:
                 crypto = get_crypto(appid)
                 decrypted_xml = crypto.decrypt_message(body_str, msg_signature, timestamp, nonce)
                 root = ET.fromstring(decrypted_xml)
+                print(f"[WeChat Callback] Message decrypted successfully")
             else:
-                print("Missing crypto config or parameters for encrypted message")
+                print("[WeChat Callback] Missing crypto config or parameters for encrypted message")
+        else:
+            print(f"[WeChat Callback] Plain text message")
 
         msg_type = root.findtext("MsgType", default="")
         openid = root.findtext("FromUserName", default="")
 
+        print(f"[WeChat Callback] MsgType: {msg_type}, OpenID: {openid}")
+
         if msg_type == "event":
             event = root.findtext("Event", default="")
             event_key = root.findtext("EventKey", default="")
+            print(f"[WeChat Callback] Event: {event}, EventKey: {event_key}")
+
             scene_id = None
             if event == "subscribe":
                 scene_id = event_key.replace("qrscene_", "")
+                print(f"[WeChat Callback] Subscribe event, scene_id: {scene_id}")
             elif event == "SCAN":
                 scene_id = event_key
+                print(f"[WeChat Callback] SCAN event, scene_id: {scene_id}")
 
             if scene_id:
+                print(f"[WeChat Callback] Processing scan event for scene_id: {scene_id}")
                 await WeChatService.process_scan_event(appid, scene_id, openid, event)
+                print(f"[WeChat Callback] Scan event processed successfully")
+            else:
+                print(f"[WeChat Callback] No scene_id found, skipping")
 
     except Exception as e:
-        print(f"Error parsing wechat XML: {e}")
+        print(f"[WeChat Callback] Error parsing wechat XML: {e}")
+        import traceback
+        traceback.print_exc()
 
     return Response(content="success", media_type="text/plain")
 

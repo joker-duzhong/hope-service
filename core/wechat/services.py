@@ -102,37 +102,64 @@ class WeChatService:
 
     @staticmethod
     async def process_scan_event(appid: str, scene_id: str, openid: str, event_type: str = "SCAN"):
-        async with async_session_maker() as db:
-            user = await UserService.get_by_openid(db, openid)
-            is_new_user = False
+        print(f"[process_scan_event] Starting - appid: {appid}, scene_id: {scene_id}, openid: {openid}, event_type: {event_type}")
 
-            if not user:
-                is_new_user = True
-                user = await UserService.create_by_wechat(
-                    db,
-                    openid=openid,
-                    source="wechat_scan"
-                )
+        try:
+            async with async_session_maker() as db:
+                print(f"[process_scan_event] Getting user by openid: {openid}")
+                user = await UserService.get_by_openid(db, openid)
+                is_new_user = False
 
-        token = create_access_token(subject=user.id)
+                if not user:
+                    print(f"[process_scan_event] User not found, creating new user")
+                    is_new_user = True
+                    user = await UserService.create_by_wechat(
+                        db,
+                        openid=openid,
+                        source="wechat_scan"
+                    )
+                    print(f"[process_scan_event] New user created with id: {user.id}")
+                else:
+                    print(f"[process_scan_event] Existing user found with id: {user.id}")
 
-        user_info = {
-            "id": user.id,
-            "openid": user.openid,
-            "nickname": user.nickname,
-            "avatar": user.avatar
-        }
+            token = create_access_token(subject=user.id)
+            print(f"[process_scan_event] Access token created")
 
-        cache_data = {
-            "status": "SUCCESS",
-            "token": token,
-            "userInfo": user_info
-        }
-        await redis_client.set(f"wechat_scan:{scene_id}", json.dumps(cache_data), ex=300)
+            user_info = {
+                "id": user.id,
+                "openid": user.openid,
+                "nickname": user.nickname,
+                "avatar": user.avatar
+            }
 
-        # Send greeting message via WeChat Customer Service API
-        message = "✅ 注册并登录成功，欢迎来到 Hope Service！" if is_new_user else "✅ 登录成功，欢迎回来！"
-        await WeChatService.send_customer_message(appid, openid, message)
+            cache_data = {
+                "status": "SUCCESS",
+                "token": token,
+                "userInfo": user_info
+            }
+
+            redis_key = f"wechat_scan:{scene_id}"
+            print(f"[process_scan_event] Setting Redis key: {redis_key}")
+            await redis_client.set(redis_key, json.dumps(cache_data), ex=300)
+            print(f"[process_scan_event] Redis key set successfully")
+
+            # Verify Redis write
+            verify_data = await redis_client.get(redis_key)
+            if verify_data:
+                print(f"[process_scan_event] Redis verification successful: {verify_data[:100]}...")
+            else:
+                print(f"[process_scan_event] WARNING: Redis verification failed - key not found!")
+
+            # Send greeting message via WeChat Customer Service API
+            message = "✅ 注册并登录成功，欢迎来到 Hope Service！" if is_new_user else "✅ 登录成功，欢迎回来！"
+            await WeChatService.send_customer_message(appid, openid, message)
+            print(f"[process_scan_event] Process completed successfully")
+
+        except Exception as e:
+            print(f"[process_scan_event] ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
     @staticmethod
     async def send_customer_message(appid: str, openid: str, content: str):
