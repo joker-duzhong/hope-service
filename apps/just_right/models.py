@@ -138,14 +138,18 @@ class CoupleState(CoreModel):
     # 用户1的状态
     user1_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), comment="用户1 ID")
     user1_mood: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="用户1心情")
+    user1_mood_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, comment="用户1心情更新时间")
     user1_note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True, comment="用户1留言")
+    user1_note_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, comment="用户1留言更新时间")
     user1_white_flag: Mapped[bool] = mapped_column(Boolean, default=False, comment="用户1举白旗状态")
     user1_white_flag_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, comment="用户1举白旗时间")
 
     # 用户2的状态
     user2_id: Mapped[Optional[uuid.UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True, comment="用户2 ID")
     user2_mood: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="用户2心情")
+    user2_mood_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, comment="用户2心情更新时间")
     user2_note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True, comment="用户2留言")
+    user2_note_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, comment="用户2留言更新时间")
     user2_white_flag: Mapped[bool] = mapped_column(Boolean, default=False, comment="用户2举白旗状态")
     user2_white_flag_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, comment="用户2举白旗时间")
 
@@ -180,6 +184,7 @@ class Notification(CoreModel):
     title: Mapped[str] = mapped_column(String(200), comment="通知标题")
     content: Mapped[str] = mapped_column(Text, comment="通知内容")
     data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, comment="附加数据")
+    dedupe_key: Mapped[Optional[str]] = mapped_column(String(200), nullable=True, index=True, comment="通知去重键")
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否已读")
     is_sent: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否已发送 (微信推送)")
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, comment="发送时间")

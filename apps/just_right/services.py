@@ -5,11 +5,13 @@ JustRight Services
 import logging
 import random
 import secrets
+from calendar import monthrange
 from datetime import datetime, timedelta, date, timezone
 from typing import List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, or_, and_, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.exceptions import AppException, NotFoundException, BadRequestException
@@ -31,6 +33,74 @@ from core.storage.models import Resource
 from core.storage.services import StorageService
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_uuid_list(raw_values: Optional[List[object]], *, context: str) -> List[UUID]:
+    """Best-effort UUID parsing for JSON columns with historical dirty data."""
+    values: List[UUID] = []
+    for raw in raw_values or []:
+        try:
+            values.append(raw if isinstance(raw, UUID) else UUID(str(raw)))
+        except (TypeError, ValueError, AttributeError):
+            logger.warning("Skip invalid UUID in %s: %r", context, raw)
+    return values
+
+
+def _parse_comment_payload(raw_comments: Optional[list], *, memo_id: UUID) -> list[dict]:
+    """Normalize memo comments to avoid response serialization crashes."""
+    comments: list[dict] = []
+    for index, raw in enumerate(raw_comments or []):
+        if not isinstance(raw, dict):
+            logger.warning("Skip invalid memo comment in %s at index %s: %r", memo_id, index, raw)
+            continue
+
+        uid_raw = raw.get("uid")
+        content = raw.get("content")
+        try:
+            uid = UUID(str(uid_raw))
+        except (TypeError, ValueError, AttributeError):
+            logger.warning(
+                "Skip memo comment with invalid uid in %s at index %s: %r",
+                memo_id,
+                index,
+                uid_raw,
+            )
+            continue
+
+        if content is None:
+            logger.warning("Skip memo comment without content in %s at index %s", memo_id, index)
+            continue
+
+        created_at_raw = raw.get("created_at")
+        updated_at_raw = raw.get("updated_at")
+        try:
+            created_at = (
+                created_at_raw
+                if isinstance(created_at_raw, datetime)
+                else datetime.fromisoformat(str(created_at_raw))
+            )
+        except (TypeError, ValueError):
+            created_at = datetime.now(timezone.utc)
+
+        try:
+            updated_at = (
+                updated_at_raw
+                if isinstance(updated_at_raw, datetime)
+                else datetime.fromisoformat(str(updated_at_raw))
+            )
+        except (TypeError, ValueError):
+            updated_at = None
+
+        comments.append(
+            {
+                "id": str(raw.get("id") or uuid4()),
+                "uid": uid,
+                "content": str(content),
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+        )
+    return comments
 
 
 # ==================== 情侣服务 ====================
@@ -55,16 +125,22 @@ class CoupleService:
         if existing and existing.status == "pending":
             return existing
 
-        invite_code = cls.generate_invite_code()
-        couple = Couple(
-            user1_id=user_id,
-            invite_code=invite_code,
-            status="pending"
-        )
-        session.add(couple)
-        await session.commit()
-        await session.refresh(couple)
-        return couple
+        for _ in range(5):
+            invite_code = cls.generate_invite_code()
+            couple = Couple(
+                user1_id=user_id,
+                invite_code=invite_code,
+                status="pending"
+            )
+            session.add(couple)
+            try:
+                await session.commit()
+                await session.refresh(couple)
+                return couple
+            except IntegrityError:
+                await session.rollback()
+
+        raise AppException(code=500, message="邀请码生成失败，请稍后重试")
 
     @classmethod
     async def join_couple(cls, session: AsyncSession, user_id: UUID, invite_code: str) -> Couple:
@@ -87,6 +163,9 @@ class CoupleService:
 
         if couple.user1_id == user_id:
             raise BadRequestException("不能加入自己创建的情侣关系")
+
+        if couple.user2_id and couple.user2_id != user_id:
+            raise BadRequestException("该邀请码已被其他用户使用")
 
         # 加入情侣关系
         couple.user2_id = user_id
@@ -252,13 +331,7 @@ class MemoService:
         resources = []
         resource_ids = memo.resource_ids or []
         if resource_ids:
-            parsed_ids = []
-            for r in resource_ids:
-                try:
-                    parsed_ids.append(UUID(r) if isinstance(r, str) else r)
-                except (ValueError, AttributeError):
-                    logger.warning(f"Invalid UUID in memo {memo.id}: {r}")
-                    continue
+            parsed_ids = _coerce_uuid_list(resource_ids, context=f"memo {memo.id} resource_ids")
 
             if parsed_ids:
                 result = await session.execute(
@@ -270,14 +343,19 @@ class MemoService:
                 for r in result.scalars().all():
                     resources.append(await StorageService._build_response(r))
 
+        likes = _coerce_uuid_list(memo.likes, context=f"memo {memo.id} likes")
+        comments = _parse_comment_payload(memo.comments, memo_id=memo.id)
+
         return MemoOut(
             id=memo.id,
             couple_id=memo.couple_id,
             creator_uid=memo.creator_uid,
             content=memo.content,
             resources=resources or None,
-            likes=[UUID(uid) for uid in memo.likes] if memo.likes else [],
-            comments=memo.comments or [],
+            likes=likes,
+            comments=comments,
+            is_pinned=getattr(memo, "is_pinned", False),
+            pinned_at=getattr(memo, "pinned_at", None),
             created_at=memo.created_at,
             updated_at=memo.updated_at,
             is_deleted=memo.is_deleted,
@@ -293,6 +371,8 @@ class MemoService:
             creator_uid=user_id,
             content=data.content,
             resource_ids=[str(rid) for rid in data.resource_ids] if data.resource_ids else None,
+            likes=[],
+            comments=[],
         )
         session.add(memo)
         await session.commit()
@@ -388,6 +468,7 @@ class MemoService:
         memo.pinned_at = datetime.now(timezone.utc) if memo.is_pinned else None
 
         await session.commit()
+        await session.refresh(memo)
         return await cls._build_memo_out(session, memo)
 
     @classmethod
@@ -427,6 +508,7 @@ class MemoService:
             memo.is_pinned = data.is_pinned
             memo.pinned_at = datetime.now(timezone.utc) if data.is_pinned else None
         await session.commit()
+        await session.refresh(memo)
         return await cls._build_memo_out(session, memo)
 
     @classmethod
@@ -451,6 +533,7 @@ class MemoService:
         flag_modified(memo, "likes")
 
         await session.commit()
+        await session.refresh(memo)
         return await cls._build_memo_out(session, memo)
 
     @classmethod
@@ -463,20 +546,22 @@ class MemoService:
         if not memo:
             return None
 
-        comments = memo.comments or []
+        comments = [dict(item) for item in (memo.comments or []) if isinstance(item, dict)]
         comment_id = str(uuid4())
+        now = datetime.now(timezone.utc)
         comments.append({
             "id": comment_id,
             "uid": str(user_id),
             "content": content,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat()
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat()
         })
         memo.comments = comments
         from sqlalchemy.orm.attributes import flag_modified
         flag_modified(memo, "comments")
 
         await session.commit()
+        await session.refresh(memo)
         return await cls._build_memo_out(session, memo)
 
     @classmethod
@@ -489,7 +574,7 @@ class MemoService:
         if not memo:
             return None
 
-        comments = memo.comments or []
+        comments = [dict(item) for item in (memo.comments or []) if isinstance(item, dict)]
         for comment in comments:
             if comment.get("id") == comment_id and comment.get("uid") == str(user_id):
                 comment["content"] = content
@@ -503,6 +588,7 @@ class MemoService:
         flag_modified(memo, "comments")
 
         await session.commit()
+        await session.refresh(memo)
         return await cls._build_memo_out(session, memo)
 
     @classmethod
@@ -515,7 +601,7 @@ class MemoService:
         if not memo:
             return None
 
-        comments = memo.comments or []
+        comments = [dict(item) for item in (memo.comments or []) if isinstance(item, dict)]
         new_comments = [c for c in comments if not (c.get("id") == comment_id and c.get("uid") == str(user_id))]
 
         if len(new_comments) == len(comments):
@@ -526,6 +612,7 @@ class MemoService:
         flag_modified(memo, "comments")
 
         await session.commit()
+        await session.refresh(memo)
         return await cls._build_memo_out(session, memo)
 
 
@@ -794,6 +881,9 @@ class WishlistService:
         if item.creator_uid == user_id:
             raise BadRequestException("不能认领自己的心愿")
 
+        if item.claimer_uid and item.claimer_uid != user_id:
+            raise BadRequestException("该心愿已被其他人认领")
+
         if item.status != "unclaimed":
             raise BadRequestException("该心愿已被认领")
 
@@ -819,7 +909,14 @@ class WishlistService:
         if not item:
             raise NotFoundException("心愿不存在或只能由创建者标记完成")
 
+        if item.status == "fulfilled":
+            return item
+
+        if item.status == "claimed" and item.claimer_uid is None:
+            raise BadRequestException("心愿认领状态异常，请先取消认领后重试")
+
         item.status = "fulfilled"
+        item.fulfilled_at = datetime.now(timezone.utc)
         await session.commit()
         await session.refresh(item)
         return item
@@ -840,6 +937,12 @@ class WishlistService:
 
         if not item:
             raise NotFoundException("心愿不存在或只能由创建者标记完成")
+
+        if item.status == "fulfilled":
+            return item
+
+        if item.status == "claimed" and item.claimer_uid is None:
+            raise BadRequestException("心愿认领状态异常，请先取消认领后重试")
 
         item.status = "fulfilled"
         item.fulfilled_note = note
@@ -865,7 +968,10 @@ class WishlistService:
 
         if not item:
             raise NotFoundException("心愿不存在或您未认领此心愿")
-            
+
+        if item.status != "claimed":
+            raise BadRequestException("当前心愿不处于已认领状态")
+
         item.status = "unclaimed"
         item.claimer_uid = None
         await session.commit()
@@ -974,38 +1080,28 @@ class AnniversaryService:
             return target
 
         if anniversary.repeat_type == "yearly":
-            # 尝试今年的日期
-            this_year = date(from_date.year, target.month, target.day)
+            # 对 2 月 29 日等日期做兜底，避免直接 ValueError
+            current_day = min(target.day, monthrange(from_date.year, target.month)[1])
+            this_year = date(from_date.year, target.month, current_day)
             if this_year >= from_date:
                 return this_year
-            # 明年
-            return date(from_date.year + 1, target.month, target.day)
+            next_year = from_date.year + 1
+            next_day = min(target.day, monthrange(next_year, target.month)[1])
+            return date(next_year, target.month, next_day)
 
         if anniversary.repeat_type == "monthly":
-            # 尝试本月
-            try:
-                this_month = date(from_date.year, from_date.month, target.day)
-                if this_month >= from_date:
-                    return this_month
-            except ValueError:
-                pass  # 日期不合法 (如31号在2月)
+            current_day = min(target.day, monthrange(from_date.year, from_date.month)[1])
+            this_month = date(from_date.year, from_date.month, current_day)
+            if this_month >= from_date:
+                return this_month
 
-            # 下个月
             next_month = from_date.month + 1
             next_year = from_date.year
             if next_month > 12:
                 next_month = 1
                 next_year += 1
-            try:
-                return date(next_year, next_month, target.day)
-            except ValueError:
-                # 如果下个月也没有这天，取下个月最后一天
-                if next_month == 12:
-                    next_next_month = 1
-                    next_year += 1
-                else:
-                    next_next_month = next_month + 1
-                return date(next_year, next_next_month, 1) - timedelta(days=1)
+            next_day = min(target.day, monthrange(next_year, next_month)[1])
+            return date(next_year, next_month, next_day)
 
         return target
 
@@ -1028,8 +1124,13 @@ class AnniversaryService:
                 "days_until": days_until
             })
 
-        # 按距离天数排序，未来的排前面
-        results.sort(key=lambda x: (x["days_until"] < 0, abs(x["days_until"])))
+        # 未来优先，随后按天数升序；过去的则按离今天最近的优先
+        results.sort(
+            key=lambda x: (
+                x["days_until"] < 0,
+                x["days_until"] if x["days_until"] >= 0 else abs(x["days_until"]),
+            )
+        )
         return results[:limit]
 
 
@@ -1080,8 +1181,10 @@ class CoupleStateService:
 
         if data.mood is not None:
             setattr(state, f"{prefix}_mood", data.mood)
+            setattr(state, f"{prefix}_mood_updated_at", datetime.now(timezone.utc))
         if data.note is not None:
             setattr(state, f"{prefix}_note", data.note)
+            setattr(state, f"{prefix}_note_updated_at", datetime.now(timezone.utc))
         if data.white_flag is not None:
             setattr(state, f"{prefix}_white_flag", data.white_flag)
             if data.white_flag:
@@ -1226,6 +1329,18 @@ class NotificationService:
         """创建通知记录"""
         from apps.just_right.models import Notification
 
+        dedupe_key = data.get("dedupe_key") if data else None
+        if dedupe_key:
+            existing_stmt = select(Notification).where(
+                Notification.recipient_uid == recipient_uid,
+                Notification.type == type,
+                Notification.is_deleted == False,
+                Notification.dedupe_key == dedupe_key,
+            )
+            existing = (await session.execute(existing_stmt)).scalars().first()
+            if existing:
+                return existing
+
         notification = Notification(
             couple_id=couple_id,
             recipient_uid=recipient_uid,
@@ -1233,6 +1348,7 @@ class NotificationService:
             title=title,
             content=content,
             data=data,
+            dedupe_key=dedupe_key,
             is_read=False,
             is_sent=False
         )
@@ -1283,6 +1399,7 @@ class NotificationService:
     async def send_wechat_notification(cls, session: AsyncSession, notification_id: UUID):
         """通过微信客户服务消息发送通知"""
         from apps.just_right.models import Notification
+        from core.config import settings
         from core.wechat.services import WeChatService
         from core.users.models import User
 
@@ -1303,14 +1420,26 @@ class NotificationService:
             logger.warning(f"User {notification.recipient_uid} has no openid, skip notification")
             return False
 
+        wechat_apps = [
+            pair.split(":")[0].strip()
+            for pair in settings.WECHAT_APPS.split(",")
+            if pair.strip() and pair.split(":")[0].strip()
+        ]
+        if not wechat_apps:
+            logger.warning("No wechat app configured, skip notification %s", notification.id)
+            return False
+
         # 发送微信消息
         try:
             message = f"{notification.title}\n\n{notification.content}"
-            await WeChatService.send_customer_message(
-                appid=user.appid,
+            sent = await WeChatService.send_customer_message(
+                appid=wechat_apps[0],
                 openid=user.openid,
                 content=message
             )
+            if not sent:
+                logger.warning("Wechat notification send failed for %s", notification.id)
+                return False
 
             notification.is_sent = True
             notification.sent_at = datetime.now(timezone.utc)

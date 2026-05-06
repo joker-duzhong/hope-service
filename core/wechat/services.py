@@ -172,6 +172,9 @@ class WeChatService:
                 "text": {"content": content}
             }
             async with httpx.AsyncClient() as client:
-                await client.post(url, json=payload)
+                resp = await client.post(url, json=payload)
+                data = resp.json()
+                return data.get("errcode", 0) == 0
         except Exception as e:
             print(f"Failed to send customer message: {e}")
+            return False

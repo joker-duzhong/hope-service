@@ -66,5 +66,20 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db() -> None:
     """初始化数据库表（仅开发环境使用，生产环境用 Alembic）"""
+    import apps.ai_gateway.models  # noqa: F401
+    import apps.aurakey.models  # noqa: F401
+    import apps.just_right.models  # noqa: F401
+    import apps.nest_talk.models  # noqa: F401
+    import apps.project_sisyphus.models  # noqa: F401
+    import apps.shadow_board.models  # noqa: F401
+    import apps.time_library.models  # noqa: F401
+    import apps.trade_copilot.models  # noqa: F401
+    import apps.typo_craft.models  # noqa: F401
+    import apps.zaiwen_gaokao.models  # noqa: F401
+    import core.associations  # noqa: F401
+    import core.roles.models  # noqa: F401
+    import core.storage.models  # noqa: F401
+    import core.users.models  # noqa: F401
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

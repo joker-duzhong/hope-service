@@ -5,6 +5,7 @@
 from functools import lru_cache
 from typing import List, Optional
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -15,6 +16,17 @@ class Settings(BaseSettings):
     APP_NAME: str = "hope-service"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def normalize_debug(cls, value):
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"release", "prod", "production", "false", "0", "off", "no"}:
+                return False
+            if lowered in {"debug", "dev", "development", "true", "1", "on", "yes"}:
+                return True
+        return value
 
     # API 配置
     API_V1_PREFIX: str = "/api/v1"
@@ -132,4 +144,3 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
-

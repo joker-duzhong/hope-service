@@ -68,7 +68,11 @@ async def _send_anniversary_reminders_async() -> Dict[str, Any]:
                             type="anniversary_reminder",
                             title=title,
                             content=content,
-                            data={"anniversary_id": str(ann.id), "days_until": days_until}
+                            data={
+                                "anniversary_id": str(ann.id),
+                                "days_until": days_until,
+                                "dedupe_key": f"anniversary:{ann.id}:{today.isoformat()}:{couple.user1_id}",
+                            }
                         )
                         await NotificationService.send_wechat_notification(session, notification1.id)
                         notification_count += 1
@@ -80,7 +84,11 @@ async def _send_anniversary_reminders_async() -> Dict[str, Any]:
                                 type="anniversary_reminder",
                                 title=title,
                                 content=content,
-                                data={"anniversary_id": str(ann.id), "days_until": days_until}
+                                data={
+                                    "anniversary_id": str(ann.id),
+                                    "days_until": days_until,
+                                    "dedupe_key": f"anniversary:{ann.id}:{today.isoformat()}:{couple.user2_id}",
+                                }
                             )
                             await NotificationService.send_wechat_notification(session, notification2.id)
                             notification_count += 1
@@ -139,19 +147,32 @@ async def _notify_state_updates_async() -> Dict[str, Any]:
                             type="state_update",
                             title="🏳️ Ta举白旗了",
                             content="Ta想和好啦，快去看看吧~",
-                            data={"type": "white_flag", "from_uid": str(state.user1_id)}
+                            data={
+                                "type": "white_flag",
+                                "from_uid": str(state.user1_id),
+                                "dedupe_key": f"state:white_flag:{state.id}:{state.user1_white_flag_at.isoformat()}:{state.user2_id}",
+                            }
                         )
                         await NotificationService.send_wechat_notification(session, notification.id)
                         notification_count += 1
 
                     # 检查心情更新
-                    elif state.user1_mood and state.updated_at >= time_threshold:
+                    elif (
+                        state.user1_mood
+                        and state.user1_mood_updated_at
+                        and state.user1_mood_updated_at >= time_threshold
+                    ):
                         notification = await NotificationService.create_notification(
                             session, state.couple_id, state.user2_id,
                             type="state_update",
                             title="💭 Ta更新了心情",
                             content=f"Ta现在的心情是：{state.user1_mood}",
-                            data={"type": "mood_update", "from_uid": str(state.user1_id), "mood": state.user1_mood}
+                            data={
+                                "type": "mood_update",
+                                "from_uid": str(state.user1_id),
+                                "mood": state.user1_mood,
+                                "dedupe_key": f"state:mood:{state.id}:{state.user1_mood_updated_at.isoformat()}:{state.user2_id}:user1",
+                            }
                         )
                         await NotificationService.send_wechat_notification(session, notification.id)
                         notification_count += 1
@@ -166,19 +187,32 @@ async def _notify_state_updates_async() -> Dict[str, Any]:
                             type="state_update",
                             title="🏳️ Ta举白旗了",
                             content="Ta想和好啦，快去看看吧~",
-                            data={"type": "white_flag", "from_uid": str(state.user2_id)}
+                            data={
+                                "type": "white_flag",
+                                "from_uid": str(state.user2_id),
+                                "dedupe_key": f"state:white_flag:{state.id}:{state.user2_white_flag_at.isoformat()}:{state.user1_id}",
+                            }
                         )
                         await NotificationService.send_wechat_notification(session, notification.id)
                         notification_count += 1
 
                     # 检查心情更新
-                    elif state.user2_mood and state.updated_at >= time_threshold:
+                    elif (
+                        state.user2_mood
+                        and state.user2_mood_updated_at
+                        and state.user2_mood_updated_at >= time_threshold
+                    ):
                         notification = await NotificationService.create_notification(
                             session, state.couple_id, state.user1_id,
                             type="state_update",
                             title="💭 Ta更新了心情",
                             content=f"Ta现在的心情是：{state.user2_mood}",
-                            data={"type": "mood_update", "from_uid": str(state.user2_id), "mood": state.user2_mood}
+                            data={
+                                "type": "mood_update",
+                                "from_uid": str(state.user2_id),
+                                "mood": state.user2_mood,
+                                "dedupe_key": f"state:mood:{state.id}:{state.user2_mood_updated_at.isoformat()}:{state.user1_id}:user2",
+                            }
                         )
                         await NotificationService.send_wechat_notification(session, notification.id)
                         notification_count += 1

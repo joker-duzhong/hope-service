@@ -3,7 +3,7 @@ JustRight Schemas
 Pydantic 数据验证与序列化模型
 """
 from datetime import date, datetime
-from typing import Optional, List, Any
+from typing import Any, List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -67,7 +67,9 @@ class TodoItemCreate(TodoItemBase):
 class TodoItemUpdate(BaseModel):
     """更新待办事项"""
     content: Optional[str] = Field(None, description="待办内容", max_length=500)
-    status: Optional[str] = Field(None, description="状态: pending/completed")
+    status: Optional[Literal["pending", "completed"]] = Field(
+        None, description="状态: pending/completed"
+    )
 
 
 class TodoItemOut(TodoItemBase):
@@ -126,9 +128,11 @@ class MemoCommentUpdate(BaseModel):
 
 class MemoCommentOut(BaseModel):
     """备忘录评论输出"""
+    id: str
     uid: UUID
     content: str
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 class MemoOut(MemoBase):
@@ -139,6 +143,8 @@ class MemoOut(MemoBase):
     resources: Optional[List[ResourceResponse]] = None
     likes: Optional[List[UUID]] = None
     comments: Optional[List[MemoCommentOut]] = None
+    is_pinned: bool = False
+    pinned_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -199,7 +205,9 @@ class CoupleManualsOut(BaseModel):
 class RouletteOptionBase(BaseModel):
     """转盘选项基础"""
     title: str = Field(..., description="选项内容", max_length=100)
-    category: str = Field("food", description="分类: food/place/other", max_length=50)
+    category: Literal["food", "place", "other"] = Field(
+        "food", description="分类: food/place/other"
+    )
     color: Optional[str] = Field(None, description="选项颜色", max_length=20)
     weight: int = Field(1, description="权重", ge=1, le=10)
 
@@ -212,7 +220,7 @@ class RouletteOptionCreate(RouletteOptionBase):
 class RouletteOptionUpdate(BaseModel):
     """更新转盘选项"""
     title: Optional[str] = None
-    category: Optional[str] = None
+    category: Optional[Literal["food", "place", "other"]] = None
     color: Optional[str] = None
     weight: Optional[int] = None
 
@@ -271,6 +279,9 @@ class WishlistItemOut(WishlistItemBase):
     creator_uid: UUID
     status: str
     claimer_uid: Optional[UUID]
+    fulfilled_note: Optional[str] = None
+    fulfilled_resource_ids: Optional[List[UUID]] = None
+    fulfilled_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -290,6 +301,9 @@ class WishlistItemOutHidden(BaseModel):
     image_url: Optional[str] = None
     status: str  # unclaimed 或 "preparing" (对方已暗中准备)
     claimer_uid: Optional[UUID] = None  # 始终隐藏
+    fulfilled_note: Optional[str] = None
+    fulfilled_resource_ids: Optional[List[UUID]] = None
+    fulfilled_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -305,6 +319,9 @@ class WishlistItemOutHidden(BaseModel):
             "url": item.url,
             "price": item.price,
             "image_url": item.image_url,
+            "fulfilled_note": item.fulfilled_note,
+            "fulfilled_resource_ids": item.fulfilled_resource_ids,
+            "fulfilled_at": item.fulfilled_at,
             "created_at": item.created_at,
             "updated_at": item.updated_at,
             "is_deleted": item.is_deleted,
@@ -327,7 +344,9 @@ class AnniversaryBase(BaseModel):
     title: str = Field(..., description="纪念日标题", max_length=100)
     target_date: date = Field(..., description="目标日期")
     is_lunar: bool = Field(False, description="是否农历")
-    repeat_type: str = Field("yearly", description="重复类型: yearly/monthly/once")
+    repeat_type: Literal["yearly", "monthly", "once"] = Field(
+        "yearly", description="重复类型: yearly/monthly/once"
+    )
     icon: Optional[str] = Field(None, description="图标", max_length=50)
 
 
@@ -341,7 +360,7 @@ class AnniversaryUpdate(BaseModel):
     title: Optional[str] = None
     target_date: Optional[date] = None
     is_lunar: Optional[bool] = None
-    repeat_type: Optional[str] = None
+    repeat_type: Optional[Literal["yearly", "monthly", "once"]] = None
     icon: Optional[str] = None
 
 

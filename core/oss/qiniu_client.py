@@ -1,8 +1,14 @@
 """
 七牛云 OSS 核心业务逻辑
 """
-from qiniu import Auth, BucketManager
 from core.config import settings
+from core.exceptions import AppException
+
+try:
+    from qiniu import Auth, BucketManager
+except ImportError:  # pragma: no cover - optional dependency guard
+    Auth = None
+    BucketManager = None
 
 class QiniuClient:
     """七牛云 OSS 客户端：直传 Token 生成与文件物理删除"""
@@ -10,6 +16,8 @@ class QiniuClient:
     @staticmethod
     def get_auth() -> Auth:
         """获取 Qiniu 认证对象"""
+        if Auth is None:
+            raise AppException(code=500, message="缺少 qiniu 依赖，无法使用对象存储能力")
         return Auth(settings.QINIU_ACCESS_KEY, settings.QINIU_SECRET_KEY)
 
     @classmethod
@@ -32,6 +40,8 @@ class QiniuClient:
         """
         if not object_key or not settings.QINIU_BUCKET_NAME:
             return False
+        if BucketManager is None:
+            raise AppException(code=500, message="缺少 qiniu 依赖，无法删除对象存储文件")
         q = cls.get_auth()
         bucket = BucketManager(q)
         ret, info = bucket.delete(settings.QINIU_BUCKET_NAME, object_key)

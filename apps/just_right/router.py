@@ -564,7 +564,7 @@ async def unclaim_wishlist_item(
     try:
         item = await WishlistService.unclaim_item(db, couple.id, item_id, current_user.id)
         return ResponseModel(data=item, message="已取消认领")
-    except Exception as e:
+    except BadRequestException as e:
         return ResponseModel(code=400, message=str(e), data=None)
 
 @router.post("/wishlist/{item_id}/fulfill", response_model=ResponseModel[WishlistItemOut])
