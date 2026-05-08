@@ -94,6 +94,9 @@ class AssetLogItem(BaseModel):
     balance_after: int
     description: str
 
+    class Config:
+        from_attributes = True
+
 
 class ProductItem(BaseModel):
     id: uuid.UUID
