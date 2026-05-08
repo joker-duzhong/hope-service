@@ -1,7 +1,7 @@
 import time
 import uuid
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, desc, func
@@ -13,7 +13,7 @@ from core.response import ResponseModel, PaginatedResponse, PaginatedData
 
 from apps.aurakey.schemas import (
     DictModelOption, GalleryCategorySchema, GalleryItemSchema, GalleryDetailSchema,
-    TaskGenerateRequest, TaskGenerateResponse, TaskStatusResponse, TaskOptionsResponse,
+    TaskGenerateRequest, TaskStreamGenerateRequest, TaskGenerateResponse, TaskStatusResponse, TaskOptionsResponse,
     UserProfileResponse, AssetLogItem, ProductItem,
     OrderCreateRequest, OrderCreateResponse, OrderStatusResponse,
     TaskHistoryItem, InviteInfoResponse, BindInviteRequest, BindInviteResponse,
@@ -113,7 +113,7 @@ async def generate_task(
     description="登录用户提交流式生图任务，后端后台接收上游流式结果并更新任务状态。",
 )
 async def generate_stream_task(
-    req: TaskGenerateRequest,
+    req: TaskStreamGenerateRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -163,6 +163,7 @@ async def get_user_profile(
     asset = await AurakeyService.get_or_create_user_asset(db, current_user.id)
     res = {
         "user_id": current_user.id,
+        "openid": current_user.openid,
         "nickname": current_user.username,
         "avatar": current_user.avatar,
         "phone": current_user.phone,
@@ -246,16 +247,6 @@ async def get_order_status(
         raise HTTPException(status_code=404, detail="订单不存在")
         
     return ResponseModel(data={"order_no": order.order_no, "status": order.status})
-
-@router.post("/wechat-notify")
-async def wechat_notify(request: Request, db: AsyncSession = Depends(get_db)):
-    # 此接口供微信回调，不加 Depends(get_current_user)
-    # mock verification
-    data = await request.json()
-    order_no = data.get("out_trade_no")
-    if order_no:
-        await AurakeyService.handle_wechat_notify(db, order_no, True)
-    return {"code": "SUCCESS", "message": "OK"}
 
 # 5. 个人中心与裂变模块
 

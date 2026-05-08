@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from apps.aurakey.router import get_invite_info
-from apps.aurakey.schemas import AssetLogItem, InviteInfoResponse
+from apps.aurakey.schemas import AssetLogItem, InviteInfoResponse, TaskStreamGenerateRequest, UserProfileResponse
 from apps.aurakey.services import AurakeyService
 from apps.ai_gateway.schemas import ImageStreamChatRequest
 from core.llm.engine import extract_image_result_from_content
@@ -53,6 +53,27 @@ def test_image_stream_chat_request_defaults():
     assert req.extra_body == {}
 
 
+def test_task_stream_generate_request_public_defaults_to_private():
+    req = TaskStreamGenerateRequest(
+        prompt="生成一张猫图",
+        model_name="gpt-image-2",
+        aspect_ratio="1:1",
+    )
+
+    assert req.is_public is False
+
+
+def test_task_stream_generate_request_accepts_public_flag():
+    req = TaskStreamGenerateRequest(
+        prompt="生成一张猫图",
+        model_name="gpt-image-2",
+        aspect_ratio="1:1",
+        is_public=True,
+    )
+
+    assert req.is_public is True
+
+
 @pytest.mark.asyncio
 async def test_invite_info_returns_response_model_fields(monkeypatch):
     user_id = uuid.uuid4()
@@ -75,6 +96,16 @@ async def test_invite_info_returns_response_model_fields(monkeypatch):
     assert invite_info.invited_count == 5
     assert invite_info.total_reward_points == 250
     assert invite_info.rule_text == "每邀请1位新用户注册，双方各得 50 点算力"
+
+
+def test_user_profile_response_includes_openid():
+    response = UserProfileResponse(
+        user_id=uuid.uuid4(),
+        openid="oxxxxxxxxxxxxxxxxxxxxxx",
+        balance=100,
+    )
+
+    assert response.openid == "oxxxxxxxxxxxxxxxxxxxxxx"
 
 
 @pytest.mark.asyncio
@@ -101,6 +132,58 @@ async def test_task_status_response_preserves_optional_fields():
 
     assert result.image_url == "https://cdn.example.com/result.png"
     assert result.failed_reason == "上游 API 生图失败"
+
+
+@pytest.mark.asyncio
+async def test_publish_task_to_gallery_creates_gallery(monkeypatch):
+    user_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        user_id=user_id,
+        is_published=False,
+        image_url="https://cdn.example.com/result.png",
+        prompt="生成一张猫图",
+        model_name="gpt-image-2",
+        aspect_ratio="1:1",
+    )
+    added_items = []
+
+    class FakeSelect:
+        def where(self, *args, **kwargs):
+            return self
+
+    class FakeColumn:
+        def __eq__(self, other):
+            return True
+
+    class FakeGallery:
+        task_id = FakeColumn()
+        is_deleted = FakeColumn()
+
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class FakeDb:
+        async def scalar(self, _stmt):
+            return None
+
+        def add(self, item):
+            added_items.append(item)
+
+    monkeypatch.setattr("apps.aurakey.services.select", lambda *args, **kwargs: FakeSelect())
+    monkeypatch.setattr("apps.aurakey.services.AurakeyGallery", FakeGallery)
+
+    await AurakeyService.publish_task_to_gallery(FakeDb(), task, "阿杰", "https://cdn.example.com/avatar.png")
+
+    assert task.is_published is True
+    assert len(added_items) == 1
+    gallery = added_items[0]
+    assert gallery.user_id == user_id
+    assert gallery.task_id == task_id
+    assert gallery.author_nickname == "阿杰"
+    assert gallery.author_avatar == "https://cdn.example.com/avatar.png"
+    assert gallery.image_url == "https://cdn.example.com/result.png"
 
 
 @pytest.mark.asyncio

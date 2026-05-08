@@ -2,6 +2,10 @@
 
 ## 2026-05-08
 
+- 将微信支付回调迁移到 core 统一入口 `POST /api/v1/payments/wechat/notify`，并移除 AuraKey 业务内 `/wechat-notify`。
+- 支持 `WECHAT_PAY_PRIVATE_KEY` 配置 PEM 文件路径读取商户 API 私钥。
+- 为 `GET /api/v1/aurakey/user/profile` 增加 `openid` 返回字段。
+- 为 `POST /api/v1/aurakey/task/generate-stream` 增加公开参数，选择公开时生成成功后自动发布到画廊。
 - 新增基于聊天流式接口的图片生成能力，并为 AuraKey 增加后台任务化流式生图入口。
 - 修复 AuraKey 邀请信息、签到和任务状态接口返回字段与响应模型不一致的问题。
 - 修复 AuraKey 算力流水列表在序列化 ORM 记录时可能返回 500 的问题。

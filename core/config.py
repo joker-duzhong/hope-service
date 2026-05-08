@@ -121,7 +121,8 @@ class Settings(BaseSettings):
     WECHAT_PAY_APP_ID: str = ""
     WECHAT_PAY_MCH_ID: str = ""
     WECHAT_PAY_API_V3_KEY: str = ""
-    WECHAT_PAY_PRIVATE_KEY: str = ""  # 微信商户API私钥(严格保密)，由于可能存在换行，在 .env 中如果是单行请转换为 \n 或者直接读取文件
+    WECHAT_PAY_PRIVATE_KEY: str = ""  # 微信商户API私钥或 PEM 文件路径
+    WECHAT_PAY_PLATFORM_CERT_PATH: str = ""  # 微信支付平台证书/公钥 PEM 文件路径，用于回调验签
     WECHAT_PAY_CERT_SN: str = ""      # 商户证书序列号
     WECHAT_PAY_NOTIFY_URL: str = ""
 

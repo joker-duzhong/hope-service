@@ -425,6 +425,7 @@
   "message": "success",
   "data": {
     "user_id": "550e8400-e29b-41d4-a716-446655440001",
+    "openid": "oxxxxxxxxxxxxxxxxxxxxxx",
     "nickname": "阿杰",
     "avatar": "https://cdn.example.com/avatar/aj.jpg",
     "phone": "138****8888",
@@ -441,6 +442,7 @@
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | user_id | string (UUID) | 用户 ID |
+| openid | string \| null | 微信 openid，非微信用户可能为 `null` |
 | nickname | string | 昵称 |
 | avatar | string | 头像 URL |
 | phone | string | 手机号（脱敏） |
@@ -900,16 +902,6 @@
 | code | message | 处理建议 |
 |---|---|---|
 | 400 | 今日已签到，明天再来吧 | 展示已签到状态，无需重复请求 |
-
----
-
-## 8. 系统 Webhook（仅供后端参考）
-
-### 8.1 微信支付回调
-
-> 此接口由微信服务器主动调用，**前端无需关心**。
-
-**POST** `/wechat-notify`
 
 ---
 

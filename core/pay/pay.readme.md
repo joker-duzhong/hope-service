@@ -11,8 +11,9 @@
 * `WECHAT_PAY_MCH_ID`: 微信支付商户号
 * `WECHAT_PAY_API_V3_KEY`: API v3 秘钥
 * `WECHAT_PAY_CERT_SN`: 微信商户证书序列号 (十分重要，需在商户后台查看)
-* `WECHAT_PAY_PRIVATE_KEY`: 微信商户 API 私钥纯文本内容 (因含有换行，可直接写成多行或单行带 \n)
-* `WECHAT_PAY_NOTIFY_URL`: 系统默认接收微信回调的 webhook 地址（例如 `https://api.yourdomain.com/v1/trade/wechat-notify`）
+* `WECHAT_PAY_PRIVATE_KEY`: 微信商户 API 私钥纯文本内容或 PEM 文件路径，例如 `env/wxpay_apiclient_key.pem`
+* `WECHAT_PAY_PLATFORM_CERT_PATH`: 微信支付平台证书/公钥 PEM 文件路径，用于回调验签
+* `WECHAT_PAY_NOTIFY_URL`: 系统默认接收微信回调的 webhook 地址（例如 `https://api.yourdomain.com/api/v1/payments/wechat/notify`）
 
 ### 🔵 支付宝 (AliPay)
 * `ALIPAY_APP_ID`: 支付宝应用编号 AppID
@@ -68,6 +69,16 @@ async def create_trade_order(user_id: int, item_id: int):
     if response.success:
         return response.pay_data # 丢给前端小程序直接拉起
 ```
+
+## 🔔 微信支付回调
+
+统一回调入口挂载在 core 层：
+
+```text
+POST /api/v1/payments/wechat/notify
+```
+
+业务侧下单时不需要单独传 `notify_url`，`WechatPayClient` 会默认使用 `WECHAT_PAY_NOTIFY_URL`。微信回调进入 `core.pay.router.wechat_pay_notify` 后，由 `WechatPayNotificationHandler` 完成验签、解密、解析交易状态，并按业务订单号分发到对应业务服务。AuraKey 当前订单号以 `OD` 开头，会分发到 `AurakeyService.handle_wechat_notify`。
 
 ## 🚨 开发预警 (遵循大纲规范)
 

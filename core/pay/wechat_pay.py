@@ -2,9 +2,12 @@ import json
 import time
 import uuid
 import base64
-from typing import Dict, Any
+import binascii
+from pathlib import Path
+from typing import Dict, Any, Optional
 
 import httpx
+from Crypto.Cipher import AES
 from Crypto.PublicKey import RSA
 from Crypto.Signature import PKCS1_v1_5
 from Crypto.Hash import SHA256
@@ -16,6 +19,28 @@ from core.pay.schemas import (
     PayResultResponse,
     BasePayRequest
 )
+
+
+def _read_secret_or_file(value: str) -> str:
+    if not value:
+        return ""
+
+    normalized = value.replace("\\n", "\n").strip()
+    if "-----BEGIN" in normalized:
+        return normalized
+
+    candidate_paths = [Path(normalized)]
+    if normalized.startswith(("/", "\\")):
+        candidate_paths.append(Path.cwd() / normalized.lstrip("/\\"))
+
+    for candidate in candidate_paths:
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        if candidate.exists() and candidate.is_file():
+            return candidate.read_text(encoding="utf-8").strip()
+
+    return normalized
+
 
 class WechatPayClient:
     """
@@ -30,7 +55,7 @@ class WechatPayClient:
         self.base_url = "https://api.mch.weixin.qq.com"
         
         # 处理商户私钥
-        raw_private_key = settings.WECHAT_PAY_PRIVATE_KEY
+        raw_private_key = _read_secret_or_file(settings.WECHAT_PAY_PRIVATE_KEY)
         if raw_private_key:
             if "-----BEGIN" not in raw_private_key:
                  raw_private_key = f"-----BEGIN PRIVATE KEY-----\n{raw_private_key}\n-----END PRIVATE KEY-----"
@@ -166,3 +191,92 @@ class WechatPayClient:
     async def create_jsapi_order(self, req: BasePayRequest) -> PayResultResponse:
         """[预留] 微信服务号/公众号 JSAPI 支付"""
         raise NotImplementedError("微信公众号 JSAPI 支付暂未接入")
+
+
+class WechatPayNotificationHandler:
+    """
+    微信支付回调处理。
+
+    core 层只做验签、解密、通知解析和分发，不直接包含具体业务入账逻辑。
+    """
+
+    def __init__(self):
+        self.api_v3_key = settings.WECHAT_PAY_API_V3_KEY
+        self.mch_id = settings.WECHAT_PAY_MCH_ID
+        self.platform_cert_path = settings.WECHAT_PAY_PLATFORM_CERT_PATH
+
+    def verify_signature(self, headers: Dict[str, str], body: bytes) -> bool:
+        cert_value = _read_secret_or_file(self.platform_cert_path)
+        if not cert_value:
+            return bool(settings.DEBUG)
+
+        timestamp = headers.get("wechatpay-timestamp", "")
+        nonce = headers.get("wechatpay-nonce", "")
+        signature = headers.get("wechatpay-signature", "")
+        if not timestamp or not nonce or not signature:
+            return False
+
+        message = f"{timestamp}\n{nonce}\n{body.decode('utf-8')}\n"
+        h = SHA256.new(message.encode("utf-8"))
+        try:
+            public_key = RSA.importKey(cert_value)
+            verifier = PKCS1_v1_5.new(public_key)
+            return verifier.verify(h, base64.b64decode(signature, validate=True))
+        except (ValueError, TypeError, binascii.Error):
+            return False
+
+    def decrypt_resource(self, resource: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.api_v3_key:
+            raise ValueError("未配置 WECHAT_PAY_API_V3_KEY")
+
+        try:
+            ciphertext = base64.b64decode(resource["ciphertext"], validate=True)
+            nonce = resource["nonce"].encode("utf-8")
+            associated_data = resource.get("associated_data", "").encode("utf-8")
+            cipher = AES.new(self.api_v3_key.encode("utf-8"), AES.MODE_GCM, nonce=nonce)
+            cipher.update(associated_data)
+            plaintext = cipher.decrypt_and_verify(ciphertext[:-16], ciphertext[-16:])
+            return json.loads(plaintext.decode("utf-8"))
+        except (KeyError, ValueError, TypeError, binascii.Error) as exc:
+            raise ValueError("微信支付回调资源解密失败") from exc
+
+    def parse_notification(self, headers: Dict[str, str], body: bytes) -> Dict[str, Any]:
+        normalized_headers = {key.lower(): value for key, value in headers.items()}
+        if not self.verify_signature(normalized_headers, body):
+            raise ValueError("微信支付回调验签失败")
+
+        notification = json.loads(body.decode("utf-8"))
+        resource = notification.get("resource")
+        if not resource:
+            raise ValueError("微信支付回调缺少 resource")
+        if resource.get("algorithm") != "AEAD_AES_256_GCM":
+            raise ValueError("不支持的微信支付回调加密算法")
+
+        transaction = self.decrypt_resource(resource)
+        if self.mch_id and transaction.get("mchid") != self.mch_id:
+            raise ValueError("微信支付回调商户号不匹配")
+
+        return transaction
+
+    async def dispatch_transaction(self, db, transaction: Dict[str, Any]) -> None:
+        order_no = transaction.get("out_trade_no")
+        if not order_no:
+            raise ValueError("微信支付回调缺少 out_trade_no")
+
+        is_success = transaction.get("trade_state") == "SUCCESS"
+        if not order_no.startswith("OD"):
+            return
+
+        from apps.aurakey.services import AurakeyService
+
+        await AurakeyService.handle_wechat_notify(db, order_no, is_success)
+
+    async def handle_notification(
+        self,
+        db,
+        headers: Dict[str, str],
+        body: bytes,
+    ) -> Optional[Dict[str, Any]]:
+        transaction = self.parse_notification(headers, body)
+        await self.dispatch_transaction(db, transaction)
+        return transaction

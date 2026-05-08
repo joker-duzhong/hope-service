@@ -77,6 +77,10 @@ def create_app() -> FastAPI:
     from core.users.miniapp_router import router as miniapp_router
     app.include_router(miniapp_router, prefix=settings.API_V1_PREFIX, tags=["小程序登录"])
 
+    # Core: 支付回调
+    from core.pay.router import router as pay_router
+    app.include_router(pay_router, prefix=settings.API_V1_PREFIX, tags=["支付"])
+
     # Apps: 在此挂载各业务模块路由
     from apps.trade_copilot.router import router as trade_copilot_router
     app.include_router(trade_copilot_router, prefix=f"{settings.API_V1_PREFIX}/trade-copilot", tags=["交易助手"])

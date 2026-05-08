@@ -14,7 +14,7 @@ from apps.aurakey.models import (
     AurakeyModelOption
 )
 from apps.aurakey.schemas import (
-    TaskGenerateRequest, TaskGenerateResponse, TaskStatusResponse
+    TaskGenerateRequest, TaskGenerateResponse, TaskStatusResponse, TaskStreamGenerateRequest
 )
 from core.database import async_session_maker
 from core.llm.engine import generate_image, fetch_image_result
@@ -211,7 +211,7 @@ class AurakeyService:
         return TaskGenerateResponse(task_id=task.id, frozen_points=cost, balance_after=asset.balance)
 
     @staticmethod
-    async def submit_stream_generate_task(db: AsyncSession, request: TaskGenerateRequest, user_id: uuid.UUID) -> TaskGenerateResponse:
+    async def submit_stream_generate_task(db: AsyncSession, request: TaskStreamGenerateRequest, user_id: uuid.UUID) -> TaskGenerateResponse:
         asset = await AurakeyService.get_or_create_user_asset(db, user_id)
 
         model_opt = await db.scalar(select(AurakeyModelOption).where(AurakeyModelOption.model_id == request.model_name))
@@ -248,7 +248,7 @@ class AurakeyService:
         await db.refresh(asset)
 
         from apps.aurakey.tasks import run_stream_image_task
-        run_stream_image_task.delay(str(task.id))
+        run_stream_image_task.delay(str(task.id), request.is_public)
 
         return TaskGenerateResponse(task_id=task.id, frozen_points=cost, balance_after=asset.balance)
 
@@ -310,24 +310,45 @@ class AurakeyService:
         )
 
     @staticmethod
-    async def publish_history_task(db: AsyncSession, task_id: uuid.UUID, user_id: uuid.UUID, username: str, user_avatar: str):
-        task = await db.get(AurakeyTask, task_id)
-        if not task or task.user_id != user_id or task.status != "success":
-            raise HTTPException(status_code=404, detail="任务不存在或无法发布")
-            
-        task.is_published = True
-        
+    async def publish_task_to_gallery(
+        db: AsyncSession,
+        task: AurakeyTask,
+        author_nickname: Optional[str] = None,
+        author_avatar: Optional[str] = None,
+    ):
+        if task.is_published:
+            return
+
+        existing_gallery = await db.scalar(
+            select(AurakeyGallery).where(
+                AurakeyGallery.task_id == task.id,
+                AurakeyGallery.is_deleted == False,
+            )
+        )
+        if existing_gallery:
+            task.is_published = True
+            return
+
         gallery = AurakeyGallery(
-            user_id=user_id,
-            author_nickname=username,
-            author_avatar=user_avatar,
+            user_id=task.user_id,
+            author_nickname=author_nickname,
+            author_avatar=author_avatar,
             image_url=task.image_url,
             prompt=task.prompt,
             model_name=task.model_name,
             aspect_ratio=task.aspect_ratio,
             task_id=task.id
         )
+        task.is_published = True
         db.add(gallery)
+
+    @staticmethod
+    async def publish_history_task(db: AsyncSession, task_id: uuid.UUID, user_id: uuid.UUID, username: str, user_avatar: str):
+        task = await db.get(AurakeyTask, task_id)
+        if not task or task.user_id != user_id or task.status != "success":
+            raise HTTPException(status_code=404, detail="任务不存在或无法发布")
+
+        await AurakeyService.publish_task_to_gallery(db, task, username, user_avatar)
         await db.commit()
         return {"status": "published"}
 

@@ -8,8 +8,10 @@ from sqlalchemy.pool import NullPool
 
 from worker.celery_app import celery_app
 from apps.aurakey.models import AurakeyTask, AurakeyUserAsset, AurakeyAssetLog
+from apps.aurakey.services import AurakeyService
 from core.config import settings
 from core.llm.engine import generate_stream_image_chat
+from core.users.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ async def _refund_task(db: AsyncSession, task: AurakeyTask, reason: str):
     await db.commit()
 
 
-async def _run_stream_image_task_async(task_id: str):
+async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
     session_maker = _get_session_maker()
     task_uuid = uuid.UUID(task_id)
 
@@ -80,6 +82,14 @@ async def _run_stream_image_task_async(task_id: str):
             task.failed_reason = None
             task.remote_task_id = None
             task.frozen_points = 0
+            if is_public and not task.is_published:
+                user = await db.get(User, task.user_id)
+                await AurakeyService.publish_task_to_gallery(
+                    db,
+                    task,
+                    (user.nickname or user.username) if user else None,
+                    user.avatar if user else None,
+                )
             await db.commit()
         except Exception as exc:
             logger.error(f"[AuraKey] 流式生图任务失败 task_id={task_id}: {exc}", exc_info=True)
@@ -87,5 +97,5 @@ async def _run_stream_image_task_async(task_id: str):
 
 
 @celery_app.task(name="aurakey_stream_image_task")
-def run_stream_image_task(task_id: str):
-    return asyncio.run(_run_stream_image_task_async(task_id))
+def run_stream_image_task(task_id: str, is_public: bool = False):
+    return asyncio.run(_run_stream_image_task_async(task_id, is_public))

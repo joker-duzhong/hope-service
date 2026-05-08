@@ -47,6 +47,10 @@ class TaskGenerateRequest(BaseModel):
     aspect_ratio: str = Field(..., description="图片宽高比，如 1:1、16:9")
 
 
+class TaskStreamGenerateRequest(TaskGenerateRequest):
+    is_public: bool = Field(default=False, description="是否公开到画廊，true 时生成成功后自动发布")
+
+
 class TaskGenerateResponse(BaseModel):
     task_id: uuid.UUID
     frozen_points: int = 0
@@ -78,6 +82,7 @@ class TaskOptionsResponse(BaseModel):
 
 class UserProfileResponse(BaseModel):
     user_id: uuid.UUID
+    openid: Optional[str] = None
     nickname: Optional[str] = None
     avatar: Optional[str] = None
     phone: Optional[str] = None
