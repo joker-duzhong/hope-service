@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Float, Text
+from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Float, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
@@ -51,14 +51,15 @@ class AurakeyTask(CoreModel):
     frozen_points: Mapped[int] = mapped_column(Integer, default=0)
     failed_reason: Mapped[str] = mapped_column(String, nullable=True)
     cost: Mapped[int] = mapped_column(Integer, default=0)
-    
+    point_deductions: Mapped[list] = mapped_column(JSON, default=list)
+
     is_published: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class AurakeyGalleryCategory(CoreModel):
     """画廊分类"""
     __tablename__ = "aurakey_gallery_categories"
-    
+
     name: Mapped[str] = mapped_column(String)
     sort: Mapped[int] = mapped_column(Integer, default=0)
 
@@ -66,7 +67,7 @@ class AurakeyGalleryCategory(CoreModel):
 class AurakeyModelOption(CoreModel):
     """生图模型可用选项"""
     __tablename__ = "aurakey_model_options"
-    
+
     model_id: Mapped[str] = mapped_column(String, unique=True, index=True) # pro_1
     name: Mapped[str] = mapped_column(String)
     cost: Mapped[int] = mapped_column(Integer, default=10)
@@ -77,7 +78,7 @@ class AurakeyModelOption(CoreModel):
 class AurakeyAspectRatioOption(CoreModel):
     """生图比例可用选项"""
     __tablename__ = "aurakey_aspect_ratio_options"
-    
+
     ratio: Mapped[str] = mapped_column(String, unique=True, index=True) # 1:1, 16:9
     sort: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String, default="on")
@@ -92,11 +93,11 @@ class AurakeyUserAsset(CoreModel):
     is_vip: Mapped[bool] = mapped_column(Boolean, default=False)
     vip_type: Mapped[str] = mapped_column(String, nullable=True)
     vip_expire_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    
+
     invite_code: Mapped[str] = mapped_column(String, unique=True, index=True)
     invited_count: Mapped[int] = mapped_column(Integer, default=0)
     total_reward_points: Mapped[int] = mapped_column(Integer, default=0)
-    
+
     invited_by_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
 
 
@@ -111,6 +112,19 @@ class AurakeyAssetLog(CoreModel):
     description: Mapped[str] = mapped_column(String)
 
 
+class AurakeyPointGrant(CoreModel):
+    """用户算力发放批次，用于处理有效期和剩余量"""
+    __tablename__ = "aurakey_point_grants"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), index=True)
+    source_type: Mapped[str] = mapped_column(String)  # order, sign_in, invite, admin, signup, refund
+    source_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
+    amount: Mapped[int] = mapped_column(Integer, default=0)
+    remaining_amount: Mapped[int] = mapped_column(Integer, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    description: Mapped[str] = mapped_column(String, nullable=True)
+
+
 class AurakeyProduct(CoreModel):
     """商品配置表"""
     __tablename__ = "aurakey_products"
@@ -122,6 +136,9 @@ class AurakeyProduct(CoreModel):
     point_amount: Mapped[int] = mapped_column(Integer, default=0)
     bonus_amount: Mapped[int] = mapped_column(Integer, default=0)
     tag: Mapped[str] = mapped_column(String, nullable=True)
+    vip_type: Mapped[str] = mapped_column(String, nullable=True)
+    vip_level: Mapped[int] = mapped_column(Integer, default=0)
+    valid_days: Mapped[int] = mapped_column(Integer, nullable=True)
 
 
 class AurakeyOrder(CoreModel):
@@ -134,3 +151,23 @@ class AurakeyOrder(CoreModel):
     amount: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String, default="waiting") # waiting, success, failed
     pay_method: Mapped[str] = mapped_column(String, default="wechat_mini")
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    entitlement_start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    entitlement_expire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    third_trade_no: Mapped[str] = mapped_column(String, nullable=True)
+    product_name: Mapped[str] = mapped_column(String, nullable=True)
+    product_type: Mapped[str] = mapped_column(String, nullable=True)
+    vip_type: Mapped[str] = mapped_column(String, nullable=True)
+    vip_level: Mapped[int] = mapped_column(Integer, default=0)
+    point_amount: Mapped[int] = mapped_column(Integer, default=0)
+    bonus_amount: Mapped[int] = mapped_column(Integer, default=0)
+    valid_days: Mapped[int] = mapped_column(Integer, nullable=True)
+    granted_points: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AurakeySystemConfig(CoreModel):
+    """AuraKey 运行时配置"""
+    __tablename__ = "aurakey_system_configs"
+
+    key: Mapped[str] = mapped_column(String, unique=True, index=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)

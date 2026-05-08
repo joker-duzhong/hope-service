@@ -1,7 +1,16 @@
 import uuid
 from datetime import datetime
-from typing import List, Optional
-from pydantic import BaseModel, Field
+from typing import Any, List, Optional
+from pydantic import BaseModel, Field, field_validator
+
+
+VALID_PRODUCT_TYPES = {"point_pack", "vip"}
+
+
+def _validate_product_type(value: str) -> str:
+    if value not in VALID_PRODUCT_TYPES:
+        raise ValueError("商品类型必须是 point_pack 或 vip")
+    return value
 
 
 class AuthorSchema(BaseModel):
@@ -90,6 +99,7 @@ class UserProfileResponse(BaseModel):
     is_vip: bool = False
     type: str = "普通会员"
     vip_expire_time: Optional[int] = None # timestamp
+    vip_level: int = 0
 
 
 class AssetLogItem(BaseModel):
@@ -112,6 +122,9 @@ class ProductItem(BaseModel):
     point_amount: int = 0
     bonus_amount: int = 0
     tag: Optional[str] = None
+    vip_type: Optional[str] = None
+    vip_level: int = 0
+    valid_days: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -130,6 +143,56 @@ class OrderCreateResponse(BaseModel):
 class OrderStatusResponse(BaseModel):
     order_no: str
     status: str
+
+
+class UserEntitlementResponse(BaseModel):
+    vip_expire_time: Optional[int] = None
+    remaining_points: int
+    is_vip: bool
+    vip_type: str = "普通会员"
+    vip_level: int = 0
+
+
+class PurchaseOrderItem(BaseModel):
+    order_no: str
+    status: str
+    amount: int
+    pay_method: str
+    product_id: uuid.UUID
+    product_name: str
+    product_type: str
+    point_amount: int = 0
+    bonus_amount: int = 0
+    granted_points: int = 0
+    remaining_points: int = 0
+    vip_type: Optional[str] = None
+    vip_level: int = 0
+    valid_days: Optional[int] = None
+    entitlement_start_at: Optional[int] = None
+    entitlement_expire_at: Optional[int] = None
+    created_at: int
+    paid_at: Optional[int] = None
+    is_effective: bool = False
+
+
+class AurakeySystemConfigResponse(BaseModel):
+    register_reward_points: int = 10
+    daily_sign_in_reward_points: int = 10
+    invite_reward_points: int = 50
+    default_vip_valid_days: int = 30
+    default_point_pack_valid_days: Optional[int] = None
+    daily_free_points_reset_hour: int = 12
+    custom: dict[str, Any] = Field(default_factory=dict)
+
+
+class AurakeySystemConfigUpdate(BaseModel):
+    register_reward_points: Optional[int] = None
+    daily_sign_in_reward_points: Optional[int] = None
+    invite_reward_points: Optional[int] = None
+    default_vip_valid_days: Optional[int] = None
+    default_point_pack_valid_days: Optional[int] = None
+    daily_free_points_reset_hour: Optional[int] = None
+    custom: Optional[dict[str, Any]] = None
 
 
 class TaskHistoryItem(BaseModel):
@@ -289,6 +352,14 @@ class AdminProductBase(BaseModel):
     point_amount: int = 0
     bonus_amount: int = 0
     tag: Optional[str] = None
+    vip_type: Optional[str] = None
+    vip_level: int = 0
+    valid_days: Optional[int] = Field(default=None, description="权益有效期（天），不传则使用商品类型默认值")
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, value: str) -> str:
+        return _validate_product_type(value)
 
 
 class AdminProductCreate(AdminProductBase):
@@ -303,6 +374,16 @@ class AdminProductUpdate(BaseModel):
     point_amount: Optional[int] = None
     bonus_amount: Optional[int] = None
     tag: Optional[str] = None
+    vip_type: Optional[str] = None
+    vip_level: Optional[int] = None
+    valid_days: Optional[int] = None
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return _validate_product_type(value)
 
 
 class AdminProductResponse(AdminProductBase):

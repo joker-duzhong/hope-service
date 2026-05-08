@@ -15,12 +15,14 @@ from apps.aurakey.schemas import (
     AdminOptionModelResponse, AdminOptionModelCreate,
     AdminOptionRatioResponse, AdminOptionRatioCreate,
     AdminUserListItem, AdminUserDetail,
-    AdminProductCreate, AdminProductUpdate, AdminProductResponse
+    AdminProductCreate, AdminProductUpdate, AdminProductResponse,
+    AurakeySystemConfigResponse, AurakeySystemConfigUpdate,
 )
 from apps.aurakey.models import (
     AurakeyTask, AurakeyGalleryCategory, AurakeyModelOption, AurakeyAspectRatioOption, AurakeyUserAsset
 )
 from apps.aurakey.admin_services import AurakeyAdminService
+from apps.aurakey.services import AurakeyService
 
 router = APIRouter(prefix="/admin", tags=["AuraKey B端管理"])
 
@@ -125,3 +127,18 @@ async def delete_product(product_id: uuid.UUID, db: AsyncSession = Depends(get_d
     if not success:
         return ResponseModel(code=404, message="Product not found", data=None)
     return ResponseModel(message="Delete successful", data={"is_success": True})
+
+
+@router.get("/system/config", response_model=ResponseModel)
+async def get_system_config(db: AsyncSession = Depends(get_db), _: User = Depends(require_roles("aurakey_admin"))):
+    config = await AurakeyService.get_system_config(db)
+    return ResponseModel(data=AurakeySystemConfigResponse(**config))
+
+
+@router.put("/system/config", response_model=ResponseModel)
+async def update_system_config(req: AurakeySystemConfigUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(require_roles("aurakey_admin"))):
+    current = await AurakeyService.get_system_config(db)
+    update_data = req.model_dump(exclude_unset=True)
+    current.update(update_data)
+    config = await AurakeyService.save_system_config(db, current)
+    return ResponseModel(data=AurakeySystemConfigResponse(**config))

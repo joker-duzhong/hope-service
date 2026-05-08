@@ -269,7 +269,10 @@ class WechatPayNotificationHandler:
 
         from apps.aurakey.services import AurakeyService
 
-        await AurakeyService.handle_wechat_notify(db, order_no, is_success)
+        amount = transaction.get("amount") or {}
+        paid_amount = amount.get("total")
+        third_trade_no = transaction.get("transaction_id")
+        await AurakeyService.handle_wechat_notify(db, order_no, is_success, paid_amount, third_trade_no)
 
     async def handle_notification(
         self,

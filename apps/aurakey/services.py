@@ -1,26 +1,314 @@
 import uuid
+import logging
 import random
 import string
 from datetime import datetime, timedelta, timezone
-from typing import List, Tuple, Optional, Set
+from typing import List, Tuple, Optional, Set, Any
 
-from sqlalchemy import select, desc, func, cast, Date
+from sqlalchemy import select, desc, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException
 
 from apps.aurakey.models import (
     AurakeyGallery, AurakeyGalleryLike, AurakeyTask,
     AurakeyUserAsset, AurakeyAssetLog, AurakeyProduct, AurakeyOrder,
-    AurakeyModelOption
+    AurakeyModelOption, AurakeyPointGrant, AurakeySystemConfig
 )
 from apps.aurakey.schemas import (
     TaskGenerateRequest, TaskGenerateResponse, TaskStatusResponse, TaskStreamGenerateRequest
+)
+from apps.aurakey.config import (
+    AURAKEY_SYSTEM_CONFIG_KEY,
+    merge_aurakey_config,
+    get_default_aurakey_config,
 )
 from core.database import async_session_maker
 from core.llm.engine import generate_image, fetch_image_result
 
 
+logger = logging.getLogger(__name__)
+LOCAL_TZ = timezone(timedelta(hours=8))
+
+
 class AurakeyService:
+
+    @staticmethod
+    def _now_utc() -> datetime:
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _to_ts(value: Optional[datetime]) -> Optional[int]:
+        return int(value.timestamp()) if value else None
+
+    @staticmethod
+    def _resolve_product_vip_type(product: AurakeyProduct) -> str:
+        return (product.vip_type or product.tag or product.name or "VIP").strip()
+
+    @staticmethod
+    def _resolve_product_valid_days(product: AurakeyProduct, *, config: Optional[dict[str, Any]] = None) -> Optional[int]:
+        if product.valid_days is not None:
+            return product.valid_days
+        if product.type == "vip":
+            if config is None:
+                config = get_default_aurakey_config()
+            return config.get("default_vip_valid_days", 30)
+        if product.type == "point_pack":
+            if config is None:
+                config = get_default_aurakey_config()
+            return config.get("default_point_pack_valid_days")
+        return None
+
+    @staticmethod
+    def _next_reset_at(now_utc: Optional[datetime] = None, reset_hour: int = 12) -> datetime:
+        current_utc = now_utc or AurakeyService._now_utc()
+        local_now = current_utc.astimezone(LOCAL_TZ)
+        candidate = local_now.replace(hour=reset_hour, minute=0, second=0, microsecond=0)
+        if local_now >= candidate:
+            candidate += timedelta(days=1)
+        return candidate.astimezone(timezone.utc)
+
+    @staticmethod
+    async def get_system_config(db: AsyncSession) -> dict[str, Any]:
+        stmt = select(AurakeySystemConfig).where(AurakeySystemConfig.key == AURAKEY_SYSTEM_CONFIG_KEY)
+        config = (await db.execute(stmt)).scalar_one_or_none()
+        return merge_aurakey_config(config.value if config else None)
+
+    @staticmethod
+    async def save_system_config(db: AsyncSession, payload: dict[str, Any]) -> dict[str, Any]:
+        stmt = select(AurakeySystemConfig).where(AurakeySystemConfig.key == AURAKEY_SYSTEM_CONFIG_KEY)
+        config = (await db.execute(stmt)).scalar_one_or_none()
+        merged = merge_aurakey_config(payload)
+        if not config:
+            config = AurakeySystemConfig(key=AURAKEY_SYSTEM_CONFIG_KEY, value=merged)
+            db.add(config)
+        else:
+            config.value = merged
+        await db.commit()
+        return merged
+
+    @staticmethod
+    async def _sync_point_balance(db: AsyncSession, asset: AurakeyUserAsset) -> List[AurakeyPointGrant]:
+        now_utc = AurakeyService._now_utc()
+        stmt = select(AurakeyPointGrant).where(
+            AurakeyPointGrant.user_id == asset.user_id,
+            AurakeyPointGrant.remaining_amount > 0,
+            AurakeyPointGrant.is_deleted == False,
+        )
+        grants = (await db.execute(stmt)).scalars().all()
+        active_grants: List[AurakeyPointGrant] = []
+        active_total = 0
+        changed = False
+        for grant in grants:
+            if grant.expires_at and grant.expires_at <= now_utc:
+                grant.remaining_amount = 0
+                changed = True
+            else:
+                active_grants.append(grant)
+                active_total += grant.remaining_amount
+        if asset.balance != active_total:
+            asset.balance = active_total
+            changed = True
+        if changed:
+            await db.flush()
+        return active_grants
+
+    @staticmethod
+    async def _credit_points(
+        db: AsyncSession,
+        asset: AurakeyUserAsset,
+        amount: int,
+        *,
+        description: str,
+        source_type: str,
+        source_id: Optional[uuid.UUID] = None,
+        expires_at: Optional[datetime] = None,
+    ) -> Optional[AurakeyPointGrant]:
+        if amount <= 0:
+            return None
+        asset.balance += amount
+        grant = AurakeyPointGrant(
+            user_id=asset.user_id,
+            source_type=source_type,
+            source_id=source_id,
+            amount=amount,
+            remaining_amount=amount,
+            expires_at=expires_at,
+            description=description,
+        )
+        db.add(grant)
+        return grant
+
+    @staticmethod
+    async def _spend_points(
+        db: AsyncSession,
+        asset: AurakeyUserAsset,
+        amount: int,
+        *,
+        description: str,
+        allow_partial: bool = False,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        if amount <= 0:
+            return 0, []
+        active_grants = await AurakeyService._sync_point_balance(db, asset)
+        if asset.balance < amount and not allow_partial:
+            raise HTTPException(status_code=400, detail="算力不足")
+
+        remaining = amount
+        deducted = 0
+        allocation: list[dict[str, Any]] = []
+        sorted_grants = sorted(
+            active_grants,
+            key=lambda grant: (
+                grant.expires_at is None,
+                grant.expires_at or datetime.max.replace(tzinfo=timezone.utc),
+                grant.created_at,
+            ),
+        )
+        for grant in sorted_grants:
+            if remaining <= 0:
+                break
+            take = min(grant.remaining_amount, remaining)
+            if take <= 0:
+                continue
+            grant.remaining_amount -= take
+            remaining -= take
+            deducted += take
+            allocation.append(
+                {
+                    "grant_id": str(grant.id),
+                    "amount": take,
+                    "expires_at": grant.expires_at.isoformat() if grant.expires_at else None,
+                }
+            )
+
+        if deducted <= 0:
+            return 0, []
+        asset.balance = max(0, asset.balance - deducted)
+        await db.flush()
+        if remaining > 0 and allow_partial:
+            logger.warning("Partial point spend for user %s, requested=%s deducted=%s", asset.user_id, amount, deducted)
+        return deducted, allocation
+
+    @staticmethod
+    async def _restore_points(
+        db: AsyncSession,
+        asset: AurakeyUserAsset,
+        allocation: list[dict[str, Any]],
+        fallback_amount: int,
+        *,
+        description: str,
+    ) -> int:
+        restored = 0
+        if allocation:
+            for item in allocation:
+                amount = int(item.get("amount") or 0)
+                if amount <= 0:
+                    continue
+                expires_at_raw = item.get("expires_at")
+                expires_at = datetime.fromisoformat(expires_at_raw) if expires_at_raw else None
+                grant_id = item.get("grant_id")
+                grant = None
+                if grant_id:
+                    grant = await db.get(AurakeyPointGrant, uuid.UUID(str(grant_id)))
+                if grant:
+                    grant.remaining_amount += amount
+                    if grant.expires_at is None and expires_at is not None:
+                        grant.expires_at = expires_at
+                else:
+                    db.add(
+                        AurakeyPointGrant(
+                            user_id=asset.user_id,
+                            source_type="refund",
+                            source_id=None,
+                            amount=amount,
+                            remaining_amount=amount,
+                            expires_at=expires_at,
+                            description=description,
+                        )
+                    )
+                restored += amount
+        elif fallback_amount > 0:
+            db.add(
+                AurakeyPointGrant(
+                    user_id=asset.user_id,
+                    source_type="refund",
+                    source_id=None,
+                    amount=fallback_amount,
+                    remaining_amount=fallback_amount,
+                    expires_at=None,
+                    description=description,
+                )
+            )
+            restored = fallback_amount
+
+        if restored > 0:
+            asset.balance += restored
+            await db.flush()
+        return restored
+
+    @staticmethod
+    async def _get_current_vip_state(db: AsyncSession, user_id: uuid.UUID) -> dict[str, Any]:
+        now_utc = AurakeyService._now_utc()
+        stmt = (
+            select(AurakeyOrder)
+            .where(
+                AurakeyOrder.user_id == user_id,
+                AurakeyOrder.status == "success",
+                AurakeyOrder.product_type == "vip",
+                AurakeyOrder.is_deleted == False,
+            )
+            .order_by(desc(AurakeyOrder.entitlement_expire_at), desc(AurakeyOrder.paid_at), desc(AurakeyOrder.created_at))
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+
+        active_orders = []
+        for order in rows:
+            expire_at = order.entitlement_expire_at
+            if expire_at is None:
+                expire_at = order.paid_at
+                if expire_at and order.valid_days is not None:
+                    expire_at = expire_at + timedelta(days=order.valid_days)
+            if expire_at and expire_at > now_utc:
+                active_orders.append((order, expire_at))
+
+        if not active_orders:
+            return {
+                "is_vip": False,
+                "vip_type": "普通会员",
+                "vip_expire_time": None,
+                "vip_level": 0,
+            }
+
+        active_orders.sort(
+            key=lambda item: (
+                item[0].vip_level,
+                item[1],
+                item[0].paid_at or item[0].created_at,
+            ),
+            reverse=True,
+        )
+        order, expire_at = active_orders[0]
+        max_expire_at = max(item[1] for item in active_orders)
+        return {
+            "is_vip": True,
+            "vip_type": order.vip_type or order.product_name or "VIP",
+            "vip_expire_time": max_expire_at,
+            "vip_level": order.vip_level or 0,
+        }
+
+    @staticmethod
+    async def refresh_asset_state(db: AsyncSession, asset: AurakeyUserAsset) -> dict[str, Any]:
+        active_grants = await AurakeyService._sync_point_balance(db, asset)
+        vip_state = await AurakeyService._get_current_vip_state(db, asset.user_id)
+        asset.is_vip = vip_state["is_vip"]
+        asset.vip_type = vip_state["vip_type"] if vip_state["is_vip"] else None
+        asset.vip_expire_time = vip_state["vip_expire_time"]
+        await db.flush()
+        return {
+            "balance": asset.balance,
+            "active_grants": active_grants,
+            **vip_state,
+        }
 
     @staticmethod
     async def get_or_create_user_asset(db: AsyncSession, user_id: uuid.UUID) -> AurakeyUserAsset:
@@ -29,15 +317,30 @@ class AurakeyService:
         asset = result.scalars().first()
         if not asset:
             invite_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-            asset = AurakeyUserAsset(user_id=user_id, balance=10, invite_code=invite_code) # default 10 points
+            config = await AurakeyService.get_system_config(db)
+            initial_reward = int(config.get("register_reward_points", 10) or 0)
+            asset = AurakeyUserAsset(user_id=user_id, balance=0, invite_code=invite_code)
             db.add(asset)
             await db.commit()
             await db.refresh(asset)
-            
-            # 初始化送 10 算力写流水
-            log = AurakeyAssetLog(user_id=user_id, type=1, amount=10, balance_after=10, description="新用户注册赠送")
-            db.add(log)
+            if initial_reward > 0:
+                await AurakeyService._credit_points(
+                    db,
+                    asset,
+                    initial_reward,
+                    description="新用户注册赠送",
+                    source_type="signup",
+                )
+                log = AurakeyAssetLog(
+                    user_id=user_id,
+                    type=1,
+                    amount=initial_reward,
+                    balance_after=asset.balance,
+                    description="新用户注册赠送",
+                )
+                db.add(log)
             await db.commit()
+        await AurakeyService.refresh_asset_state(db, asset)
         return asset
 
     @staticmethod
@@ -150,29 +453,32 @@ class AurakeyService:
     @staticmethod
     async def submit_generate_task(db: AsyncSession, request: TaskGenerateRequest, user_id: uuid.UUID) -> TaskGenerateResponse:
         asset = await AurakeyService.get_or_create_user_asset(db, user_id)
-        
+
         # 查模型配置
         model_opt = await db.scalar(select(AurakeyModelOption).where(AurakeyModelOption.model_id == request.model_name))
-        
+
         cost = model_opt.cost if model_opt else 10
         is_vip_only = model_opt.is_vip_only if model_opt else False
-        
+
         if is_vip_only and not asset.is_vip:
             raise HTTPException(status_code=403, detail="该模型仅限VIP可用")
-            
-        if asset.balance < cost:
-            raise HTTPException(status_code=400, detail="算力不足")
-            
-        asset.balance -= cost
-        log = AurakeyAssetLog(user_id=user_id, type=2, amount=-cost, balance_after=asset.balance, description=f"生成插画({request.model_name})")
-        
+
+        deducted, allocation = await AurakeyService._spend_points(
+            db,
+            asset,
+            cost,
+            description=f"生成插画({request.model_name})",
+        )
+        log = AurakeyAssetLog(user_id=user_id, type=2, amount=-deducted, balance_after=asset.balance, description=f"生成插画({request.model_name})")
+
         task = AurakeyTask(
             user_id=user_id,
             prompt=request.prompt,
             model_name=request.model_name,
             aspect_ratio=request.aspect_ratio,
-            frozen_points=cost,
-            cost=cost,
+            frozen_points=deducted,
+            cost=deducted,
+            point_deductions=allocation,
             status="pending"
         )
         
@@ -200,15 +506,23 @@ class AurakeyService:
             task.status = "failed"
             task.failed_reason = str(e)
             
-            asset.balance += cost
+            refund_amount = await AurakeyService._restore_points(
+                db,
+                asset,
+                task.point_deductions or [],
+                task.frozen_points,
+                description="提交生图失败自动退回",
+            )
+            task.point_deductions = []
+            task.frozen_points = 0
             log_refund = AurakeyAssetLog(
-                user_id=user_id, type=3, amount=cost, 
+                user_id=user_id, type=3, amount=refund_amount,
                 balance_after=asset.balance, description="提交生图失败自动退回"
             )
             db.add(log_refund)
             await db.commit()
-        
-        return TaskGenerateResponse(task_id=task.id, frozen_points=cost, balance_after=asset.balance)
+
+        return TaskGenerateResponse(task_id=task.id, frozen_points=deducted, balance_after=asset.balance)
 
     @staticmethod
     async def submit_stream_generate_task(db: AsyncSession, request: TaskStreamGenerateRequest, user_id: uuid.UUID) -> TaskGenerateResponse:
@@ -220,24 +534,28 @@ class AurakeyService:
 
         if is_vip_only and not asset.is_vip:
             raise HTTPException(status_code=403, detail="该模型仅限VIP可用")
-        if asset.balance < cost:
-            raise HTTPException(status_code=400, detail="算力不足")
 
-        asset.balance -= cost
+        deducted, allocation = await AurakeyService._spend_points(
+            db,
+            asset,
+            cost,
+            description=f"流式生成插画({request.model_name})",
+        )
         task = AurakeyTask(
             user_id=user_id,
             prompt=request.prompt,
             model_name=request.model_name,
             aspect_ratio=request.aspect_ratio,
-            frozen_points=cost,
-            cost=cost,
+            frozen_points=deducted,
+            cost=deducted,
+            point_deductions=allocation,
             status="processing",
             progress=5,
         )
         log = AurakeyAssetLog(
             user_id=user_id,
             type=2,
-            amount=-cost,
+            amount=-deducted,
             balance_after=asset.balance,
             description=f"流式生成插画({request.model_name})",
         )
@@ -250,7 +568,7 @@ class AurakeyService:
         from apps.aurakey.tasks import run_stream_image_task
         run_stream_image_task.delay(str(task.id), request.is_public)
 
-        return TaskGenerateResponse(task_id=task.id, frozen_points=cost, balance_after=asset.balance)
+        return TaskGenerateResponse(task_id=task.id, frozen_points=deducted, balance_after=asset.balance)
 
     @staticmethod
     async def get_task_status(db: AsyncSession, task_id: uuid.UUID, user_id: uuid.UUID) -> TaskStatusResponse:
@@ -291,9 +609,15 @@ class AurakeyService:
             if task.status == "failed" and task.frozen_points > 0:
                 asset = await db.scalar(select(AurakeyUserAsset).where(AurakeyUserAsset.user_id == task.user_id))
                 if asset:
-                    refund_amount = task.frozen_points
-                    asset.balance += refund_amount
+                    refund_amount = await AurakeyService._restore_points(
+                        db,
+                        asset,
+                        task.point_deductions or [],
+                        task.frozen_points,
+                        description="生图失败自动退回",
+                    )
                     task.frozen_points = 0  # 标记为已退款，防止重复退款
+                    task.point_deductions = []
                     log = AurakeyAssetLog(
                         user_id=task.user_id, type=3, amount=refund_amount,
                         balance_after=asset.balance, description="生图失败自动退回"
@@ -353,47 +677,208 @@ class AurakeyService:
         return {"status": "published"}
 
     @staticmethod
-    async def handle_wechat_notify(db: AsyncSession, order_no: str, is_success: bool):
+    async def handle_wechat_notify(
+        db: AsyncSession,
+        order_no: str,
+        is_success: bool,
+        paid_amount: Optional[int] = None,
+        third_trade_no: Optional[str] = None,
+    ):
         order = await db.scalar(select(AurakeyOrder).where(AurakeyOrder.order_no == order_no))
         if not order or order.status != "waiting":
             return
-            
+
         if is_success:
-            order.status = "success"
-            # 发放资产
-            asset = await AurakeyService.get_or_create_user_asset(db, order.user_id)
+            if paid_amount is None:
+                raise ValueError("微信支付回调缺少支付金额")
+            if paid_amount != order.amount:
+                logger.error(
+                    "Wechat paid amount mismatch for order %s: paid=%s expected=%s",
+                    order_no,
+                    paid_amount,
+                    order.amount,
+                )
+                raise ValueError("微信支付回调金额与订单金额不一致")
+
             product = await db.get(AurakeyProduct, order.product_id)
-            
+            if not product:
+                logger.error("Order %s product %s not found", order_no, order.product_id)
+                raise ValueError("订单商品不存在")
+            if product.type not in {"point_pack", "vip"}:
+                logger.error("Unknown AuraKey product type for order %s: %s", order_no, product.type)
+                raise ValueError("未知的商品类型")
+
+            asset = await AurakeyService.get_or_create_user_asset(db, order.user_id)
+            now_utc = AurakeyService._now_utc()
+            config = await AurakeyService.get_system_config(db)
+            valid_days = AurakeyService._resolve_product_valid_days(product, config=config)
+            entitlement_start_at = now_utc
+            entitlement_expire_at = now_utc + timedelta(days=valid_days) if valid_days is not None else None
+            total_add = product.point_amount + product.bonus_amount
+            vip_type = AurakeyService._resolve_product_vip_type(product) if product.type == "vip" else None
+
+            order.status = "success"
+            order.paid_at = now_utc
+            order.third_trade_no = third_trade_no
+            order.entitlement_start_at = entitlement_start_at
+            order.entitlement_expire_at = entitlement_expire_at
+            order.product_name = product.name
+            order.product_type = product.type
+            order.vip_type = vip_type
+            order.vip_level = product.vip_level or 0
+            order.point_amount = product.point_amount or 0
+            order.bonus_amount = product.bonus_amount or 0
+            order.valid_days = valid_days
+            order.granted_points = total_add
+
             if product.type == "point_pack":
-                total_add = product.point_amount + product.bonus_amount
-                asset.balance += total_add
+                await AurakeyService._credit_points(
+                    db,
+                    asset,
+                    total_add,
+                    description=f"充值购买 {product.name}",
+                    source_type="order",
+                    source_id=order.id,
+                    expires_at=entitlement_expire_at,
+                )
                 log = AurakeyAssetLog(
-                    user_id=order.user_id, type=1, amount=total_add, 
+                    user_id=order.user_id, type=1, amount=total_add,
                     balance_after=asset.balance, description=f"充值购买 {product.name}"
                 )
                 db.add(log)
             elif product.type == "vip":
                 asset.is_vip = True
-                asset.vip_type = product.tag
-                now_utc = datetime.now(timezone.utc)
+                asset.vip_type = vip_type
                 base = asset.vip_expire_time if asset.vip_expire_time and asset.vip_expire_time > now_utc else now_utc
-                asset.vip_expire_time = base + timedelta(days=30)
-                
+                vip_days = valid_days if valid_days is not None else config.get("default_vip_valid_days", 30)
+                asset.vip_expire_time = base + timedelta(days=vip_days)
+                order.entitlement_start_at = now_utc
+                order.entitlement_expire_at = asset.vip_expire_time
+                point_expires_at = now_utc + timedelta(days=vip_days)
+                if total_add > 0:
+                    await AurakeyService._credit_points(
+                        db,
+                        asset,
+                        total_add,
+                        description=f"购买会员 {product.name} 赠送算力",
+                        source_type="order",
+                        source_id=order.id,
+                        expires_at=point_expires_at,
+                    )
+                    db.add(
+                        AurakeyAssetLog(
+                            user_id=order.user_id,
+                            type=1,
+                            amount=total_add,
+                            balance_after=asset.balance,
+                            description=f"购买会员 {product.name} 赠送算力",
+                        )
+                    )
+                else:
+                    db.add(
+                        AurakeyAssetLog(
+                            user_id=order.user_id,
+                            type=1,
+                            amount=0,
+                            balance_after=asset.balance,
+                            description=f"购买会员 {product.name}",
+                        )
+                    )
             await db.commit()
         else:
             order.status = "failed"
             await db.commit()
 
     @staticmethod
+    async def get_user_entitlement(db: AsyncSession, user_id: uuid.UUID) -> dict[str, Any]:
+        asset = await AurakeyService.get_or_create_user_asset(db, user_id)
+        state = await AurakeyService.refresh_asset_state(db, asset)
+        await db.commit()
+        return {
+            "vip_expire_time": AurakeyService._to_ts(state["vip_expire_time"]),
+            "remaining_points": asset.balance,
+            "is_vip": state["is_vip"],
+            "vip_type": state["vip_type"],
+            "vip_level": state["vip_level"],
+        }
+
+    @staticmethod
+    def _order_to_purchase_item(order: AurakeyOrder, remaining_points: int = 0) -> dict[str, Any]:
+        now_utc = AurakeyService._now_utc()
+        expire_at = order.entitlement_expire_at
+        is_effective = order.status == "success" and (expire_at is None or expire_at > now_utc)
+        return {
+            "order_no": order.order_no,
+            "status": order.status,
+            "amount": order.amount,
+            "pay_method": order.pay_method,
+            "product_id": order.product_id,
+            "product_name": order.product_name or "",
+            "product_type": order.product_type or "",
+            "point_amount": order.point_amount or 0,
+            "bonus_amount": order.bonus_amount or 0,
+            "granted_points": order.granted_points or 0,
+            "remaining_points": remaining_points,
+            "vip_type": order.vip_type,
+            "vip_level": order.vip_level or 0,
+            "valid_days": order.valid_days,
+            "entitlement_start_at": AurakeyService._to_ts(order.entitlement_start_at),
+            "entitlement_expire_at": AurakeyService._to_ts(order.entitlement_expire_at),
+            "created_at": AurakeyService._to_ts(order.created_at) or 0,
+            "paid_at": AurakeyService._to_ts(order.paid_at),
+            "is_effective": is_effective,
+        }
+
+    @staticmethod
+    async def get_purchase_orders(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        page: int,
+        page_size: int,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        base_conditions = [AurakeyOrder.user_id == user_id, AurakeyOrder.is_deleted == False]
+        total = await db.scalar(select(func.count()).select_from(AurakeyOrder).where(*base_conditions))
+        stmt = (
+            select(AurakeyOrder)
+            .where(*base_conditions)
+            .order_by(desc(AurakeyOrder.created_at))
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        orders = (await db.execute(stmt)).scalars().all()
+        remaining_by_order_id: dict[uuid.UUID, int] = {}
+        if orders:
+            order_ids = [order.id for order in orders]
+            rows = await db.execute(
+                select(AurakeyPointGrant.source_id, func.sum(AurakeyPointGrant.remaining_amount))
+                .where(
+                    AurakeyPointGrant.source_type == "order",
+                    AurakeyPointGrant.source_id.in_(order_ids),
+                    AurakeyPointGrant.is_deleted == False,
+                )
+                .group_by(AurakeyPointGrant.source_id)
+            )
+            remaining_by_order_id = {row[0]: int(row[1] or 0) for row in rows}
+        return total or 0, [
+            AurakeyService._order_to_purchase_item(order, remaining_by_order_id.get(order.id, 0))
+            for order in orders
+        ]
+
+    @staticmethod
     async def daily_sign_in(db: AsyncSession, user_id: uuid.UUID) -> dict:
         """每日签到，返回本次奖励和连续签到天数"""
-        today_utc = datetime.now(timezone.utc).date()
+        now_utc = AurakeyService._now_utc()
+        config = await AurakeyService.get_system_config(db)
+        reset_hour = int(config.get("daily_free_points_reset_hour", 12) or 12)
+        local_now = now_utc.astimezone(LOCAL_TZ)
+        reset_start_local = local_now.replace(hour=reset_hour, minute=0, second=0, microsecond=0)
+        if local_now < reset_start_local:
+            reset_start_local -= timedelta(days=1)
+        today_start = reset_start_local.astimezone(timezone.utc)
+        today_end = today_start + timedelta(days=1)
+        today_utc = local_now.date()
 
         # 检查今日是否已签到（type=4）
-        # 注意: 统一按 UTC 当天的起止时间范围查询，避免 cast 带来的时区问题
-        today_start = datetime.combine(today_utc, datetime.min.time()).replace(tzinfo=timezone.utc)
-        today_end = today_start + timedelta(days=1)
-        
         already = await db.scalar(
             select(AurakeyAssetLog).where(
                 AurakeyAssetLog.user_id == user_id,
@@ -406,8 +891,16 @@ class AurakeyService:
             raise HTTPException(status_code=400, detail="今日已签到，明天再来吧")
 
         asset = await AurakeyService.get_or_create_user_asset(db, user_id)
-        reward = 10
-        asset.balance += reward
+        reward = int(config.get("daily_sign_in_reward_points", 10) or 0)
+        expires_at = AurakeyService._next_reset_at(now_utc, reset_hour)
+        await AurakeyService._credit_points(
+            db,
+            asset,
+            reward,
+            description="每日签到奖励",
+            source_type="sign_in",
+            expires_at=expires_at,
+        )
 
         log = AurakeyAssetLog(
             user_id=user_id, type=4, amount=reward,
@@ -427,7 +920,10 @@ class AurakeyService:
         continuous_days = 0
         check_date = today_utc
         # 确保日志日期映射到 UTC date 以保持一致性
-        sign_dates = {log_dt.astimezone(timezone.utc).date() if log_dt.tzinfo else log_dt.date() for log_dt in sign_logs}
+        sign_dates = {
+            (log_dt.astimezone(LOCAL_TZ) if log_dt.tzinfo else log_dt.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ)).date()
+            for log_dt in sign_logs
+        }
         
         while check_date in sign_dates:
             continuous_days += 1

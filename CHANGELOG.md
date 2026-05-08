@@ -2,6 +2,11 @@
 
 ## 2026-05-08
 
+- 修复 AuraKey VIP 商品支付成功后不发放算力、不写资产流水的问题，并补充微信回调金额校验。
+- AuraKey 商品新增 `vip_type`、`vip_level`、`valid_days` 字段，支持会员和点数包自定义权益有效期。
+- 新增 AuraKey 点数批次账本，支持点数按商品、签到、邀请等来源设置有效期并按最早过期优先消耗。
+- 新增 `GET /api/v1/aurakey/user/entitlement` 当前权益接口和 `GET /api/v1/aurakey/orders` 购买记录接口。
+- 新增 AuraKey 系统配置接口和管理端配置读写接口，支持配置签到奖励、邀请奖励、默认商品有效期并预留 `custom` JSON。
 - 将微信支付回调迁移到 core 统一入口 `POST /api/v1/payments/wechat/notify`，并移除 AuraKey 业务内 `/wechat-notify`。
 - 支持 `WECHAT_PAY_PRIVATE_KEY` 配置 PEM 文件路径读取商户 API 私钥。
 - 为 `GET /api/v1/aurakey/user/profile` 增加 `openid` 返回字段。

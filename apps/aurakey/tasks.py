@@ -37,16 +37,23 @@ def _get_session_maker():
 async def _refund_task(db: AsyncSession, task: AurakeyTask, reason: str):
     asset = await db.scalar(select(AurakeyUserAsset).where(AurakeyUserAsset.user_id == task.user_id))
     if asset and task.frozen_points > 0:
-        asset.balance += task.frozen_points
+        refund_amount = await AurakeyService._restore_points(
+            db,
+            asset,
+            task.point_deductions or [],
+            task.frozen_points,
+            description=reason,
+        )
         db.add(
             AurakeyAssetLog(
                 user_id=task.user_id,
                 type=3,
-                amount=task.frozen_points,
+                amount=refund_amount,
                 balance_after=asset.balance,
                 description=reason,
             )
         )
+        task.point_deductions = []
         task.frozen_points = 0
     task.status = "failed"
     task.failed_reason = reason

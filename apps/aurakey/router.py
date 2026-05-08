@@ -17,7 +17,8 @@ from apps.aurakey.schemas import (
     UserProfileResponse, AssetLogItem, ProductItem,
     OrderCreateRequest, OrderCreateResponse, OrderStatusResponse,
     TaskHistoryItem, InviteInfoResponse, BindInviteRequest, BindInviteResponse,
-    SignInResponse,
+    SignInResponse, UserEntitlementResponse, PurchaseOrderItem,
+    AurakeySystemConfigResponse,
 )
 from apps.aurakey.services import AurakeyService
 from apps.aurakey.models import AurakeyGallery, AurakeyGalleryCategory, AurakeyTask, AurakeyAssetLog, AurakeyProduct, AurakeyOrder, AurakeyUserAsset, AurakeyModelOption, AurakeyAspectRatioOption
@@ -160,19 +161,29 @@ async def get_user_profile(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    asset = await AurakeyService.get_or_create_user_asset(db, current_user.id)
+    entitlement = await AurakeyService.get_user_entitlement(db, current_user.id)
     res = {
         "user_id": current_user.id,
         "openid": current_user.openid,
         "nickname": current_user.username,
         "avatar": current_user.avatar,
         "phone": current_user.phone,
-        "balance": asset.balance,
-        "is_vip": asset.is_vip,
-        "type": asset.vip_type or "普通会员",
-        "vip_expire_time": int(asset.vip_expire_time.timestamp()) if asset.vip_expire_time else None
+        "balance": entitlement["remaining_points"],
+        "is_vip": entitlement["is_vip"],
+        "type": entitlement["vip_type"],
+        "vip_expire_time": entitlement["vip_expire_time"],
+        "vip_level": entitlement["vip_level"],
     }
     return ResponseModel(data=res)
+
+
+@router.get("/user/entitlement", response_model=ResponseModel[UserEntitlementResponse])
+async def get_user_entitlement(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    entitlement = await AurakeyService.get_user_entitlement(db, current_user.id)
+    return ResponseModel(data=UserEntitlementResponse(**entitlement))
 
 @router.get("/asset/logs", response_model=PaginatedResponse[AssetLogItem])
 async def get_asset_logs(
@@ -211,14 +222,26 @@ async def create_order(
     product = await db.get(AurakeyProduct, req.product_id)
     if not product:
         raise HTTPException(status_code=404, detail="商品不存在")
-        
+    if product.type not in {"point_pack", "vip"}:
+        raise HTTPException(status_code=400, detail="未知的商品类型")
+
     order_no = f"OD{int(time.time()*1000)}{current_user.id.hex[:4]}"
-    
+    config = await AurakeyService.get_system_config(db)
+    valid_days = AurakeyService._resolve_product_valid_days(product, config=config)
+
     order = AurakeyOrder(
         user_id=current_user.id,
         order_no=order_no,
         product_id=product.id,
-        amount=product.price
+        amount=product.price,
+        product_name=product.name,
+        product_type=product.type,
+        vip_type=(product.vip_type or product.tag or product.name or "VIP") if product.type == "vip" else None,
+        vip_level=product.vip_level or 0,
+        point_amount=product.point_amount or 0,
+        bonus_amount=product.bonus_amount or 0,
+        valid_days=valid_days,
+        granted_points=(product.point_amount or 0) + (product.bonus_amount or 0),
     )
     db.add(order)
     await db.commit()
@@ -247,6 +270,26 @@ async def get_order_status(
         raise HTTPException(status_code=404, detail="订单不存在")
         
     return ResponseModel(data={"order_no": order.order_no, "status": order.status})
+
+
+@router.get("/orders", response_model=PaginatedResponse[PurchaseOrderItem])
+async def get_purchase_orders(
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    pageSize: int = Query(20, ge=1, le=100, description="每页条数，最大 100"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    total, items = await AurakeyService.get_purchase_orders(db, current_user.id, page, pageSize)
+    total_pages = (total + pageSize - 1) // pageSize if total > 0 else 0
+    return PaginatedResponse(
+        data=PaginatedData(items=[PurchaseOrderItem(**item) for item in items], total=total, page=page, page_size=pageSize, total_pages=total_pages)
+    )
+
+
+@router.get("/system/config", response_model=ResponseModel[AurakeySystemConfigResponse])
+async def get_public_system_config(db: AsyncSession = Depends(get_db)):
+    config = await AurakeyService.get_system_config(db)
+    return ResponseModel(data=AurakeySystemConfigResponse(**config))
 
 # 5. 个人中心与裂变模块
 
@@ -300,11 +343,13 @@ async def get_invite_info(
     db: AsyncSession = Depends(get_db)
 ):
     asset = await AurakeyService.get_or_create_user_asset(db, current_user.id)
+    config = await AurakeyService.get_system_config(db)
+    invite_reward = int(config.get("invite_reward_points", 50) or 0)
     res = {
         "invite_code": asset.invite_code,
         "invited_count": asset.invited_count,
         "total_reward_points": asset.total_reward_points,
-        "rule_text": "每邀请1位新用户注册，双方各得 50 点算力"
+        "rule_text": f"每邀请1位新用户注册，双方各得 {invite_reward} 点算力"
     }
     return ResponseModel(data=res)
 
@@ -317,23 +362,39 @@ async def bind_invite(
     asset = await AurakeyService.get_or_create_user_asset(db, current_user.id)
     if asset.invited_by_id or asset.invite_code == req.invite_code:
         return ResponseModel(data={"is_success": False, "reward_points": 0}, message="无法绑定或已绑定过")
-        
+
     inviter = await db.scalar(select(AurakeyUserAsset).where(AurakeyUserAsset.invite_code == req.invite_code))
     if not inviter:
         return ResponseModel(data={"is_success": False, "reward_points": 0}, message="邀请码无效")
-        
+
+    config = await AurakeyService.get_system_config(db)
+    reward_points = int(config.get("invite_reward_points", 50) or 0)
     asset.invited_by_id = inviter.user_id
-    asset.balance += 50
-    
+    await AurakeyService._credit_points(
+        db,
+        asset,
+        reward_points,
+        description="填写邀请码奖励",
+        source_type="invite",
+        source_id=inviter.id,
+    )
+
     inviter.invited_count += 1
-    inviter.total_reward_points += 50
-    inviter.balance += 50
-    
-    db.add(AurakeyAssetLog(user_id=asset.user_id, type=5, amount=50, balance_after=asset.balance, description="填写邀请码奖励"))
-    db.add(AurakeyAssetLog(user_id=inviter.user_id, type=5, amount=50, balance_after=inviter.balance, description="邀请新用户奖励"))
-    
+    inviter.total_reward_points += reward_points
+    await AurakeyService._credit_points(
+        db,
+        inviter,
+        reward_points,
+        description="邀请新用户奖励",
+        source_type="invite",
+        source_id=asset.id,
+    )
+
+    db.add(AurakeyAssetLog(user_id=asset.user_id, type=5, amount=reward_points, balance_after=asset.balance, description="填写邀请码奖励"))
+    db.add(AurakeyAssetLog(user_id=inviter.user_id, type=5, amount=reward_points, balance_after=inviter.balance, description="邀请新用户奖励"))
+
     await db.commit()
-    return ResponseModel(data={"is_success": True, "reward_points": 50})
+    return ResponseModel(data={"is_success": True, "reward_points": reward_points})
 
 
 # 6. 签到模块

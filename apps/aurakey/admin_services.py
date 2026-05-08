@@ -11,6 +11,7 @@ from apps.aurakey.models import (
     AurakeyGalleryCategory, AurakeyModelOption, AurakeyAspectRatioOption,
     AurakeyAssetLog, AurakeyProduct
 )
+from apps.aurakey.services import AurakeyService
 from core.users.models import User
 
 class AurakeyAdminService:
@@ -68,11 +69,28 @@ class AurakeyAdminService:
             db.add(asset)
             await db.flush()
 
-        asset.balance += amount
+        actual_amount = amount
+        if amount > 0:
+            await AurakeyService._credit_points(
+                db,
+                asset,
+                amount,
+                description=remark or "管理员系统调节",
+                source_type="admin",
+            )
+        elif amount < 0:
+            deducted_amount, _ = await AurakeyService._spend_points(
+                db,
+                asset,
+                abs(amount),
+                description=remark or "管理员系统调节",
+                allow_partial=True,
+            )
+            actual_amount = -deducted_amount
         log = AurakeyAssetLog(
             user_id=user_id,
             type=99, # admin adjust
-            amount=amount,
+            amount=actual_amount,
             balance_after=asset.balance,
             description=remark or "管理员系统调节"
         )
@@ -89,18 +107,23 @@ class AurakeyAdminService:
         asset = (await db.execute(select(AurakeyUserAsset).where(AurakeyUserAsset.user_id == order.user_id))).scalar_one_or_none()
         
         deducted = 0
-        
-        # deduct points assuming product point calculation
+
         if asset:
-            product = await db.get(AurakeyProduct, order.product_id)
-            if product:
-                deducted = product.point_amount + product.bonus_amount
-            else:
-                deducted = 100 # Fallback safety
-                
-            asset.balance -= deducted
-            if asset.balance < 0:
-                asset.balance = 0
+            deducted = order.granted_points or 0
+            if deducted <= 0:
+                product = await db.get(AurakeyProduct, order.product_id)
+                if product:
+                    deducted = product.point_amount + product.bonus_amount
+                else:
+                    deducted = 100 # Fallback safety
+
+            deducted, _ = await AurakeyService._spend_points(
+                db,
+                asset,
+                deducted,
+                description=f"订单退款自动扣除({remark or ''})",
+                allow_partial=True,
+            )
 
             log = AurakeyAssetLog(
                 user_id=order.user_id,
@@ -112,6 +135,8 @@ class AurakeyAdminService:
             db.add(log)
 
         order.status = "refunded"
+        if asset:
+            await AurakeyService.refresh_asset_state(db, asset)
         await db.commit()
         
         return {"is_success": True, "refund_id": f"REF{order_no}", "deducted_points": deducted}
@@ -137,7 +162,10 @@ class AurakeyAdminService:
             original_price=req.original_price,
             point_amount=req.point_amount,
             bonus_amount=req.bonus_amount,
-            tag=req.tag
+            tag=req.tag,
+            vip_type=req.vip_type,
+            vip_level=req.vip_level,
+            valid_days=req.valid_days,
         )
         db.add(product)
         await db.commit()

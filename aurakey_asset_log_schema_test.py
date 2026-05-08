@@ -1,11 +1,20 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from apps.aurakey.router import get_invite_info
-from apps.aurakey.schemas import AssetLogItem, InviteInfoResponse, TaskStreamGenerateRequest, UserProfileResponse
+from apps.aurakey.config import merge_aurakey_config
+from apps.aurakey.schemas import (
+    AssetLogItem,
+    AurakeySystemConfigResponse,
+    InviteInfoResponse,
+    ProductItem,
+    TaskStreamGenerateRequest,
+    UserEntitlementResponse,
+    UserProfileResponse,
+)
 from apps.aurakey.services import AurakeyService
 from apps.ai_gateway.schemas import ImageStreamChatRequest
 from core.llm.engine import extract_image_result_from_content
@@ -87,7 +96,11 @@ async def test_invite_info_returns_response_model_fields(monkeypatch):
         assert requested_user_id == user_id
         return asset
 
+    async def get_system_config(_db):
+        return {"invite_reward_points": 50}
+
     monkeypatch.setattr(AurakeyService, "get_or_create_user_asset", get_or_create_user_asset)
+    monkeypatch.setattr(AurakeyService, "get_system_config", get_system_config)
 
     response = await get_invite_info(current_user=SimpleNamespace(id=user_id), db=None)
     invite_info = InviteInfoResponse.model_validate(response.data)
@@ -106,6 +119,53 @@ def test_user_profile_response_includes_openid():
     )
 
     assert response.openid == "oxxxxxxxxxxxxxxxxxxxxxx"
+
+
+def test_product_item_includes_vip_fields():
+    product = SimpleNamespace(
+        id=uuid.uuid4(),
+        type="vip",
+        name="测试套餐",
+        price=990,
+        original_price=None,
+        point_amount=10,
+        bonus_amount=0,
+        tag=None,
+        vip_type="测试套餐",
+        vip_level=2,
+        valid_days=30,
+    )
+
+    item = ProductItem.model_validate(product)
+
+    assert item.vip_type == "测试套餐"
+    assert item.vip_level == 2
+    assert item.valid_days == 30
+
+
+def test_entitlement_response_fields():
+    response = UserEntitlementResponse(
+        vip_expire_time=1770000000,
+        remaining_points=30,
+        is_vip=True,
+        vip_type="测试套餐",
+        vip_level=3,
+    )
+
+    assert response.remaining_points == 30
+    assert response.is_vip is True
+    assert response.vip_type == "测试套餐"
+    assert response.vip_level == 3
+
+
+def test_system_config_merges_defaults_and_custom_values():
+    config = merge_aurakey_config({"daily_sign_in_reward_points": 8, "custom": {"foo": "bar"}})
+    response = AurakeySystemConfigResponse(**config)
+
+    assert response.register_reward_points == 10
+    assert response.daily_sign_in_reward_points == 8
+    assert response.invite_reward_points == 50
+    assert response.custom == {"foo": "bar"}
 
 
 @pytest.mark.asyncio
@@ -195,6 +255,18 @@ async def test_daily_sign_in_returns_response_model_fields(monkeypatch):
         assert requested_user_id == user_id
         return asset
 
+    async def get_system_config(_db):
+        return {
+            "daily_sign_in_reward_points": 12,
+            "daily_free_points_reset_hour": 12,
+        }
+
+    async def credit_points(_db, requested_asset, amount, **kwargs):
+        assert requested_asset is asset
+        assert amount == 12
+        requested_asset.balance += amount
+        return None
+
     class FakeSelect:
         def where(self, *args, **kwargs):
             return self
@@ -247,10 +319,157 @@ async def test_daily_sign_in_returns_response_model_fields(monkeypatch):
             return ScalarRows()
 
     monkeypatch.setattr(AurakeyService, "get_or_create_user_asset", get_or_create_user_asset)
+    monkeypatch.setattr(AurakeyService, "get_system_config", get_system_config)
+    monkeypatch.setattr(AurakeyService, "_credit_points", credit_points)
     monkeypatch.setattr("apps.aurakey.services.select", fake_select)
     monkeypatch.setattr("apps.aurakey.services.desc", lambda value: value)
     monkeypatch.setattr("apps.aurakey.services.AurakeyAssetLog", FakeAssetLog)
 
     result = await AurakeyService.daily_sign_in(FakeDb(), user_id)
 
-    assert result == {"reward_points": 10, "continuous_days": 1}
+    assert result == {"reward_points": 12, "continuous_days": 1}
+
+
+@pytest.mark.asyncio
+async def test_wechat_notify_rejects_amount_mismatch(monkeypatch):
+    order = SimpleNamespace(
+        order_no="OD123",
+        status="waiting",
+        amount=990,
+    )
+
+    class FakeSelect:
+        def where(self, *args, **kwargs):
+            return self
+
+    class FakeColumn:
+        def __eq__(self, other):
+            return True
+
+    class FakeOrder:
+        order_no = FakeColumn()
+
+    class FakeDb:
+        async def scalar(self, _stmt):
+            return order
+
+    monkeypatch.setattr("apps.aurakey.services.select", lambda *args, **kwargs: FakeSelect())
+    monkeypatch.setattr("apps.aurakey.services.AurakeyOrder", FakeOrder)
+
+    with pytest.raises(ValueError) as exc_info:
+        await AurakeyService.handle_wechat_notify(FakeDb(), "OD123", True, 980, "wx001")
+
+    assert "金额" in str(exc_info.value)
+    assert order.status == "waiting"
+
+
+@pytest.mark.asyncio
+async def test_wechat_notify_vip_grants_points_and_vip_snapshot(monkeypatch):
+    user_id = uuid.uuid4()
+    product_id = uuid.uuid4()
+    order_id = uuid.uuid4()
+    product = SimpleNamespace(
+        id=product_id,
+        type="vip",
+        name="测试套餐",
+        price=990,
+        point_amount=10,
+        bonus_amount=0,
+        tag="",
+        vip_type="黄金会员",
+        vip_level=2,
+        valid_days=None,
+        is_deleted=False,
+    )
+    order = SimpleNamespace(
+        id=order_id,
+        user_id=user_id,
+        order_no="OD123",
+        product_id=product_id,
+        amount=990,
+        status="waiting",
+        paid_at=None,
+        third_trade_no=None,
+        entitlement_start_at=None,
+        entitlement_expire_at=None,
+        product_name=None,
+        product_type=None,
+        vip_type=None,
+        vip_level=0,
+        point_amount=0,
+        bonus_amount=0,
+        valid_days=None,
+        granted_points=0,
+    )
+    asset = SimpleNamespace(
+        user_id=user_id,
+        balance=0,
+        is_vip=False,
+        vip_type=None,
+        vip_expire_time=None,
+    )
+    added_items = []
+
+    class FakeSelect:
+        def where(self, *args, **kwargs):
+            return self
+
+    class FakeColumn:
+        def __eq__(self, other):
+            return True
+
+    class FakeOrder:
+        order_no = FakeColumn()
+
+    class FakeAssetLog:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class FakeDb:
+        async def scalar(self, _stmt):
+            return order
+
+        async def get(self, _model, requested_id):
+            assert requested_id == product_id
+            return product
+
+        def add(self, item):
+            added_items.append(item)
+
+        async def commit(self):
+            pass
+
+    async def get_or_create_user_asset(_db, requested_user_id):
+        assert requested_user_id == user_id
+        return asset
+
+    async def get_system_config(_db):
+        return {"default_vip_valid_days": 30, "default_point_pack_valid_days": None}
+
+    async def credit_points(_db, requested_asset, amount, **kwargs):
+        assert requested_asset is asset
+        requested_asset.balance += amount
+        return None
+
+    monkeypatch.setattr("apps.aurakey.services.select", lambda *args, **kwargs: FakeSelect())
+    monkeypatch.setattr("apps.aurakey.services.AurakeyOrder", FakeOrder)
+    monkeypatch.setattr("apps.aurakey.services.AurakeyAssetLog", FakeAssetLog)
+    monkeypatch.setattr(AurakeyService, "get_or_create_user_asset", get_or_create_user_asset)
+    monkeypatch.setattr(AurakeyService, "get_system_config", get_system_config)
+    monkeypatch.setattr(AurakeyService, "_credit_points", credit_points)
+
+    await AurakeyService.handle_wechat_notify(FakeDb(), "OD123", True, 990, "wx001")
+
+    assert order.status == "success"
+    assert order.product_type == "vip"
+    assert order.vip_type == "黄金会员"
+    assert order.vip_level == 2
+    assert order.granted_points == 10
+    assert order.third_trade_no == "wx001"
+    assert asset.balance == 10
+    assert asset.is_vip is True
+    assert asset.vip_type == "黄金会员"
+    assert asset.vip_expire_time is not None
+    assert order.entitlement_expire_at == asset.vip_expire_time
+    assert len(added_items) == 1
+    assert added_items[0].amount == 10
