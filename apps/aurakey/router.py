@@ -106,6 +106,20 @@ async def generate_task(
     res = await AurakeyService.submit_generate_task(db, req, current_user.id)
     return ResponseModel(data=res)
 
+@router.post(
+    "/task/generate-stream",
+    response_model=ResponseModel[TaskGenerateResponse],
+    summary="提交流式生图任务",
+    description="登录用户提交流式生图任务，后端后台接收上游流式结果并更新任务状态。",
+)
+async def generate_stream_task(
+    req: TaskGenerateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await AurakeyService.submit_stream_generate_task(db, req, current_user.id)
+    return ResponseModel(data=res)
+
 @router.get(
     "/task/status/{task_id}",
     response_model=ResponseModel[TaskStatusResponse],

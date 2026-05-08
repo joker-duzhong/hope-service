@@ -211,6 +211,48 @@ class AurakeyService:
         return TaskGenerateResponse(task_id=task.id, frozen_points=cost, balance_after=asset.balance)
 
     @staticmethod
+    async def submit_stream_generate_task(db: AsyncSession, request: TaskGenerateRequest, user_id: uuid.UUID) -> TaskGenerateResponse:
+        asset = await AurakeyService.get_or_create_user_asset(db, user_id)
+
+        model_opt = await db.scalar(select(AurakeyModelOption).where(AurakeyModelOption.model_id == request.model_name))
+        cost = model_opt.cost if model_opt else 10
+        is_vip_only = model_opt.is_vip_only if model_opt else False
+
+        if is_vip_only and not asset.is_vip:
+            raise HTTPException(status_code=403, detail="该模型仅限VIP可用")
+        if asset.balance < cost:
+            raise HTTPException(status_code=400, detail="算力不足")
+
+        asset.balance -= cost
+        task = AurakeyTask(
+            user_id=user_id,
+            prompt=request.prompt,
+            model_name=request.model_name,
+            aspect_ratio=request.aspect_ratio,
+            frozen_points=cost,
+            cost=cost,
+            status="processing",
+            progress=5,
+        )
+        log = AurakeyAssetLog(
+            user_id=user_id,
+            type=2,
+            amount=-cost,
+            balance_after=asset.balance,
+            description=f"流式生成插画({request.model_name})",
+        )
+        db.add(task)
+        db.add(log)
+        await db.commit()
+        await db.refresh(task)
+        await db.refresh(asset)
+
+        from apps.aurakey.tasks import run_stream_image_task
+        run_stream_image_task.delay(str(task.id))
+
+        return TaskGenerateResponse(task_id=task.id, frozen_points=cost, balance_after=asset.balance)
+
+    @staticmethod
     async def get_task_status(db: AsyncSession, task_id: uuid.UUID, user_id: uuid.UUID) -> TaskStatusResponse:
         task = await db.get(AurakeyTask, task_id)
         if not task or task.user_id != user_id:

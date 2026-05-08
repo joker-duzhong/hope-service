@@ -4,7 +4,8 @@ LLM 核心驱动模块，使用纯 HTTP 请求调用 LLM API
 import asyncio
 import json
 import logging
-from typing import AsyncGenerator, Optional
+import re
+from typing import Any, AsyncGenerator, Optional
 import httpx
 from tenacity import (
     retry,
@@ -17,6 +18,27 @@ from core.config import settings
 from core.llm.prompts import get_base_messages
 
 logger = logging.getLogger(__name__)
+
+
+IMAGE_MARKDOWN_RE = re.compile(r"!\[[^\]]*]\((https?://[^)\s]+)\)")
+DOWNLOAD_MARKDOWN_RE = re.compile(r"\[[^\]]*(?:下载|download)[^\]]*]\((https?://[^)\s]+)\)", re.IGNORECASE)
+URL_RE = re.compile(r"https?://[^\s)]+")
+
+
+def extract_image_result_from_content(content: str) -> dict[str, Optional[str]]:
+    """从第三方流式文本中提取图片和下载链接。"""
+    image_match = IMAGE_MARKDOWN_RE.search(content)
+    download_match = DOWNLOAD_MARKDOWN_RE.search(content)
+    image_url = image_match.group(1) if image_match else None
+    download_url = download_match.group(1) if download_match else None
+
+    if not image_url:
+        url_match = URL_RE.search(content)
+        image_url = url_match.group(0) if url_match else None
+    if not download_url:
+        download_url = image_url
+
+    return {"image_url": image_url, "download_url": download_url}
 
 
 @retry(
@@ -203,6 +225,124 @@ async def generate_stream_chat(
                     except json.JSONDecodeError:
                         logger.warning(f"[LLM] 无法解析 JSON: {data_str}")
                         continue
+
+
+async def generate_stream_image_chat(
+    messages: list[dict],
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    size: Optional[str] = None,
+    quality: Optional[str] = None,
+    background: Optional[str] = None,
+    output_format: Optional[str] = None,
+    output_compression: Optional[int] = None,
+    n: Optional[int] = None,
+    temperature: float = 0.7,
+    top_p: float = 1.0,
+    timeout: Optional[float] = None,
+    extra_body: Optional[dict[str, Any]] = None,
+    **kwargs,
+) -> dict[str, Optional[str]]:
+    """
+    使用 OpenAI Chat Completions 兼容流式接口生成图片。
+
+    适配部分 OneAPI 服务商：图片模型通过 /chat/completions 以 SSE 返回，
+    最终图片地址出现在 delta.content 的 Markdown 图片链接中。
+    """
+    provider = provider or settings.LLM_DEFAULT_PROVIDER
+    config = settings.LLM_PROVIDERS.get(provider)
+
+    if not config:
+        raise ValueError(f"未配置 LLM 提供商: {provider}")
+
+    api_key = config.get("api_key")
+    base_url = config.get("image_chat_url") or config.get("base_url")
+    default_model = config.get("default_image_model", "gpt-image-2")
+    request_timeout = timeout or config.get("image_timeout") or config.get("timeout", 180.0)
+
+    if not base_url:
+        raise ValueError(f"提供商 {provider} 缺少图片流式生成 URL 配置。")
+
+    full_messages = get_base_messages() + messages
+    merged = []
+    for msg in full_messages:
+        if msg["role"] == "system" and merged and merged[-1]["role"] == "system":
+            merged[-1]["content"] += "\n\n" + msg["content"]
+        else:
+            merged.append(msg.copy())
+    full_messages = merged
+
+    payload: dict[str, Any] = {
+        "model": model or default_model,
+        "messages": full_messages,
+        "stream": True,
+        "temperature": temperature,
+        "top_p": top_p,
+    }
+    if size is not None:
+        payload["size"] = size
+    if quality is not None:
+        payload["quality"] = quality
+    if background is not None:
+        payload["background"] = background
+    if output_format is not None:
+        payload["output_format"] = output_format
+    if output_compression is not None:
+        payload["output_compression"] = output_compression
+    if n is not None:
+        payload["n"] = n
+    if extra_body:
+        payload.update(extra_body)
+    for key, value in kwargs.items():
+        if key not in {"model", "messages", "stream"} and value is not None:
+            payload[key] = value
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+
+    logger.info(f"[ImageStream] 提交流式图片生成 - 提供商: {provider}, 模型: {payload['model']}, URL: {base_url}")
+
+    full_content = ""
+    async with httpx.AsyncClient(timeout=request_timeout) as client:
+        async with client.stream("POST", base_url, json=payload, headers=headers) as response:
+            if response.status_code != 200:
+                error_text = await response.aread()
+                error_msg = f"Image stream API 返回错误 {response.status_code}: {error_text.decode(errors='replace')}"
+                logger.error(f"[ImageStream] {error_msg}")
+                raise Exception(error_msg)
+
+            async for line in response.aiter_lines():
+                if not line.strip() or not line.startswith("data: "):
+                    continue
+                data_str = line[6:].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    data = json.loads(data_str)
+                except json.JSONDecodeError:
+                    logger.warning(f"[ImageStream] 无法解析 SSE JSON: {data_str}")
+                    continue
+
+                choices = data.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                content = delta.get("content")
+                if content:
+                    full_content += content
+
+    links = extract_image_result_from_content(full_content)
+    if not links["image_url"]:
+        raise Exception(f"图片生成完成但未提取到图片链接，响应内容: {full_content}")
+
+    return {
+        "content": full_content,
+        "image_url": links["image_url"],
+        "download_url": links["download_url"],
+    }
 
 @retry(
     stop=stop_after_attempt(3),

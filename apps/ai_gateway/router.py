@@ -16,6 +16,8 @@ from apps.ai_gateway.schemas import (
     AISessionUpdate,
     ChatCompletionRequest,
     ChatCompletionResponse,
+    ImageStreamChatRequest,
+    ImageStreamChatResponse,
 )
 from apps.ai_gateway.services import AISessionService, AIMessageService, AIChatService
 from core.database import get_db, async_session_maker
@@ -166,3 +168,31 @@ async def chat_completions(
             content=full_content,
             history_count=len(history) + 2
         ))
+
+
+@router.post("/image/stream", response_model=ResponseModel[ImageStreamChatResponse])
+async def image_stream_chat(
+    request_data: ImageStreamChatRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    流式图片生成调试接口。
+
+    后端接收第三方 SSE，提取最终 Markdown 图片链接后一次性返回。
+    """
+    result = await engine.generate_stream_image_chat(
+        messages=request_data.messages,
+        provider=request_data.provider,
+        model=request_data.model,
+        size=request_data.size,
+        quality=request_data.quality,
+        background=request_data.background,
+        output_format=request_data.output_format,
+        output_compression=request_data.output_compression,
+        n=request_data.n,
+        temperature=request_data.temperature,
+        top_p=request_data.top_p,
+        timeout=request_data.timeout,
+        extra_body=request_data.extra_body,
+    )
+    return ResponseModel(data=ImageStreamChatResponse(**result))

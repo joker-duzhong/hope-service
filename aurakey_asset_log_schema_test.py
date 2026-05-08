@@ -7,6 +7,8 @@ import pytest
 from apps.aurakey.router import get_invite_info
 from apps.aurakey.schemas import AssetLogItem, InviteInfoResponse
 from apps.aurakey.services import AurakeyService
+from apps.ai_gateway.schemas import ImageStreamChatRequest
+from core.llm.engine import extract_image_result_from_content
 
 
 def test_asset_log_item_validates_from_orm_attributes():
@@ -26,6 +28,29 @@ def test_asset_log_item_validates_from_orm_attributes():
     assert item.amount == -10
     assert item.balance_after == 90
     assert item.description == "生成插画(pro_1)"
+
+
+def test_extract_image_result_from_stream_content():
+    content = (
+        "\n\n> 生成中...\n\n"
+        "![https://pro.filesystem.site/cdn/20260508/demo.png]"
+        "(https://pro.filesystem.site/cdn/20260508/demo.png)\n\n"
+        "[点击下载](https://pro.filesystem.site/cdn/download/20260508/demo.png)"
+    )
+
+    result = extract_image_result_from_content(content)
+
+    assert result["image_url"] == "https://pro.filesystem.site/cdn/20260508/demo.png"
+    assert result["download_url"] == "https://pro.filesystem.site/cdn/download/20260508/demo.png"
+
+
+def test_image_stream_chat_request_defaults():
+    req = ImageStreamChatRequest(messages=[{"role": "user", "content": "生成一张猫图"}])
+
+    assert req.model == "gpt-image-2"
+    assert req.temperature == 0.7
+    assert req.top_p == 1.0
+    assert req.extra_body == {}
 
 
 @pytest.mark.asyncio
