@@ -5,21 +5,44 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ==================== 用户模型 ====================
 
+class UserAvatarResponse(BaseModel):
+    """用户头像响应模型，资源 ID 会展开资源信息，外链仅填充 url"""
+    id: Optional[UUID] = None
+    name: Optional[str] = None
+    url: str
+    thumb_url: Optional[str] = None
+    size: Optional[int] = None
+    type: Optional[str] = None
+    scope: Optional[str] = None
+    hash: Optional[str] = None
+    owner: Optional[UUID] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_url_string(cls, value):
+        if isinstance(value, str):
+            return {"url": value}
+        return value
+
+
 class UserBase(BaseModel):
     """用户基础模型"""
     nickname: Optional[str] = Field(None, max_length=100)
-    avatar: Optional[str] = Field(None, max_length=500)
+    avatar: Optional[UserAvatarResponse] = None
 
 
 class UserCreate(BaseModel):
     """用户名密码注册"""
     username: str = Field(..., min_length=2, max_length=50)
     password: str = Field(..., min_length=6, max_length=100)
+    email: Optional[str] = Field(None, max_length=100)
     phone: Optional[str] = Field(None, max_length=20)
     nickname: Optional[str] = Field(None, max_length=100)
     source: str = Field(default="default", max_length=50)
@@ -27,6 +50,8 @@ class UserCreate(BaseModel):
 
 class UserUpdate(BaseModel):
     """更新用户信息"""
+    username: Optional[str] = Field(None, min_length=2, max_length=50)
+    email: Optional[str] = Field(None, max_length=100)
     nickname: Optional[str] = Field(None, max_length=100)
     avatar: Optional[str] = Field(None, max_length=500)
 
@@ -45,6 +70,8 @@ class UserResponse(UserBase):
     """用户响应模型"""
     id: UUID
     openid: Optional[str] = None
+    username: Optional[str] = None
+    email: Optional[str] = None
     phone: Optional[str] = None
     source: str
     is_active: bool

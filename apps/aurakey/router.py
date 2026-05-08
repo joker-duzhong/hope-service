@@ -298,8 +298,8 @@ async def get_invite_info(
     res = {
         "invite_code": asset.invite_code,
         "invited_count": asset.invited_count,
-        "totalreward_points": asset.total_reward_points,
-        "ruleText": "每邀请1位新用户注册，双方各得 50 点算力"
+        "total_reward_points": asset.total_reward_points,
+        "rule_text": "每邀请1位新用户注册，双方各得 50 点算力"
     }
     return ResponseModel(data=res)
 

@@ -109,6 +109,19 @@ class StorageService:
         resource_id: UUID,
     ) -> ResourceResponse:
         """查询资源详情，拼接公网 URL"""
+        resource = await StorageService.get_resource_response_or_none(db, resource_id)
+
+        if not resource:
+            raise NotFoundException(message="资源不存在")
+
+        return resource
+
+    @staticmethod
+    async def get_resource_response_or_none(
+        db: AsyncSession,
+        resource_id: UUID,
+    ) -> Optional[ResourceResponse]:
+        """查询资源详情，资源不存在时返回 None"""
         result = await db.execute(
             select(Resource).where(
                 Resource.id == resource_id,
@@ -118,7 +131,7 @@ class StorageService:
         resource = result.scalar_one_or_none()
 
         if not resource:
-            raise NotFoundException(message="资源不存在")
+            return None
 
         return await StorageService._build_response(resource)
 
@@ -167,6 +180,7 @@ class StorageService:
             thumb_url=thumb_url,
             size=resource.size,
             type=resource.type,
+            scope=resource.scope,
             hash=resource.hash,
             owner=resource.owner,
             created_at=resource.created_at,

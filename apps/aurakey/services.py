@@ -263,8 +263,8 @@ class AurakeyService:
             task_id=task.id,
             status=task.status,
             progress=task.progress,
-            imageUrl=task.image_url,
-            failedReason=task.failed_reason
+            image_url=task.image_url,
+            failed_reason=task.failed_reason
         )
 
     @staticmethod
@@ -370,4 +370,4 @@ class AurakeyService:
             continuous_days += 1
             check_date -= timedelta(days=1)
 
-        return {"rewardPoints": reward, "continuousDays": continuous_days}
+        return {"reward_points": reward, "continuous_days": continuous_days}

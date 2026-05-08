@@ -63,7 +63,7 @@ async def phone_register(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="验证码错误或手机号已被注册"
         )
-    return ResponseModel(data=UserResponse.model_validate(user))
+    return ResponseModel(data=await UserService.build_user_response(db, user))
 
 @router.post("/phone/bind", response_model=ResponseModel[UserResponse])
 async def phone_bind(
@@ -82,7 +82,7 @@ async def phone_bind(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="验证码错误或手机号已被绑定"
         )
-    return ResponseModel(data=UserResponse.model_validate(user))
+    return ResponseModel(data=await UserService.build_user_response(db, user))
 
 
 # ==================== 注册 ====================
@@ -100,6 +100,13 @@ async def register(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="用户名已存在"
             )
 
+    if user_data.email:
+        existing = await UserService.get_by_email(db, user_data.email)
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="邮箱已存在"
+            )
+
     if user_data.phone:
         existing = await UserService.get_by_phone(db, user_data.phone)
         if existing:
@@ -111,11 +118,12 @@ async def register(
         db,
         username=user_data.username,
         password=user_data.password,
+        email=user_data.email,
         phone=user_data.phone,
         nickname=user_data.nickname,
         source=user_data.source,
     )
-    return ResponseModel(data=UserResponse.model_validate(user))
+    return ResponseModel(data=await UserService.build_user_response(db, user))
 
 
 # ==================== 登录 ====================
@@ -269,9 +277,12 @@ async def refresh_token(
 # ==================== 用户信息 ====================
 
 @router.get("/me", response_model=ResponseModel[UserResponse])
-async def get_me(current_user: User = Depends(get_current_user)):
+async def get_me(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """获取当前用户信息"""
-    return ResponseModel(data=UserResponse.model_validate(current_user))
+    return ResponseModel(data=await UserService.build_user_response(db, current_user))
 
 
 @router.put("/me", response_model=ResponseModel[UserResponse])
@@ -282,7 +293,11 @@ async def update_me(
 ):
     """更新当前用户信息"""
     user = await UserService.update_user_info(
-        db, current_user, nickname=body.nickname, avatar=body.avatar,
+        db,
+        current_user,
+        username=body.username,
+        email=body.email,
+        nickname=body.nickname,
+        avatar=body.avatar,
     )
-    return ResponseModel(data=UserResponse.model_validate(user))
-
+    return ResponseModel(data=await UserService.build_user_response(db, user))

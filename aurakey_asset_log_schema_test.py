@@ -1,0 +1,148 @@
+import uuid
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import pytest
+
+from apps.aurakey.router import get_invite_info
+from apps.aurakey.schemas import AssetLogItem, InviteInfoResponse
+from apps.aurakey.services import AurakeyService
+
+
+def test_asset_log_item_validates_from_orm_attributes():
+    log_id = uuid.uuid4()
+    log = SimpleNamespace(
+        id=log_id,
+        type=2,
+        amount=-10,
+        balance_after=90,
+        description="生成插画(pro_1)",
+    )
+
+    item = AssetLogItem.model_validate(log)
+
+    assert item.id == log_id
+    assert item.type == 2
+    assert item.amount == -10
+    assert item.balance_after == 90
+    assert item.description == "生成插画(pro_1)"
+
+
+@pytest.mark.asyncio
+async def test_invite_info_returns_response_model_fields(monkeypatch):
+    user_id = uuid.uuid4()
+    asset = SimpleNamespace(
+        invite_code="ABC123",
+        invited_count=5,
+        total_reward_points=250,
+    )
+
+    async def get_or_create_user_asset(_db, requested_user_id):
+        assert requested_user_id == user_id
+        return asset
+
+    monkeypatch.setattr(AurakeyService, "get_or_create_user_asset", get_or_create_user_asset)
+
+    response = await get_invite_info(current_user=SimpleNamespace(id=user_id), db=None)
+    invite_info = InviteInfoResponse.model_validate(response.data)
+
+    assert invite_info.invite_code == "ABC123"
+    assert invite_info.invited_count == 5
+    assert invite_info.total_reward_points == 250
+    assert invite_info.rule_text == "每邀请1位新用户注册，双方各得 50 点算力"
+
+
+@pytest.mark.asyncio
+async def test_task_status_response_preserves_optional_fields():
+    user_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        user_id=user_id,
+        status="failed",
+        progress=100,
+        remote_task_id=None,
+        image_url="https://cdn.example.com/result.png",
+        failed_reason="上游 API 生图失败",
+        frozen_points=0,
+    )
+
+    class FakeDb:
+        async def get(self, _model, requested_task_id):
+            assert requested_task_id == task_id
+            return task
+
+    result = await AurakeyService.get_task_status(FakeDb(), task_id, user_id)
+
+    assert result.image_url == "https://cdn.example.com/result.png"
+    assert result.failed_reason == "上游 API 生图失败"
+
+
+@pytest.mark.asyncio
+async def test_daily_sign_in_returns_response_model_fields(monkeypatch):
+    user_id = uuid.uuid4()
+    asset = SimpleNamespace(user_id=user_id, balance=0)
+
+    async def get_or_create_user_asset(_db, requested_user_id):
+        assert requested_user_id == user_id
+        return asset
+
+    class FakeSelect:
+        def where(self, *args, **kwargs):
+            return self
+
+        def order_by(self, *args, **kwargs):
+            return self
+
+        def limit(self, *args, **kwargs):
+            return self
+
+    def fake_select(*args, **kwargs):
+        return FakeSelect()
+
+    class FakeColumn:
+        def __eq__(self, other):
+            return True
+
+        def __ge__(self, other):
+            return True
+
+        def __lt__(self, other):
+            return True
+
+    class FakeAssetLog:
+        user_id = FakeColumn()
+        type = FakeColumn()
+        created_at = FakeColumn()
+
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class ScalarRows:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [datetime.now(timezone.utc)]
+
+    class FakeDb:
+        async def scalar(self, _stmt):
+            return None
+
+        def add(self, _item):
+            pass
+
+        async def commit(self):
+            pass
+
+        async def execute(self, _stmt):
+            return ScalarRows()
+
+    monkeypatch.setattr(AurakeyService, "get_or_create_user_asset", get_or_create_user_asset)
+    monkeypatch.setattr("apps.aurakey.services.select", fake_select)
+    monkeypatch.setattr("apps.aurakey.services.desc", lambda value: value)
+    monkeypatch.setattr("apps.aurakey.services.AurakeyAssetLog", FakeAssetLog)
+
+    result = await AurakeyService.daily_sign_in(FakeDb(), user_id)
+
+    assert result == {"reward_points": 10, "continuous_days": 1}

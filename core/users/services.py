@@ -3,17 +3,17 @@
 """
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.exceptions import BadRequestException
 from core.security import get_password_hash, verify_password
-from core.users.models import User
-from core.users.schemas import UserCreate
 from core.sms import verify_sms_code
-
-
-from uuid import UUID
+from core.storage.services import StorageService
+from core.users.models import User
+from core.users.schemas import UserAvatarResponse, UserResponse
 
 class UserService:
     """用户服务：CRUD 与认证逻辑"""
@@ -41,6 +41,11 @@ class UserService:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def get_by_email(db: AsyncSession, email: str) -> Optional[User]:
+        result = await db.execute(select(User).where(User.email == email))
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def get_by_phone(db: AsyncSession, phone: str) -> Optional[User]:
         result = await db.execute(select(User).where(User.phone == phone))
         return result.scalar_one_or_none()
@@ -57,6 +62,13 @@ class UserService:
         nickname: Optional[str] = None,
         source: str = "default",
     ) -> User:
+        await UserService.ensure_unique_profile_fields(
+            db,
+            username=username,
+            email=email,
+            phone=phone,
+        )
+
         user = User(
             username=username,
             hashed_password=get_password_hash(password),
@@ -112,8 +124,13 @@ class UserService:
         if user:
             return None
 
-        # 默认用户名：随机或截取手机号
+        # 默认用户名：基于手机号生成，若冲突则追加后缀
         username = f"user_{phone}"
+        suffix = 1
+        while await UserService.get_by_username(db, username):
+            username = f"user_{phone}_{suffix}"
+            suffix += 1
+
         hashed_pw = get_password_hash(password) if password else None
         
         new_user = User(
@@ -176,9 +193,22 @@ class UserService:
     async def update_user_info(
         db: AsyncSession,
         user: User,
+        username: Optional[str] = None,
+        email: Optional[str] = None,
         nickname: Optional[str] = None,
         avatar: Optional[str] = None,
     ) -> User:
+        await UserService.ensure_unique_profile_fields(
+            db,
+            current_user_id=user.id,
+            username=username,
+            email=email,
+        )
+
+        if username is not None:
+            user.username = username
+        if email is not None:
+            user.email = email
         if nickname is not None:
             user.nickname = nickname
         if avatar is not None:
@@ -187,6 +217,55 @@ class UserService:
         await db.commit()
         await db.refresh(user)
         return user
+
+    @staticmethod
+    async def ensure_unique_profile_fields(
+        db: AsyncSession,
+        current_user_id: Optional[UUID] = None,
+        username: Optional[str] = None,
+        email: Optional[str] = None,
+        phone: Optional[str] = None,
+    ) -> None:
+        """校验用户资料字段唯一性，允许当前用户保留原值"""
+        if username is not None:
+            existing = await UserService.get_by_username(db, username)
+            if existing and existing.id != current_user_id:
+                raise BadRequestException(message="用户名已存在")
+
+        if email is not None:
+            existing = await UserService.get_by_email(db, email)
+            if existing and existing.id != current_user_id:
+                raise BadRequestException(message="邮箱已存在")
+
+        if phone is not None:
+            existing = await UserService.get_by_phone(db, phone)
+            if existing and existing.id != current_user_id:
+                raise BadRequestException(message="手机号已被注册")
+
+    @staticmethod
+    async def build_user_response(db: AsyncSession, user: User) -> UserResponse:
+        data = UserResponse.model_validate(user)
+        data.avatar = await UserService.resolve_avatar(db, user.avatar)
+        return data
+
+    @staticmethod
+    async def resolve_avatar(
+        db: AsyncSession,
+        avatar: Optional[str],
+    ) -> Optional[UserAvatarResponse]:
+        if not avatar:
+            return None
+
+        try:
+            resource_id = UUID(avatar)
+        except (ValueError, TypeError):
+            return UserAvatarResponse(url=avatar)
+
+        resource = await StorageService.get_resource_response_or_none(db, resource_id)
+        if not resource:
+            return UserAvatarResponse(url=avatar)
+
+        return UserAvatarResponse.model_validate(resource.model_dump())
 
     @staticmethod
     async def bind_phone(

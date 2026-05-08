@@ -146,4 +146,4 @@ async def miniapp_get_phone(
     await db.commit()
     await db.refresh(current_user)
 
-    return ResponseModel(data=UserResponse.model_validate(current_user))
+    return ResponseModel(data=await UserService.build_user_response(db, current_user))
