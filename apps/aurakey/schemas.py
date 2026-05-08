@@ -5,37 +5,46 @@ from pydantic import BaseModel, Field
 
 
 class AuthorSchema(BaseModel):
-    user_id: uuid.UUID
-    nickname: Optional[str] = None
-    avatar: Optional[str] = None
+    user_id: uuid.UUID = Field(..., description="作者用户 ID")
+    nickname: Optional[str] = Field(default=None, description="作者昵称")
+    avatar: Optional[str] = Field(default=None, description="作者头像 URL")
 
     class Config:
         from_attributes = True
 
 
 class GalleryItemSchema(BaseModel):
-    id: uuid.UUID
-    thumb_url: str
-    aspect_ratio: str
-    author: AuthorSchema
-    like_count: int
-    is_liked: bool = False
-    view_count: int
+    id: uuid.UUID = Field(..., description="作品 ID")
+    thumb_url: str = Field(..., description="缩略图 URL")
+    aspect_ratio: str = Field(..., description="作品宽高比")
+    author: AuthorSchema = Field(..., description="作者信息")
+    like_count: int = Field(..., description="点赞数")
+    is_liked: bool = Field(default=False, description="当前登录用户是否已点赞，未登录时为 false")
+    view_count: int = Field(..., description="浏览量")
 
     class Config:
         from_attributes = True
 
 
 class GalleryDetailSchema(GalleryItemSchema):
-    image_url: str
-    prompt: str
-    model_name: str
+    image_url: str = Field(..., description="原图 URL")
+    prompt: str = Field(..., description="生成作品使用的提示词")
+    model_name: str = Field(..., description="生成作品使用的模型名称")
+
+
+class GalleryCategorySchema(BaseModel):
+    id: uuid.UUID = Field(..., description="分类 ID，可用于 gallery/list 的 categoryId 筛选")
+    name: str = Field(..., description="分类名称")
+    sort: int = Field(..., description="排序权重，数值越大越靠前")
+
+    class Config:
+        from_attributes = True
 
 
 class TaskGenerateRequest(BaseModel):
-    prompt: str
-    model_name: str
-    aspect_ratio: str
+    prompt: str = Field(..., description="生图提示词")
+    model_name: str = Field(..., description="模型 ID 或模型名称")
+    aspect_ratio: str = Field(..., description="图片宽高比，如 1:1、16:9")
 
 
 class TaskGenerateResponse(BaseModel):
@@ -53,10 +62,13 @@ class TaskStatusResponse(BaseModel):
 
 
 class DictModelOption(BaseModel):
-    model_id: str
-    name: str
-    cost: int
-    is_vip_only: bool = False
+    model_id: str = Field(..., description="模型 ID")
+    name: str = Field(..., description="模型展示名称")
+    cost: int = Field(..., description="单次生成消耗算力")
+    is_vip_only: bool = Field(default=False, description="是否仅 VIP 可用")
+
+    class Config:
+        from_attributes = True
 
 
 class TaskOptionsResponse(BaseModel):

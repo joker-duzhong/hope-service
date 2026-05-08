@@ -1,7 +1,7 @@
 import time
 import uuid
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, desc, func
@@ -12,7 +12,7 @@ from core.users.models import User
 from core.response import ResponseModel, PaginatedResponse, PaginatedData
 
 from apps.aurakey.schemas import (
-    GalleryItemSchema, GalleryDetailSchema,
+    DictModelOption, GalleryCategorySchema, GalleryItemSchema, GalleryDetailSchema,
     TaskGenerateRequest, TaskGenerateResponse, TaskStatusResponse, TaskOptionsResponse,
     UserProfileResponse, AssetLogItem, ProductItem,
     OrderCreateRequest, OrderCreateResponse, OrderStatusResponse,
@@ -20,7 +20,7 @@ from apps.aurakey.schemas import (
     SignInResponse,
 )
 from apps.aurakey.services import AurakeyService
-from apps.aurakey.models import AurakeyGallery, AurakeyTask, AurakeyAssetLog, AurakeyProduct, AurakeyOrder, AurakeyUserAsset, AurakeyModelOption, AurakeyAspectRatioOption
+from apps.aurakey.models import AurakeyGallery, AurakeyGalleryCategory, AurakeyTask, AurakeyAssetLog, AurakeyProduct, AurakeyOrder, AurakeyUserAsset, AurakeyModelOption, AurakeyAspectRatioOption
 
 from core.pay.schemas import WechatPayMiniRequest
 from core.pay.wechat_pay import WechatPayClient
@@ -29,23 +29,46 @@ router = APIRouter()
 
 # 1. 发现页 / 画廊模块
 
-@router.get("/gallery/list", response_model=PaginatedResponse[GalleryItemSchema])
+@router.get(
+    "/gallery/list",
+    response_model=PaginatedResponse[GalleryItemSchema],
+    summary="获取画廊列表",
+    description="发现页画廊列表，允许未登录访问。已登录时会返回当前用户的点赞状态，可按分类筛选。",
+)
 async def get_gallery_list(
-    page: int = 1,
-    pageSize: int = 20,
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    pageSize: int = Query(20, ge=1, le=100, description="每页条数，最大 100"),
+    categoryId: Optional[uuid.UUID] = Query(default=None, description="画廊分类 ID，不传则返回全部分类作品"),
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
 ):
     user_id = current_user.id if current_user else None
-    total, items = await AurakeyService.get_gallery_list(db, page, pageSize, user_id)
+    total, items = await AurakeyService.get_gallery_list(db, page, pageSize, user_id, categoryId)
     total_pages = (total + pageSize - 1) // pageSize if total > 0 else 0
     return PaginatedResponse(
         data=PaginatedData(items=items, total=total, page=page, page_size=pageSize, total_pages=total_pages)
     )
 
-@router.get("/gallery/{id}", response_model=ResponseModel[GalleryDetailSchema])
+@router.get(
+    "/gallery/categories",
+    response_model=ResponseModel[List[GalleryCategorySchema]],
+    summary="获取画廊分类列表",
+    description="获取画廊可用分类，允许未登录访问。返回的分类 ID 可用于画廊列表 categoryId 参数。",
+)
+async def get_gallery_categories(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(AurakeyGalleryCategory).order_by(desc(AurakeyGalleryCategory.sort)))
+    items = result.scalars().all()
+    return ResponseModel(data=[GalleryCategorySchema.model_validate(item, from_attributes=True) for item in items])
+
+
+@router.get(
+    "/gallery/{id}",
+    response_model=ResponseModel[GalleryDetailSchema],
+    summary="获取画廊作品详情",
+    description="获取单个画廊作品详情，允许未登录访问。访问成功后浏览量会增加。",
+)
 async def get_gallery_detail(
-    id: uuid.UUID,
+    id: uuid.UUID = Path(..., description="作品 ID"),
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
 ):
@@ -53,9 +76,14 @@ async def get_gallery_detail(
     detail = await AurakeyService.get_gallery_detail(db, id, user_id)
     return ResponseModel(data=detail)
 
-@router.post("/gallery/{id}/like", response_model=ResponseModel[dict])
+@router.post(
+    "/gallery/{id}/like",
+    response_model=ResponseModel[dict],
+    summary="点赞或取消点赞画廊作品",
+    description="登录用户切换作品点赞状态。已点赞时再次调用会取消点赞。",
+)
 async def toggle_gallery_like(
-    id: uuid.UUID,
+    id: uuid.UUID = Path(..., description="作品 ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -64,7 +92,12 @@ async def toggle_gallery_like(
 
 # 2. 核心创作与扣费模块
 
-@router.post("/task/generate", response_model=ResponseModel[TaskGenerateResponse])
+@router.post(
+    "/task/generate",
+    response_model=ResponseModel[TaskGenerateResponse],
+    summary="提交生图任务",
+    description="登录用户提交生图任务，系统会校验模型权限和算力余额，并返回任务 ID。",
+)
 async def generate_task(
     req: TaskGenerateRequest,
     current_user: User = Depends(get_current_user),
@@ -73,16 +106,26 @@ async def generate_task(
     res = await AurakeyService.submit_generate_task(db, req, current_user.id)
     return ResponseModel(data=res)
 
-@router.get("/task/status/{task_id}", response_model=ResponseModel[TaskStatusResponse])
+@router.get(
+    "/task/status/{task_id}",
+    response_model=ResponseModel[TaskStatusResponse],
+    summary="查询生图任务状态",
+    description="查询当前登录用户的生图任务进度、结果图或失败原因。",
+)
 async def check_task_status(
-    task_id: uuid.UUID,
+    task_id: uuid.UUID = Path(..., description="任务 ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     res = await AurakeyService.get_task_status(db, task_id, current_user.id)
     return ResponseModel(data=res)
 
-@router.get("/task/options", response_model=ResponseModel[TaskOptionsResponse])
+@router.get(
+    "/task/options",
+    response_model=ResponseModel[TaskOptionsResponse],
+    summary="获取生图配置项",
+    description="获取可用模型和图片比例配置，允许未登录访问。",
+)
 async def get_task_options(db: AsyncSession = Depends(get_db)):
     models_result = await db.execute(select(AurakeyModelOption).where(AurakeyModelOption.status == "on"))
     ratios_result = await db.execute(select(AurakeyAspectRatioOption).where(AurakeyAspectRatioOption.status == "on").order_by(desc(AurakeyAspectRatioOption.sort)))
@@ -136,7 +179,7 @@ async def get_asset_logs(
 
 # 4. 商品与订单模块
 
-@router.get("/store/products", response_model=ResponseModel[List[ProductItem]])
+@router.get("/products", response_model=ResponseModel[List[ProductItem]])
 async def get_products(db: AsyncSession = Depends(get_db)):
     stmt = select(AurakeyProduct).where(AurakeyProduct.is_deleted == False)
     products = (await db.execute(stmt)).scalars().all()

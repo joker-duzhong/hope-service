@@ -11,7 +11,7 @@ from core.response import ResponseModel, PaginatedResponse
 from apps.aurakey.schemas import (
     AdminStatsResponse, AdminAdjustBalanceRequest, AdminAdjustBalanceResponse,
     AdminUserStatusUpdate, AdminRefundRequest, AdminRefundResponse, AdminHistoryListItem,
-    AdminGalleryCategoryResponse, AdminGalleryCategoryCreate,
+    AdminGalleryCategoryCreate,
     AdminOptionModelResponse, AdminOptionModelCreate,
     AdminOptionRatioResponse, AdminOptionRatioCreate,
     AdminUserListItem, AdminUserDetail,
@@ -62,12 +62,6 @@ async def refund_order(
     return ResponseModel(data=AdminRefundResponse(**res))
 
 # ====== CRUD for Categories & Options ======
-
-@router.get("/gallery/categories", response_model=ResponseModel)
-async def get_categories(db: AsyncSession = Depends(get_db), _: User = Depends(require_roles("aurakey_admin"))):
-    result = await db.execute(select(AurakeyGalleryCategory).order_by(desc(AurakeyGalleryCategory.sort)))
-    items = result.scalars().all()
-    return ResponseModel(data=[AdminGalleryCategoryResponse.model_validate(item, from_attributes=True) for item in items])
 
 @router.post("/gallery/categories", response_model=ResponseModel)
 async def create_category(req: AdminGalleryCategoryCreate, db: AsyncSession = Depends(get_db), _: User = Depends(require_roles("aurakey_admin"))):

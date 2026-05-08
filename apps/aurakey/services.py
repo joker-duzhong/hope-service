@@ -41,10 +41,26 @@ class AurakeyService:
         return asset
 
     @staticmethod
-    async def get_gallery_list(db: AsyncSession, page: int, page_size: int, current_user_id: Optional[uuid.UUID] = None) -> Tuple[int, List[dict]]:
-        total = await db.scalar(select(func.count()).select_from(AurakeyGallery).where(AurakeyGallery.is_deleted == False))
-        
-        stmt = select(AurakeyGallery).where(AurakeyGallery.is_deleted == False).order_by(desc(AurakeyGallery.created_at)).offset((page - 1) * page_size).limit(page_size)
+    async def get_gallery_list(
+        db: AsyncSession,
+        page: int,
+        page_size: int,
+        current_user_id: Optional[uuid.UUID] = None,
+        category_id: Optional[uuid.UUID] = None,
+    ) -> Tuple[int, List[dict]]:
+        conditions = [AurakeyGallery.is_deleted == False]
+        if category_id:
+            conditions.append(AurakeyGallery.category_id == category_id)
+
+        total = await db.scalar(select(func.count()).select_from(AurakeyGallery).where(*conditions))
+
+        stmt = (
+            select(AurakeyGallery)
+            .where(*conditions)
+            .order_by(desc(AurakeyGallery.created_at))
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
         items = (await db.execute(stmt)).scalars().all()
         
         # 批量查询点赞状态，避免 N+1

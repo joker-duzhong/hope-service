@@ -71,6 +71,7 @@
 |---|---|---|---|
 | page | int | 1 | 页码，从 1 开始 |
 | pageSize | int | 20 | 每页条数，建议 20 |
+| categoryId | string (UUID) | - | 画廊分类 ID，不传则返回全部分类作品 |
 
 **响应示例**
 
@@ -118,7 +119,39 @@
 
 ---
 
-### 1.2 获取画廊详情
+### 1.2 获取画廊分类列表
+
+> 允许未登录访问。返回的分类 ID 可用于画廊列表 `categoryId` 参数。
+
+**GET** `/gallery/categories`
+
+**响应示例**
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440010",
+      "name": "风景",
+      "sort": 10
+    }
+  ]
+}
+```
+
+**字段说明**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | string (UUID) | 分类 ID |
+| name | string | 分类名称 |
+| sort | int | 排序权重，数值越大越靠前 |
+
+---
+
+### 1.3 获取画廊详情
 
 > 允许未登录访问。每次请求浏览量 +1。
 
@@ -165,7 +198,7 @@
 
 ---
 
-### 1.3 点赞 / 取消点赞
+### 1.4 点赞 / 取消点赞
 
 > **需要登录**。重复调用自动切换点赞状态（toggle 模式）。
 
@@ -1386,10 +1419,10 @@ amount + product.bonus_amount`
   ### 4.1 图库分类管理
   
   #### 4.1.1 获取所有分类
-  
-  **GET** `/admin/gallery/categories`
-  
-  **权限**: `aurakey_admin`
+
+  **GET** `/gallery/categories`
+
+  **权限**: 无需登录
   
   **响应**
   
@@ -1825,9 +1858,9 @@ wn
 
 #### 4.1.1 获取所有分类
 
-**GET** `/admin/gallery/categories`
+**GET** `/gallery/categories`
 
-**权限**: `aurakey_admin`
+**权限**: 无需登录
 
 **响应**
 
