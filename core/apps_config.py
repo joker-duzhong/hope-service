@@ -55,4 +55,10 @@ REGISTERED_APPS: Dict[str, AppConfig] = {
         created_at="2026-04-15",
         description="基于合意困难与渐隐式支架的生成式学习引擎",
     ),
+    "hope_aurakey": AppConfig(
+        key="hope_aurakey",
+        name="Hope aurakey",
+        created_at="2026-05-12",
+        description="",
+    ),
 }
