@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-05-11
+
+- 为用户中心当前用户响应增加 `is_superuser` 标识，便于前端识别超级管理员权限。
+- 修复 Celery worker 未预先注册核心用户/角色 ORM 模型，导致 AuraKey 流式生图后台任务在查询任务记录时失败的问题。
+- 补充 JustRight 定时任务显式导入，避免 worker 收到 `apps.just_right.tasks.notify_state_updates` 时提示未注册。
+
 ## 2026-05-08
 
 - 修复 AuraKey VIP 商品支付成功后不发放算力、不写资产流水的问题，并补充微信回调金额校验。

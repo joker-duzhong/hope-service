@@ -75,6 +75,7 @@ class UserResponse(UserBase):
     phone: Optional[str] = None
     source: str
     is_active: bool
+    is_superuser: bool
     roles: List[RoleInfo] = []
     created_at: datetime
     updated_at: datetime

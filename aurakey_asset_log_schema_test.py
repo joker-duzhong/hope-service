@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -18,6 +20,23 @@ from apps.aurakey.schemas import (
 from apps.aurakey.services import AurakeyService
 from apps.ai_gateway.schemas import ImageStreamChatRequest
 from core.llm.engine import extract_image_result_from_content
+
+
+def test_celery_worker_registers_core_models_and_tasks():
+    code = (
+        "from sqlalchemy.orm import configure_mappers\n"
+        "from worker.celery_app import celery_app\n"
+        "configure_mappers()\n"
+        "assert 'aurakey_stream_image_task' in celery_app.tasks\n"
+        "assert 'apps.just_right.tasks.notify_state_updates' in celery_app.tasks\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_asset_log_item_validates_from_orm_attributes():

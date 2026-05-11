@@ -22,6 +22,7 @@ def build_user(**overrides):
         "avatar": None,
         "source": "default",
         "is_active": True,
+        "is_superuser": False,
         "roles": [],
         "created_at": now,
         "updated_at": now,
@@ -88,7 +89,17 @@ async def test_user_response_avatar_wraps_https_url():
     assert response.avatar is not None
     assert response.avatar.url == "https://cdn.example.com/avatar.png"
     assert response.avatar.id is None
+    assert response.is_superuser is False
     assert isinstance(response, UserResponse)
+
+
+@pytest.mark.asyncio
+async def test_user_response_includes_superuser_flag():
+    user = build_user(is_superuser=True)
+
+    response = await UserService.build_user_response(None, user)
+
+    assert response.is_superuser is True
 
 
 @pytest.mark.asyncio

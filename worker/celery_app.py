@@ -30,6 +30,9 @@ celery_app.conf.update(
     autodiscover_tasks=["apps"],
 )
 
+# Register Role before task modules import User and SQLAlchemy configures mappers.
+import core.roles.models  # noqa: E402, F401
+
 # 显式导入所有任务模块，确保 Celery 能发现它们
 try:
     from apps.trade_copilot import tasks as trade_copilot_tasks
@@ -53,6 +56,11 @@ except ImportError:
 
 try:
     from apps.aurakey import tasks as aurakey_tasks
+except ImportError:
+    pass
+
+try:
+    from apps.just_right import tasks as just_right_tasks
 except ImportError:
     pass
 
