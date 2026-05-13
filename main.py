@@ -35,7 +35,7 @@ def create_app() -> FastAPI:
         # 优化 OpenAPI 配置，便于前端 SDK 生成
         servers=[
             {"url": f"http://localhost:{settings.PORT}", "description": "本地开发环境"},
-            {"url": "https://bjx.zaiwenai.com", "description": "生产环境"},
+            {"url": "https://api.lxyy.fun", "description": "生产环境"},
         ],
         contact={
             "name": "API Support",

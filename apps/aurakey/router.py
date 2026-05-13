@@ -4,7 +4,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, desc, func
+from sqlalchemy import select, desc, func
 
 from core.database import get_db
 from core.users.dependencies import get_current_user, get_optional_user
@@ -18,10 +18,10 @@ from apps.aurakey.schemas import (
     OrderCreateRequest, OrderCreateResponse, OrderStatusResponse,
     TaskHistoryItem, InviteInfoResponse, BindInviteRequest, BindInviteResponse,
     SignInResponse, UserEntitlementResponse, PurchaseOrderItem,
-    AurakeySystemConfigResponse,
+    AurakeySystemConfigResponse, TaskPublishUpdateRequest, TaskPublishStateResponse,
 )
 from apps.aurakey.services import AurakeyService
-from apps.aurakey.models import AurakeyGallery, AurakeyGalleryCategory, AurakeyTask, AurakeyAssetLog, AurakeyProduct, AurakeyOrder, AurakeyUserAsset, AurakeyModelOption, AurakeyAspectRatioOption
+from apps.aurakey.models import AurakeyGalleryCategory, AurakeyTask, AurakeyAssetLog, AurakeyProduct, AurakeyOrder, AurakeyUserAsset, AurakeyModelOption, AurakeyAspectRatioOption
 
 from core.pay.schemas import WechatPayMiniRequest
 from core.pay.wechat_pay import WechatPayClient
@@ -90,6 +90,23 @@ async def toggle_gallery_like(
 ):
     res = await AurakeyService.toggle_like(db, id, current_user.id)
     return ResponseModel(data=res)
+
+
+@router.put(
+    "/gallery/{id}/publish",
+    response_model=ResponseModel[TaskPublishStateResponse],
+    summary="变更作品公开状态",
+    description="登录用户可切换自己任务作品的公开状态，并可同步设置分类。",
+)
+async def update_gallery_publish_state(
+    req: TaskPublishUpdateRequest,
+    id: uuid.UUID = Path(..., description="作品 ID"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    res = await AurakeyService.update_task_publish_state(db, id, current_user.id, req.is_published, req.category_id)
+    return ResponseModel(data=TaskPublishStateResponse(**res))
+
 
 # 2. 核心创作与扣费模块
 
@@ -309,7 +326,10 @@ async def get_user_history(
         "image_url": t.image_url,
         "prompt": t.prompt[:20] + "..." if len(t.prompt) > 20 else t.prompt,
         "status": t.status,
-        "cost": t.cost
+        "cost": t.cost,
+        "is_published": t.is_published,
+        "publish_status": t.publish_status,
+        "category_id": t.category_id,
     } for t in tasks]
     total_pages = (total + pageSize - 1) // pageSize if total > 0 else 0
     return PaginatedResponse(
@@ -324,6 +344,17 @@ async def publish_history(
 ):
     res = await AurakeyService.publish_history_task(db, task_id, current_user.id, current_user.username, current_user.avatar)
     return ResponseModel(data=res)
+
+
+@router.put("/user/history/{task_id}/publish", response_model=ResponseModel[TaskPublishStateResponse])
+async def update_history_publish_state(
+    task_id: uuid.UUID,
+    req: TaskPublishUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    res = await AurakeyService.update_task_publish_state(db, task_id, current_user.id, req.is_published, req.category_id)
+    return ResponseModel(data=TaskPublishStateResponse(**res))
 
 @router.delete("/user/history/{task_id}", response_model=ResponseModel[bool])
 async def delete_history(

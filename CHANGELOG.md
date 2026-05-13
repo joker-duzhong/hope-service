@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-05-13
+
+- 缩短 Alembic 迁移 `0012` 的 revision ID，修复 PostgreSQL 中 `alembic_version.version_num` 长度不足导致升级失败的问题。
+- AuraKey 画廊列表、详情和点赞改为基于 `aurakey_tasks` 返回公开作品，公开条件为生成成功、用户已公开且审核通过。
+- 为 AuraKey 任务新增 `category_id`、`publish_status`、`published_at`、`like_count`、`view_count` 字段，并提供增量迁移脚本。
+- 新增 C 端作品公开状态变更接口和 B 端画廊审核状态接口，支持通过审核状态关闭公开访问。
+- 新增 AuraKey B 端作品列表、单个公开状态变更和批量公开状态变更接口；审核状态不再修改用户公开意愿。
+
 ## 2026-05-11
 
 - 为用户中心当前用户响应增加 `is_superuser` 标识，便于前端识别超级管理员权限。

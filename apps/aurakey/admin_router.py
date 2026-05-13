@@ -1,12 +1,13 @@
 import uuid
-from typing import List, Optional
+import math
+from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from core.database import get_db
 from core.users.models import User
-from core.users.dependencies import get_current_user, require_roles, get_current_superuser
-from core.response import ResponseModel, PaginatedResponse
+from core.users.dependencies import require_roles
+from core.response import ResponseModel, PaginatedData, PaginatedResponse
 
 from apps.aurakey.schemas import (
     AdminStatsResponse, AdminAdjustBalanceRequest, AdminAdjustBalanceResponse,
@@ -17,6 +18,8 @@ from apps.aurakey.schemas import (
     AdminUserListItem, AdminUserDetail,
     AdminProductCreate, AdminProductUpdate, AdminProductResponse,
     AurakeySystemConfigResponse, AurakeySystemConfigUpdate,
+    AdminGalleryListItem, AdminTaskPublishBatchResponse, AdminTaskPublishBatchUpdateRequest,
+    AdminTaskPublishStatusUpdate, AdminTaskPublishUpdateRequest, TaskPublishStateResponse,
 )
 from apps.aurakey.models import (
     AurakeyTask, AurakeyGalleryCategory, AurakeyModelOption, AurakeyAspectRatioOption, AurakeyUserAsset
@@ -65,12 +68,83 @@ async def refund_order(
 
 # ====== CRUD for Categories & Options ======
 
+@router.get("/gallery/list", response_model=PaginatedResponse[AdminGalleryListItem])
+async def get_admin_gallery_list(
+    publishStatus: Optional[str] = Query(default=None, description="审核状态：approved / blocked"),
+    isPublished: Optional[bool] = Query(default=None, description="是否公开"),
+    categoryId: Optional[uuid.UUID] = Query(default=None, description="画廊分类 ID"),
+    userId: Optional[uuid.UUID] = Query(default=None, description="作者用户 ID"),
+    keyword: Optional[str] = Query(default=None, description="关键词：提示词/模型/用户信息"),
+    page: int = Query(1, ge=1, description="页码"),
+    pageSize: int = Query(20, ge=1, le=100, description="每页数量"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_roles("aurakey_admin")),
+):
+    total, items = await AurakeyService.get_admin_gallery_list(
+        db,
+        page,
+        pageSize,
+        publish_status=publishStatus,
+        is_published=isPublished,
+        category_id=categoryId,
+        user_id=userId,
+        keyword=keyword,
+    )
+    return PaginatedResponse(
+        data=PaginatedData(
+            items=[AdminGalleryListItem(**item) for item in items],
+            total=total,
+            page=page,
+            page_size=pageSize,
+            total_pages=math.ceil(total / pageSize) if total else 0,
+        )
+    )
+
+
 @router.post("/gallery/categories", response_model=ResponseModel)
 async def create_category(req: AdminGalleryCategoryCreate, db: AsyncSession = Depends(get_db), _: User = Depends(require_roles("aurakey_admin"))):
     cat = AurakeyGalleryCategory(**req.model_dump())
     db.add(cat)
     await db.commit()
     return ResponseModel(data={"is_success": True})
+
+
+@router.put("/gallery/{task_id}/status", response_model=ResponseModel)
+async def update_gallery_status(
+    task_id: uuid.UUID,
+    req: AdminTaskPublishStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_roles("aurakey_admin")),
+):
+    res = await AurakeyService.update_task_publish_review_status(db, task_id, req.publish_status)
+    return ResponseModel(data=TaskPublishStateResponse(**res))
+
+
+@router.put("/gallery/{task_id}/publish", response_model=ResponseModel[TaskPublishStateResponse])
+async def update_gallery_publish_state(
+    task_id: uuid.UUID,
+    req: AdminTaskPublishUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_roles("aurakey_admin")),
+):
+    res = await AurakeyService.update_task_publish_state_by_admin(db, task_id, req.is_published, req.category_id)
+    return ResponseModel(data=TaskPublishStateResponse(**res))
+
+
+@router.put("/gallery/publish/batch", response_model=ResponseModel[AdminTaskPublishBatchResponse])
+async def batch_update_gallery_publish_state(
+    req: AdminTaskPublishBatchUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_roles("aurakey_admin")),
+):
+    res = await AurakeyService.batch_update_task_publish_state_by_admin(
+        db,
+        req.task_ids,
+        req.is_published,
+        req.category_id,
+    )
+    return ResponseModel(data=AdminTaskPublishBatchResponse(**res))
+
 
 @router.get("/task/options/models", response_model=ResponseModel)
 async def get_models(db: AsyncSession = Depends(get_db), _: User = Depends(require_roles("aurakey_admin"))):

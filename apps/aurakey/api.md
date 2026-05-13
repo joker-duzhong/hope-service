@@ -59,6 +59,8 @@
 
 ## 1. 发现页 / 画廊模块
 
+> 说明：当前画廊数据直接来自 `aurakey_tasks`。公开展示条件为 `status=success`、`is_published=true` 且 `publish_status=approved`。
+
 ### 1.1 获取画廊列表
 
 > 允许未登录访问。已登录时会返回当前用户的 `is_liked` 状态。
@@ -83,7 +85,7 @@
     "items": [
       {
         "id": "550e8400-e29b-41d4-a716-446655440000",
-        "thumb_url": "https://cdn.example.com/img/abc_thumb.jpg",
+        "thumb_url": "https://cdn.example.com/img/abc_origin.jpg",
         "aspect_ratio": "16:9",
         "author": {
           "user_id": "550e8400-e29b-41d4-a716-446655440001",
@@ -108,7 +110,7 @@
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | id | string (UUID) | 作品唯一 ID |
-| thumb_url | string | 缩略图地址（OSS 压缩版，适合列表展示） |
+| thumb_url | string | 作品展示图地址（当前直接返回生成图地址） |
 | aspect_ratio | string | 宽高比，如 `"1:1"`、`"16:9"`，前端用于瀑布流排版 |
 | author.user_id | string (UUID) | 作者用户 ID |
 | author.nickname | string | 作者昵称 |
@@ -703,7 +705,10 @@
         "image_url": "https://cdn.example.com/img/generated_abc.jpg",
         "prompt": "a futuristic city...",
         "status": "success",
-        "cost": 10
+        "cost": 10,
+        "is_published": true,
+        "publish_status": "approved",
+        "category_id": "550e8400-e29b-41d4-a716-446655440010"
       }
     ],
     "total": 30,
@@ -723,6 +728,9 @@
 | prompt | string | 提示词（最多展示 20 字，已截断） |
 | status | string | 任务状态（同 2.3） |
 | cost | int | 消耗的算力点数 |
+| is_published | bool | 是否已公开到画廊 |
+| publish_status | string | 审核状态：`approved` 可公开展示，`blocked` 关闭公开访问 |
+| category_id | string (UUID) \| null | 画廊分类 ID |
 
 ---
 
@@ -747,14 +755,45 @@
   "code": 200,
   "message": "success",
   "data": {
-    "status": "published"
+    "status": "published",
+    "publish_status": "approved",
+    "is_published": true
   }
 }
 ```
 
----
+### 5.3 变更作品公开状态
 
-### 5.3 删除历史任务
+> **需要登录**。用户可公开/取消公开自己的成功作品，并可同步设置分类。
+
+**PUT** `/user/history/{task_id}/publish`
+
+**Request Body**
+
+```json
+{
+  "is_published": true,
+  "category_id": "550e8400-e29b-41d4-a716-446655440010"
+}
+```
+
+**响应示例**
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "task_id": "550e8400-e29b-41d4-a716-446655440002",
+    "is_published": true,
+    "publish_status": "approved",
+    "category_id": "550e8400-e29b-41d4-a716-446655440010",
+    "published_at": 1760000000
+  }
+}
+```
+
+### 5.4 删除历史任务
 
 > **需要登录**。软删除，不影响已发布到画廊的作品。
 
@@ -923,7 +962,7 @@
    → status=failed：提示 failed_reason，停止轮询（算力自动退回）
 
 4. 生成成功后，用户点击「发布到广场」
-   → 调用 POST /user/history/{task_id}/publish
+   → 调用 POST /user/history/{task_id}/publish 或 PUT /user/history/{task_id}/publish
 ```
 
 ### 充值完整流程
@@ -1546,10 +1585,171 @@ amount + product.bonus_amount`
   ```
   
 > ---
+
+#### 4.2.3 获取后台作品列表
+
+**GET** `/admin/gallery/list`
+
+**权限**: `aurakey_admin`
+
+**查询参数**
+
+| 参数 | 类型 | 必需 | 默认值 | 说明 |
+|---|---|---|---|---|
+| page | int | 否 | 1 | 页码 |
+| pageSize | int | 否 | 20 | 每页数量，最大 100 |
+| publishStatus | string | 否 | - | 审核状态：`approved` / `blocked` |
+| isPublished | bool | 否 | - | 是否公开 |
+| categoryId | string(UUID) | 否 | - | 分类 ID |
+| userId | string(UUID) | 否 | - | 作者用户 ID |
+| keyword | string | 否 | - | 提示词、模型或用户信息关键词 |
+
+> 后台列表直接读取 `aurakey_tasks`，默认返回未删除、生成成功且已有图片的作品，不受公开状态和审核状态限制。
+
+**响应示例**
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "items": [
+      {
+        "task_id": "550e8400-e29b-41d4-a716-446655440002",
+        "user": {
+          "user_id": "550e8400-e29b-41d4-a716-446655440001",
+          "username": "demo",
+          "nickname": "Demo",
+          "avatar": "https://cdn.example.com/avatar.png"
+        },
+        "image_url": "https://cdn.example.com/img/abc_origin.jpg",
+        "thumb_url": "https://cdn.example.com/img/abc_origin.jpg",
+        "prompt": "一只穿宇航服的猫",
+        "model_name": "gpt-image-2",
+        "aspect_ratio": "1:1",
+        "status": "success",
+        "cost": 10,
+        "is_published": true,
+        "publish_status": "approved",
+        "category_id": "550e8400-e29b-41d4-a716-446655440010",
+        "like_count": 12,
+        "view_count": 99,
+        "published_at": 1760000000,
+        "created_at": 1760000000
+      }
+    ],
+    "total": 1,
+    "page": 1,
+    "page_size": 20,
+    "total_pages": 1
+  }
+}
+```
+
+---
+
+#### 4.2.4 管理员变更作品公开状态
+
+**PUT** `/admin/gallery/{task_id}/publish`
+
+**权限**: `aurakey_admin`
+
+**请求体**
+
+```json
+{
+  "is_published": true,
+  "category_id": "550e8400-e29b-41d4-a716-446655440010"
+}
+```
+
+> 该接口只修改用户公开状态，不修改 `publish_status`。公开展示仍需同时满足 `is_published=true` 且 `publish_status=approved`。
+
+---
+
+#### 4.2.5 管理员批量变更作品公开状态
+
+**PUT** `/admin/gallery/publish/batch`
+
+**权限**: `aurakey_admin`
+
+**请求体**
+
+```json
+{
+  "task_ids": [
+    "550e8400-e29b-41d4-a716-446655440002"
+  ],
+  "is_published": true,
+  "category_id": "550e8400-e29b-41d4-a716-446655440010"
+}
+```
+
+**响应示例**
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "updated_count": 1,
+    "failed_count": 0,
+    "items": [
+      {
+        "task_id": "550e8400-e29b-41d4-a716-446655440002",
+        "is_published": true,
+        "publish_status": "approved",
+        "category_id": "550e8400-e29b-41d4-a716-446655440010",
+        "published_at": 1760000000
+      }
+    ],
+    "failed_items": []
+  }
+}
+```
+
+---
   
   ### 4.3 宽高比管理
   
-  #### 4.3.1 获取所有宽高比
+  #### 4.2.3 变更画廊审核状态
+
+**PUT** `/admin/gallery/{task_id}/status`
+
+**权限**: `aurakey_admin`
+
+**请求体**
+
+```json
+{
+  "publish_status": "blocked"
+}
+```
+
+**字段说明**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| publish_status | string | `approved` 恢复公开展示，`blocked` 关闭公开访问 |
+
+**响应**
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "task_id": "550e8400-e29b-41d4-a716-446655440002",
+    "is_published": true,
+    "publish_status": "blocked",
+    "category_id": "550e8400-e29b-41d4-a716-446655440010",
+    "published_at": 1760000000
+  }
+}
+```
+
+---
+#### 4.3.1 获取所有宽高比
   
   **GET** `/admin/task/options/ratios`
   
@@ -1987,6 +2187,43 @@ wn
 
 ### 4.3 宽高比管理
 
+#### 4.2.3 变更画廊审核状态
+
+**PUT** `/admin/gallery/{task_id}/status`
+
+**权限**: `aurakey_admin`
+
+**请求体**
+
+```json
+{
+  "publish_status": "blocked"
+}
+```
+
+**字段说明**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| publish_status | string | `approved` 恢复公开展示，`blocked` 关闭公开访问 |
+
+**响应**
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "task_id": "550e8400-e29b-41d4-a716-446655440002",
+    "is_published": true,
+    "publish_status": "blocked",
+    "category_id": "550e8400-e29b-41d4-a716-446655440010",
+    "published_at": 1760000000
+  }
+}
+```
+
+---
 #### 4.3.1 获取所有宽高比
 
 **GET** `/admin/task/options/ratios`
@@ -2094,3 +2331,5 @@ wn
 **Issue 3:** Add admin API documentation section to `api.md`
 
 This should give you a complete plan to address all issues in the AuraKey modu
+
+

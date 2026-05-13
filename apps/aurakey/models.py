@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Float, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column
@@ -41,6 +42,7 @@ class AurakeyTask(CoreModel):
     __tablename__ = "aurakey_tasks"
 
     user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), index=True)
+    category_id: Mapped[Optional[uuid.UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String, default="pending")  # pending, processing, success, failed
     remote_task_id: Mapped[str] = mapped_column(String, nullable=True) # 记录上游大模型/生图接口的任务ID
     progress: Mapped[int] = mapped_column(Integer, default=0)
@@ -52,8 +54,12 @@ class AurakeyTask(CoreModel):
     failed_reason: Mapped[str] = mapped_column(String, nullable=True)
     cost: Mapped[int] = mapped_column(Integer, default=0)
     point_deductions: Mapped[list] = mapped_column(JSON, default=list)
+    like_count: Mapped[int] = mapped_column(Integer, default=0)
 
     is_published: Mapped[bool] = mapped_column(Boolean, default=False)
+    publish_status: Mapped[str] = mapped_column(String, default="approved", index=True)  # approved, blocked
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    view_count: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class AurakeyGalleryCategory(CoreModel):

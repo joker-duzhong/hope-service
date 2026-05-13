@@ -12,9 +12,9 @@
 - **ReDoc 文档**: http://localhost:8000/redoc
 
 ### 生产环境
-- **OpenAPI JSON**: https://bjx.zaiwenai.com/api/v1/openapi.json
-- **Swagger UI 文档**: https://bjx.zaiwenai.com/docs
-- **ReDoc 文档**: https://bjx.zaiwenai.com/redoc
+- **OpenAPI JSON**: https://api.lxyy.fun/api/v1/openapi.json
+- **Swagger UI 文档**: https://api.lxyy.fun/docs
+- **ReDoc 文档**: https://api.lxyy.fun/redoc
 
 ## 前端生成 SDK
 
@@ -28,7 +28,7 @@ npx @hey-api/openapi-ts \
 
 # 从生产环境生成
 npx @hey-api/openapi-ts \
-  -i https://bjx.zaiwenai.com/api/v1/openapi.json \
+  -i https://api.lxyy.fun/api/v1/openapi.json \
   -o src/lib/client
 ```
 
@@ -77,7 +77,7 @@ npx @hey-api/openapi-ts -c openapi-config.json
 {
   "scripts": {
     "generate:api": "openapi-ts -i http://localhost:8000/api/v1/openapi.json -o src/lib/client",
-    "generate:api:prod": "openapi-ts -i https://bjx.zaiwenai.com/api/v1/openapi.json -o src/lib/client"
+    "generate:api:prod": "openapi-ts -i https://api.lxyy.fun/api/v1/openapi.json -o src/lib/client"
   },
   "devDependencies": {
     "@hey-api/openapi-ts": "^0.x.x"
@@ -99,7 +99,7 @@ import { StorageService } from './lib/client/services';
 
 // 配置 base URL
 client.setConfig({
-  baseUrl: 'https://bjx.zaiwenai.com'
+  baseUrl: 'https://api.lxyy.fun'
 });
 
 // 使用生成的服务

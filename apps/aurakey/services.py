@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException
 
 from apps.aurakey.models import (
-    AurakeyGallery, AurakeyGalleryLike, AurakeyTask,
+    AurakeyGalleryLike, AurakeyTask,
     AurakeyUserAsset, AurakeyAssetLog, AurakeyProduct, AurakeyOrder,
     AurakeyModelOption, AurakeyPointGrant, AurakeySystemConfig
 )
@@ -24,6 +24,7 @@ from apps.aurakey.config import (
 )
 from core.database import async_session_maker
 from core.llm.engine import generate_image, fetch_image_result
+from core.users.models import User
 
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,8 @@ LOCAL_TZ = timezone(timedelta(hours=8))
 
 
 class AurakeyService:
+
+    GALLERY_APPROVED_STATUS = "approved"
 
     @staticmethod
     def _now_utc() -> datetime:
@@ -351,55 +354,142 @@ class AurakeyService:
         current_user_id: Optional[uuid.UUID] = None,
         category_id: Optional[uuid.UUID] = None,
     ) -> Tuple[int, List[dict]]:
-        conditions = [AurakeyGallery.is_deleted == False]
+        conditions = [
+            AurakeyTask.is_deleted == False,
+            AurakeyTask.status == "success",
+            AurakeyTask.is_published == True,
+            AurakeyTask.publish_status == AurakeyService.GALLERY_APPROVED_STATUS,
+            AurakeyTask.image_url.isnot(None),
+        ]
         if category_id:
-            conditions.append(AurakeyGallery.category_id == category_id)
+            conditions.append(AurakeyTask.category_id == category_id)
 
-        total = await db.scalar(select(func.count()).select_from(AurakeyGallery).where(*conditions))
+        total = await db.scalar(select(func.count()).select_from(AurakeyTask).where(*conditions))
 
         stmt = (
-            select(AurakeyGallery)
+            select(AurakeyTask, User)
+            .outerjoin(User, User.id == AurakeyTask.user_id)
             .where(*conditions)
-            .order_by(desc(AurakeyGallery.created_at))
+            .order_by(desc(AurakeyTask.published_at), desc(AurakeyTask.created_at))
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
-        items = (await db.execute(stmt)).scalars().all()
+        rows = (await db.execute(stmt)).all()
         
         # 批量查询点赞状态，避免 N+1
         liked_ids: Set[uuid.UUID] = set()
-        if current_user_id and items:
-            gallery_ids = [item.id for item in items]
+        if current_user_id and rows:
+            task_ids = [task.id for task, _user in rows]
             liked_rows = await db.execute(
                 select(AurakeyGalleryLike.gallery_id).where(
                     AurakeyGalleryLike.user_id == current_user_id,
-                    AurakeyGalleryLike.gallery_id.in_(gallery_ids)
+                    AurakeyGalleryLike.gallery_id.in_(task_ids)
                 )
             )
             liked_ids = {row[0] for row in liked_rows}
 
         res = []
-        for item in items:
+        for item, user in rows:
+            nickname = ((user.nickname or user.username) if user else None) or "匿名用户"
+            avatar = (user.avatar if user else None) or ""
             res.append({
                 "id": item.id,
-                "thumb_url": item.thumb_url or item.image_url,
+                "thumb_url": item.image_url,
                 "aspect_ratio": item.aspect_ratio or "1:1",
                 "author": {
                     "user_id": item.user_id,
-                    "nickname": item.author_nickname or "匿名用户",
-                    "avatar": item.author_avatar or ""
+                    "nickname": nickname,
+                    "avatar": avatar
                 },
                 "like_count": item.like_count,
                 "is_liked": item.id in liked_ids,
-                "view_count": item.view_count
+                "view_count": item.view_count,
+                "prompt": item.prompt
             })
-        return total, res
+        return total or 0, res
+
+    @staticmethod
+    async def get_admin_gallery_list(
+        db: AsyncSession,
+        page: int,
+        page_size: int,
+        publish_status: Optional[str] = None,
+        is_published: Optional[bool] = None,
+        category_id: Optional[uuid.UUID] = None,
+        user_id: Optional[uuid.UUID] = None,
+        keyword: Optional[str] = None,
+    ) -> Tuple[int, List[dict[str, Any]]]:
+        if publish_status and publish_status not in {"approved", "blocked"}:
+            raise HTTPException(status_code=400, detail="发布审核状态必须是 approved 或 blocked")
+
+        conditions = [
+            AurakeyTask.is_deleted == False,
+            AurakeyTask.status == "success",
+            AurakeyTask.image_url.isnot(None),
+        ]
+        if publish_status:
+            conditions.append(AurakeyTask.publish_status == publish_status)
+        if is_published is not None:
+            conditions.append(AurakeyTask.is_published == is_published)
+        if category_id:
+            conditions.append(AurakeyTask.category_id == category_id)
+        if user_id:
+            conditions.append(AurakeyTask.user_id == user_id)
+        keyword = keyword.strip() if keyword else None
+        if keyword:
+            pattern = f"%{keyword}%"
+            conditions.append(
+                or_(
+                    AurakeyTask.prompt.ilike(pattern),
+                    AurakeyTask.model_name.ilike(pattern),
+                    User.username.ilike(pattern),
+                    User.nickname.ilike(pattern),
+                    User.phone.ilike(pattern),
+                    User.openid.ilike(pattern),
+                )
+            )
+
+        total_stmt = (
+            select(func.count())
+            .select_from(AurakeyTask)
+            .outerjoin(User, User.id == AurakeyTask.user_id)
+            .where(*conditions)
+        )
+        total = await db.scalar(total_stmt)
+
+        stmt = (
+            select(AurakeyTask, User)
+            .outerjoin(User, User.id == AurakeyTask.user_id)
+            .where(*conditions)
+            .order_by(desc(AurakeyTask.created_at))
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        rows = (await db.execute(stmt)).all()
+
+        return total or 0, [
+            AurakeyService._task_to_admin_gallery_item(task, user)
+            for task, user in rows
+        ]
 
     @staticmethod
     async def get_gallery_detail(db: AsyncSession, gallery_id: uuid.UUID, current_user_id: Optional[uuid.UUID] = None) -> dict:
-        item = await db.get(AurakeyGallery, gallery_id)
-        if not item or item.is_deleted:
+        stmt = (
+            select(AurakeyTask, User)
+            .outerjoin(User, User.id == AurakeyTask.user_id)
+            .where(
+                AurakeyTask.id == gallery_id,
+                AurakeyTask.is_deleted == False,
+                AurakeyTask.status == "success",
+                AurakeyTask.is_published == True,
+                AurakeyTask.publish_status == AurakeyService.GALLERY_APPROVED_STATUS,
+                AurakeyTask.image_url.isnot(None),
+            )
+        )
+        row = (await db.execute(stmt)).first()
+        if not row:
             raise HTTPException(status_code=404, detail="作品不存在")
+        item, user = row
             
         # 增加浏览量
         item.view_count += 1
@@ -410,17 +500,19 @@ class AurakeyService:
             like = await db.scalar(select(AurakeyGalleryLike).where(AurakeyGalleryLike.gallery_id == item.id, AurakeyGalleryLike.user_id == current_user_id))
             is_liked = bool(like)
             
+        nickname = ((user.nickname or user.username) if user else None) or "匿名用户"
+        avatar = (user.avatar if user else None) or ""
         return {
             "id": item.id,
-            "thumb_url": item.thumb_url or item.image_url, # TODO
+            "thumb_url": item.image_url,
             "image_url": item.image_url,
             "aspect_ratio": item.aspect_ratio or "1:1",
             "prompt": item.prompt,
             "model_name": item.model_name or "Pro v1.0",
             "author": {
                 "user_id": item.user_id,
-                "nickname": item.author_nickname or "匿名用户",
-                "avatar": item.author_avatar or ""
+                "nickname": nickname,
+                "avatar": avatar
             },
             "like_count": item.like_count,
             "is_liked": is_liked,
@@ -429,8 +521,14 @@ class AurakeyService:
 
     @staticmethod
     async def toggle_like(db: AsyncSession, gallery_id: uuid.UUID, user_id: uuid.UUID) -> dict:
-        item = await db.get(AurakeyGallery, gallery_id)
-        if not item or item.is_deleted:
+        item = await db.get(AurakeyTask, gallery_id)
+        if (
+            not item
+            or item.is_deleted
+            or item.status != "success"
+            or not item.is_published
+            or item.publish_status != AurakeyService.GALLERY_APPROVED_STATUS
+        ):
             raise HTTPException(status_code=404, detail="作品不存在")
             
         like = await db.scalar(select(AurakeyGalleryLike).where(AurakeyGalleryLike.gallery_id == item.id, AurakeyGalleryLike.user_id == user_id))
@@ -546,6 +644,7 @@ class AurakeyService:
             prompt=request.prompt,
             model_name=request.model_name,
             aspect_ratio=request.aspect_ratio,
+            category_id=request.category_id,
             frozen_points=deducted,
             cost=deducted,
             point_deductions=allocation,
@@ -640,31 +739,148 @@ class AurakeyService:
         author_nickname: Optional[str] = None,
         author_avatar: Optional[str] = None,
     ):
-        if task.is_published:
-            return
-
-        existing_gallery = await db.scalar(
-            select(AurakeyGallery).where(
-                AurakeyGallery.task_id == task.id,
-                AurakeyGallery.is_deleted == False,
-            )
-        )
-        if existing_gallery:
-            task.is_published = True
-            return
-
-        gallery = AurakeyGallery(
-            user_id=task.user_id,
-            author_nickname=author_nickname,
-            author_avatar=author_avatar,
-            image_url=task.image_url,
-            prompt=task.prompt,
-            model_name=task.model_name,
-            aspect_ratio=task.aspect_ratio,
-            task_id=task.id
-        )
         task.is_published = True
-        db.add(gallery)
+        task.publish_status = task.publish_status or AurakeyService.GALLERY_APPROVED_STATUS
+        if not task.published_at:
+            task.published_at = AurakeyService._now_utc()
+
+    @staticmethod
+    def _task_publish_state(task: AurakeyTask) -> dict[str, Any]:
+        return {
+            "task_id": task.id,
+            "is_published": task.is_published,
+            "publish_status": task.publish_status,
+            "category_id": task.category_id,
+            "published_at": AurakeyService._to_ts(task.published_at),
+        }
+
+    @staticmethod
+    def _task_to_admin_gallery_item(task: AurakeyTask, user: Optional[User]) -> dict[str, Any]:
+        return {
+            "task_id": task.id,
+            "user": {
+                "user_id": task.user_id,
+                "username": user.username if user else None,
+                "nickname": user.nickname if user else None,
+                "avatar": user.avatar if user else None,
+            },
+            "image_url": task.image_url,
+            "thumb_url": task.image_url,
+            "prompt": task.prompt,
+            "model_name": task.model_name,
+            "aspect_ratio": task.aspect_ratio,
+            "status": task.status,
+            "cost": task.cost,
+            "is_published": task.is_published,
+            "publish_status": task.publish_status,
+            "category_id": task.category_id,
+            "like_count": task.like_count,
+            "view_count": task.view_count,
+            "published_at": AurakeyService._to_ts(task.published_at),
+            "created_at": AurakeyService._to_ts(task.created_at),
+        }
+
+    @staticmethod
+    async def update_task_publish_state(
+        db: AsyncSession,
+        task_id: uuid.UUID,
+        user_id: uuid.UUID,
+        is_published: bool,
+        category_id: Optional[uuid.UUID] = None,
+    ) -> dict[str, Any]:
+        task = await db.get(AurakeyTask, task_id)
+        if not task or task.user_id != user_id or task.is_deleted or task.status != "success":
+            raise HTTPException(status_code=404, detail="任务不存在或无法发布")
+        if is_published and not task.image_url:
+            raise HTTPException(status_code=400, detail="任务尚未生成图片，无法公开")
+
+        task.is_published = is_published
+        if category_id is not None:
+            task.category_id = category_id
+        if is_published and not task.published_at:
+            task.published_at = AurakeyService._now_utc()
+        await db.commit()
+        return AurakeyService._task_publish_state(task)
+
+    @staticmethod
+    async def update_task_publish_state_by_admin(
+        db: AsyncSession,
+        task_id: uuid.UUID,
+        is_published: bool,
+        category_id: Optional[uuid.UUID] = None,
+    ) -> dict[str, Any]:
+        task = await db.get(AurakeyTask, task_id)
+        if not task or task.is_deleted:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if is_published and (task.status != "success" or not task.image_url):
+            raise HTTPException(status_code=400, detail="仅成功且已生成图片的任务可公开")
+
+        task.is_published = is_published
+        if category_id is not None:
+            task.category_id = category_id
+        if is_published and not task.published_at:
+            task.published_at = AurakeyService._now_utc()
+        await db.commit()
+        return AurakeyService._task_publish_state(task)
+
+    @staticmethod
+    async def batch_update_task_publish_state_by_admin(
+        db: AsyncSession,
+        task_ids: List[uuid.UUID],
+        is_published: bool,
+        category_id: Optional[uuid.UUID] = None,
+    ) -> dict[str, Any]:
+        unique_task_ids = list(dict.fromkeys(task_ids))
+        if not unique_task_ids:
+            raise HTTPException(status_code=400, detail="任务 ID 列表不能为空")
+
+        stmt = select(AurakeyTask).where(AurakeyTask.id.in_(unique_task_ids))
+        tasks = (await db.execute(stmt)).scalars().all()
+        task_map = {task.id: task for task in tasks}
+
+        items: list[dict[str, Any]] = []
+        failed_items: list[dict[str, Any]] = []
+        now = AurakeyService._now_utc()
+
+        for task_id in unique_task_ids:
+            task = task_map.get(task_id)
+            if not task or task.is_deleted:
+                failed_items.append({"task_id": task_id, "reason": "任务不存在"})
+                continue
+            if is_published and (task.status != "success" or not task.image_url):
+                failed_items.append({"task_id": task_id, "reason": "仅成功且已生成图片的任务可公开"})
+                continue
+
+            task.is_published = is_published
+            if category_id is not None:
+                task.category_id = category_id
+            if is_published and not task.published_at:
+                task.published_at = now
+            items.append(AurakeyService._task_publish_state(task))
+
+        await db.commit()
+        return {
+            "updated_count": len(items),
+            "failed_count": len(failed_items),
+            "items": items,
+            "failed_items": failed_items,
+        }
+
+    @staticmethod
+    async def update_task_publish_review_status(
+        db: AsyncSession,
+        task_id: uuid.UUID,
+        publish_status: str,
+    ) -> dict[str, Any]:
+        if publish_status not in {"approved", "blocked"}:
+            raise HTTPException(status_code=400, detail="发布审核状态必须是 approved 或 blocked")
+        task = await db.get(AurakeyTask, task_id)
+        if not task or task.is_deleted:
+            raise HTTPException(status_code=404, detail="任务不存在")
+
+        task.publish_status = publish_status
+        await db.commit()
+        return AurakeyService._task_publish_state(task)
 
     @staticmethod
     async def publish_history_task(db: AsyncSession, task_id: uuid.UUID, user_id: uuid.UUID, username: str, user_avatar: str):
@@ -672,9 +888,12 @@ class AurakeyService:
         if not task or task.user_id != user_id or task.status != "success":
             raise HTTPException(status_code=404, detail="任务不存在或无法发布")
 
-        await AurakeyService.publish_task_to_gallery(db, task, username, user_avatar)
-        await db.commit()
-        return {"status": "published"}
+        res = await AurakeyService.update_task_publish_state(db, task_id, user_id, True, task.category_id)
+        return {
+            "status": "published",
+            "publish_status": res["publish_status"],
+            "is_published": res["is_published"],
+        }
 
     @staticmethod
     async def handle_wechat_notify(

@@ -214,55 +214,189 @@ async def test_task_status_response_preserves_optional_fields():
 
 
 @pytest.mark.asyncio
-async def test_publish_task_to_gallery_creates_gallery(monkeypatch):
+async def test_publish_task_to_gallery_updates_task_flags():
     user_id = uuid.uuid4()
     task_id = uuid.uuid4()
     task = SimpleNamespace(
         id=task_id,
         user_id=user_id,
         is_published=False,
+        publish_status="approved",
+        published_at=None,
         image_url="https://cdn.example.com/result.png",
         prompt="生成一张猫图",
         model_name="gpt-image-2",
         aspect_ratio="1:1",
     )
-    added_items = []
+
+    class FakeDb:
+        pass
+
+    await AurakeyService.publish_task_to_gallery(FakeDb(), task, "阿杰", "https://cdn.example.com/avatar.png")
+
+    assert task.is_published is True
+    assert task.publish_status == "approved"
+    assert task.published_at is not None
+
+
+@pytest.mark.asyncio
+async def test_update_task_publish_state_updates_category_and_flag():
+    user_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    category_id = uuid.uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        user_id=user_id,
+        is_deleted=False,
+        status="success",
+        is_published=False,
+        publish_status="approved",
+        category_id=None,
+        published_at=None,
+        image_url="https://cdn.example.com/result.png",
+    )
+
+    class FakeDb:
+        async def get(self, _model, requested_task_id):
+            assert requested_task_id == task_id
+            return task
+
+        async def commit(self):
+            pass
+
+    result = await AurakeyService.update_task_publish_state(FakeDb(), task_id, user_id, True, category_id)
+
+    assert task.is_published is True
+    assert task.category_id == category_id
+    assert result["is_published"] is True
+    assert result["category_id"] == category_id
+
+
+@pytest.mark.asyncio
+async def test_update_task_publish_review_status_blocks_task_without_changing_publish_flag():
+    task_id = uuid.uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        is_deleted=False,
+        is_published=True,
+        publish_status="approved",
+        category_id=None,
+        published_at=None,
+    )
+
+    class FakeDb:
+        async def get(self, _model, requested_task_id):
+            assert requested_task_id == task_id
+            return task
+
+        async def commit(self):
+            pass
+
+    result = await AurakeyService.update_task_publish_review_status(FakeDb(), task_id, "blocked")
+
+    assert task.publish_status == "blocked"
+    assert task.is_published is True
+    assert result["publish_status"] == "blocked"
+    assert result["is_published"] is True
+
+
+@pytest.mark.asyncio
+async def test_user_publish_state_can_change_when_review_status_is_blocked():
+    user_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        user_id=user_id,
+        is_deleted=False,
+        status="success",
+        image_url="https://cdn.example.com/result.png",
+        is_published=False,
+        publish_status="blocked",
+        category_id=None,
+        published_at=None,
+    )
+
+    class FakeDb:
+        async def get(self, _model, requested_task_id):
+            assert requested_task_id == task_id
+            return task
+
+        async def commit(self):
+            pass
+
+    result = await AurakeyService.update_task_publish_state(FakeDb(), task_id, user_id, True)
+
+    assert task.is_published is True
+    assert task.publish_status == "blocked"
+    assert result["is_published"] is True
+    assert result["publish_status"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_admin_batch_publish_updates_valid_tasks_and_reports_failures(monkeypatch):
+    valid_task_id = uuid.uuid4()
+    failed_task_id = uuid.uuid4()
+    missing_task_id = uuid.uuid4()
+    valid_task = SimpleNamespace(
+        id=valid_task_id,
+        is_deleted=False,
+        status="success",
+        image_url="https://cdn.example.com/result.png",
+        is_published=False,
+        publish_status="approved",
+        category_id=None,
+        published_at=None,
+    )
+    failed_task = SimpleNamespace(
+        id=failed_task_id,
+        is_deleted=False,
+        status="processing",
+        image_url=None,
+        is_published=False,
+        publish_status="approved",
+        category_id=None,
+        published_at=None,
+    )
 
     class FakeSelect:
         def where(self, *args, **kwargs):
             return self
 
     class FakeColumn:
-        def __eq__(self, other):
+        def in_(self, _items):
             return True
 
-    class FakeGallery:
-        task_id = FakeColumn()
-        is_deleted = FakeColumn()
+    class FakeTaskModel:
+        id = FakeColumn()
 
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
+    class ScalarRows:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [valid_task, failed_task]
 
     class FakeDb:
-        async def scalar(self, _stmt):
-            return None
+        async def execute(self, _stmt):
+            return ScalarRows()
 
-        def add(self, item):
-            added_items.append(item)
+        async def commit(self):
+            pass
 
     monkeypatch.setattr("apps.aurakey.services.select", lambda *args, **kwargs: FakeSelect())
-    monkeypatch.setattr("apps.aurakey.services.AurakeyGallery", FakeGallery)
+    monkeypatch.setattr("apps.aurakey.services.AurakeyTask", FakeTaskModel)
 
-    await AurakeyService.publish_task_to_gallery(FakeDb(), task, "阿杰", "https://cdn.example.com/avatar.png")
+    result = await AurakeyService.batch_update_task_publish_state_by_admin(
+        FakeDb(),
+        [valid_task_id, failed_task_id, missing_task_id],
+        True,
+    )
 
-    assert task.is_published is True
-    assert len(added_items) == 1
-    gallery = added_items[0]
-    assert gallery.user_id == user_id
-    assert gallery.task_id == task_id
-    assert gallery.author_nickname == "阿杰"
-    assert gallery.author_avatar == "https://cdn.example.com/avatar.png"
-    assert gallery.image_url == "https://cdn.example.com/result.png"
+    assert valid_task.is_published is True
+    assert valid_task.published_at is not None
+    assert result["updated_count"] == 1
+    assert result["failed_count"] == 2
+    assert {item["task_id"] for item in result["failed_items"]} == {failed_task_id, missing_task_id}
 
 
 @pytest.mark.asyncio

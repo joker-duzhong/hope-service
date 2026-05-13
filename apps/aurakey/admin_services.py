@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from apps.aurakey.models import (
-    AurakeyUserAsset, AurakeyTask, AurakeyGallery, AurakeyOrder,
+    AurakeyUserAsset, AurakeyTask, AurakeyOrder,
     AurakeyGalleryCategory, AurakeyModelOption, AurakeyAspectRatioOption,
     AurakeyAssetLog, AurakeyProduct
 )

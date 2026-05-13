@@ -5,11 +5,18 @@ from pydantic import BaseModel, Field, field_validator
 
 
 VALID_PRODUCT_TYPES = {"point_pack", "vip"}
+VALID_PUBLISH_STATUSES = {"approved", "blocked"}
 
 
 def _validate_product_type(value: str) -> str:
     if value not in VALID_PRODUCT_TYPES:
         raise ValueError("商品类型必须是 point_pack 或 vip")
+    return value
+
+
+def _validate_publish_status(value: str) -> str:
+    if value not in VALID_PUBLISH_STATUSES:
+        raise ValueError("发布审核状态必须是 approved 或 blocked")
     return value
 
 
@@ -30,6 +37,7 @@ class GalleryItemSchema(BaseModel):
     like_count: int = Field(..., description="点赞数")
     is_liked: bool = Field(default=False, description="当前登录用户是否已点赞，未登录时为 false")
     view_count: int = Field(..., description="浏览量")
+    prompt: str = Field(..., description="生成作品使用的提示词")
 
     class Config:
         from_attributes = True
@@ -58,6 +66,7 @@ class TaskGenerateRequest(BaseModel):
 
 class TaskStreamGenerateRequest(TaskGenerateRequest):
     is_public: bool = Field(default=False, description="是否公开到画廊，true 时生成成功后自动发布")
+    category_id: Optional[uuid.UUID] = Field(default=None, description="公开到画廊时使用的分类 ID")
 
 
 class TaskGenerateResponse(BaseModel):
@@ -201,6 +210,44 @@ class TaskHistoryItem(BaseModel):
     prompt: str
     status: str
     cost: int
+    is_published: bool = False
+    publish_status: str = "approved"
+    category_id: Optional[uuid.UUID] = None
+
+
+class TaskPublishUpdateRequest(BaseModel):
+    is_published: bool = Field(..., description="是否公开作品")
+    category_id: Optional[uuid.UUID] = Field(default=None, description="公开作品时可指定画廊分类 ID")
+
+
+class TaskPublishStateResponse(BaseModel):
+    task_id: uuid.UUID
+    is_published: bool
+    publish_status: str
+    category_id: Optional[uuid.UUID] = None
+    published_at: Optional[int] = None
+
+
+class AdminTaskPublishUpdateRequest(TaskPublishUpdateRequest):
+    pass
+
+
+class AdminTaskPublishBatchUpdateRequest(BaseModel):
+    task_ids: List[uuid.UUID] = Field(..., min_length=1, description="需要批量变更的任务 ID 列表")
+    is_published: bool = Field(..., description="是否公开作品")
+    category_id: Optional[uuid.UUID] = Field(default=None, description="批量公开时可指定画廊分类 ID")
+
+
+class AdminTaskPublishBatchFailedItem(BaseModel):
+    task_id: uuid.UUID
+    reason: str
+
+
+class AdminTaskPublishBatchResponse(BaseModel):
+    updated_count: int
+    failed_count: int
+    items: List[TaskPublishStateResponse]
+    failed_items: List[AdminTaskPublishBatchFailedItem] = Field(default_factory=list)
 
 
 class InviteInfoResponse(BaseModel):
@@ -250,6 +297,15 @@ class AdminUserStatusUpdate(BaseModel):
     status: str
 
 
+class AdminTaskPublishStatusUpdate(BaseModel):
+    publish_status: str
+
+    @field_validator("publish_status")
+    @classmethod
+    def validate_publish_status(cls, value: str) -> str:
+        return _validate_publish_status(value)
+
+
 class AdminUserListItem(BaseModel):
     user_id: uuid.UUID
     username: str
@@ -292,6 +348,32 @@ class AdminHistoryListItem(BaseModel):
     status: str
     cost: int
     created_at: datetime
+
+
+class AdminGalleryUserSchema(BaseModel):
+    user_id: uuid.UUID
+    username: Optional[str] = None
+    nickname: Optional[str] = None
+    avatar: Optional[str] = None
+
+
+class AdminGalleryListItem(BaseModel):
+    task_id: uuid.UUID
+    user: AdminGalleryUserSchema
+    image_url: Optional[str] = None
+    thumb_url: Optional[str] = None
+    prompt: str
+    model_name: Optional[str] = None
+    aspect_ratio: Optional[str] = None
+    status: str
+    cost: int
+    is_published: bool
+    publish_status: str
+    category_id: Optional[uuid.UUID] = None
+    like_count: int = 0
+    view_count: int = 0
+    published_at: Optional[int] = None
+    created_at: Optional[int] = None
 
 
 class AdminGalleryCategoryResponse(BaseModel):
