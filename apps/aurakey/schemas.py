@@ -3,6 +3,8 @@ from datetime import datetime
 from typing import Any, List, Optional
 from pydantic import BaseModel, Field, field_validator
 
+from core.storage.schemas import ResourceResponse
+
 
 VALID_PRODUCT_TYPES = {"point_pack", "vip"}
 VALID_PUBLISH_STATUSES = {"approved", "blocked"}
@@ -31,7 +33,7 @@ class AuthorSchema(BaseModel):
 
 class GalleryItemSchema(BaseModel):
     id: uuid.UUID = Field(..., description="作品 ID")
-    thumb_url: str = Field(..., description="缩略图 URL")
+    resource: ResourceResponse = Field(..., description="作品资源")
     aspect_ratio: str = Field(..., description="作品宽高比")
     author: AuthorSchema = Field(..., description="作者信息")
     like_count: int = Field(..., description="点赞数")
@@ -44,9 +46,10 @@ class GalleryItemSchema(BaseModel):
 
 
 class GalleryDetailSchema(GalleryItemSchema):
-    image_url: str = Field(..., description="原图 URL")
     prompt: str = Field(..., description="生成作品使用的提示词")
     model_name: str = Field(..., description="生成作品使用的模型名称")
+    reference_images_ids: List[uuid.UUID] = Field(default_factory=list, description="参考图资源 ID 列表")
+    reference_images: List[ResourceResponse] = Field(default_factory=list, description="参考图资源结构列表")
 
 
 class GalleryCategorySchema(BaseModel):
@@ -67,6 +70,7 @@ class TaskGenerateRequest(BaseModel):
 class TaskStreamGenerateRequest(TaskGenerateRequest):
     is_public: bool = Field(default=False, description="是否公开到画廊，true 时生成成功后自动发布")
     category_id: Optional[uuid.UUID] = Field(default=None, description="公开到画廊时使用的分类 ID")
+    reference_images_ids: List[uuid.UUID] = Field(default_factory=list, max_length=9, description="参考图资源 ID 列表，最多 9 张")
 
 
 class TaskGenerateResponse(BaseModel):
@@ -79,7 +83,9 @@ class TaskStatusResponse(BaseModel):
     task_id: uuid.UUID
     status: str
     progress: int
-    image_url: Optional[str] = None
+    resource: Optional[ResourceResponse] = None
+    reference_images_ids: List[uuid.UUID] = Field(default_factory=list, description="参考图资源 ID 列表")
+    reference_images: List[ResourceResponse] = Field(default_factory=list, description="参考图资源结构列表")
     failed_reason: Optional[str] = None
 
 
@@ -206,9 +212,12 @@ class AurakeySystemConfigUpdate(BaseModel):
 
 class TaskHistoryItem(BaseModel):
     task_id: uuid.UUID
-    image_url: Optional[str] = None
+    resource: Optional[ResourceResponse] = None
+    reference_images_ids: List[uuid.UUID] = Field(default_factory=list, description="参考图资源 ID 列表")
+    reference_images: List[ResourceResponse] = Field(default_factory=list, description="参考图资源结构列表")
     prompt: str
     status: str
+    progress: int
     cost: int
     is_published: bool = False
     publish_status: str = "approved"
@@ -343,7 +352,7 @@ class AdminRefundResponse(BaseModel):
 class AdminHistoryListItem(BaseModel):
     task_id: uuid.UUID
     user_id: uuid.UUID
-    image_url: Optional[str] = None
+    resource: Optional[ResourceResponse] = None
     prompt: str
     status: str
     cost: int
@@ -360,8 +369,7 @@ class AdminGalleryUserSchema(BaseModel):
 class AdminGalleryListItem(BaseModel):
     task_id: uuid.UUID
     user: AdminGalleryUserSchema
-    image_url: Optional[str] = None
-    thumb_url: Optional[str] = None
+    resource: Optional[ResourceResponse] = None
     prompt: str
     model_name: Optional[str] = None
     aspect_ratio: Optional[str] = None
@@ -476,4 +484,3 @@ class AdminProductResponse(AdminProductBase):
     class Config:
         from_attributes = True
         populate_by_name = True
-

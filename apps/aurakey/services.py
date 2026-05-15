@@ -24,6 +24,7 @@ from apps.aurakey.config import (
 )
 from core.database import async_session_maker
 from core.llm.engine import generate_image, fetch_image_result
+from core.storage.services import StorageService
 from core.users.models import User
 
 
@@ -88,6 +89,56 @@ class AurakeyService:
             config.value = merged
         await db.commit()
         return merged
+
+    @staticmethod
+    def _task_has_resource(task: AurakeyTask) -> bool:
+        return task.image_resource_id is not None
+
+    @staticmethod
+    async def _get_task_resource(db: AsyncSession, task: AurakeyTask):
+        if not task.image_resource_id:
+            return None
+        return await StorageService.get_resource_response_or_none(db, task.image_resource_id)
+
+    @staticmethod
+    async def _get_task_resource_map(db: AsyncSession, tasks: List[AurakeyTask]):
+        resource_ids = [task.image_resource_id for task in tasks if task.image_resource_id]
+        return await StorageService.get_resources_by_ids(db, resource_ids)
+
+    @staticmethod
+    def _task_reference_image_ids(task: AurakeyTask) -> List[uuid.UUID]:
+        ids: List[uuid.UUID] = []
+        for value in task.reference_image_ids or []:
+            try:
+                ids.append(value if isinstance(value, uuid.UUID) else uuid.UUID(str(value)))
+            except (TypeError, ValueError):
+                continue
+        return ids
+
+    @staticmethod
+    async def _get_task_reference_images(db: AsyncSession, task: AurakeyTask):
+        resource_map = await StorageService.get_resources_by_ids(db, AurakeyService._task_reference_image_ids(task))
+        return [resource_map[resource_id] for resource_id in AurakeyService._task_reference_image_ids(task) if resource_id in resource_map]
+
+    @staticmethod
+    async def _get_task_reference_image_map(db: AsyncSession, tasks: List[AurakeyTask]):
+        resource_ids: List[uuid.UUID] = []
+        for task in tasks:
+            resource_ids.extend(AurakeyService._task_reference_image_ids(task))
+        return await StorageService.get_resources_by_ids(db, list(dict.fromkeys(resource_ids)))
+
+    @staticmethod
+    async def _validate_reference_images(db: AsyncSession, resource_ids: List[uuid.UUID]):
+        if not resource_ids:
+            return {}
+        unique_ids = list(dict.fromkeys(resource_ids))
+        resource_map = await StorageService.get_resources_by_ids(db, unique_ids)
+        missing_ids = [resource_id for resource_id in unique_ids if resource_id not in resource_map]
+        if missing_ids:
+            raise HTTPException(status_code=400, detail="参考图资源不存在")
+        if any(not (resource.type or "").startswith("image/") for resource in resource_map.values()):
+            raise HTTPException(status_code=400, detail="参考图资源必须是图片类型")
+        return resource_map
 
     @staticmethod
     async def _sync_point_balance(db: AsyncSession, asset: AurakeyUserAsset) -> List[AurakeyPointGrant]:
@@ -359,7 +410,7 @@ class AurakeyService:
             AurakeyTask.status == "success",
             AurakeyTask.is_published == True,
             AurakeyTask.publish_status == AurakeyService.GALLERY_APPROVED_STATUS,
-            AurakeyTask.image_url.isnot(None),
+            AurakeyTask.image_resource_id.isnot(None),
         ]
         if category_id:
             conditions.append(AurakeyTask.category_id == category_id)
@@ -375,6 +426,8 @@ class AurakeyService:
             .limit(page_size)
         )
         rows = (await db.execute(stmt)).all()
+        tasks = [task for task, _user in rows]
+        resource_map = await AurakeyService._get_task_resource_map(db, tasks)
         
         # 批量查询点赞状态，避免 N+1
         liked_ids: Set[uuid.UUID] = set()
@@ -390,11 +443,14 @@ class AurakeyService:
 
         res = []
         for item, user in rows:
+            resource = resource_map.get(item.image_resource_id)
+            if not resource:
+                continue
             nickname = ((user.nickname or user.username) if user else None) or "匿名用户"
             avatar = (user.avatar if user else None) or ""
             res.append({
                 "id": item.id,
-                "thumb_url": item.image_url,
+                "resource": resource,
                 "aspect_ratio": item.aspect_ratio or "1:1",
                 "author": {
                     "user_id": item.user_id,
@@ -425,7 +481,7 @@ class AurakeyService:
         conditions = [
             AurakeyTask.is_deleted == False,
             AurakeyTask.status == "success",
-            AurakeyTask.image_url.isnot(None),
+            AurakeyTask.image_resource_id.isnot(None),
         ]
         if publish_status:
             conditions.append(AurakeyTask.publish_status == publish_status)
@@ -466,10 +522,13 @@ class AurakeyService:
             .limit(page_size)
         )
         rows = (await db.execute(stmt)).all()
+        tasks = [task for task, _user in rows]
+        resource_map = await AurakeyService._get_task_resource_map(db, tasks)
 
         return total or 0, [
-            AurakeyService._task_to_admin_gallery_item(task, user)
+            AurakeyService._task_to_admin_gallery_item(task, user, resource_map.get(task.image_resource_id))
             for task, user in rows
+            if resource_map.get(task.image_resource_id)
         ]
 
     @staticmethod
@@ -483,7 +542,7 @@ class AurakeyService:
                 AurakeyTask.status == "success",
                 AurakeyTask.is_published == True,
                 AurakeyTask.publish_status == AurakeyService.GALLERY_APPROVED_STATUS,
-                AurakeyTask.image_url.isnot(None),
+                AurakeyTask.image_resource_id.isnot(None),
             )
         )
         row = (await db.execute(stmt)).first()
@@ -502,13 +561,18 @@ class AurakeyService:
             
         nickname = ((user.nickname or user.username) if user else None) or "匿名用户"
         avatar = (user.avatar if user else None) or ""
+        resource = await AurakeyService._get_task_resource(db, item)
+        if not resource:
+            raise HTTPException(status_code=404, detail="作品资源不存在")
+        reference_image_ids = AurakeyService._task_reference_image_ids(item)
         return {
             "id": item.id,
-            "thumb_url": item.image_url,
-            "image_url": item.image_url,
+            "resource": resource,
             "aspect_ratio": item.aspect_ratio or "1:1",
             "prompt": item.prompt,
             "model_name": item.model_name or "Pro v1.0",
+            "reference_images_ids": reference_image_ids,
+            "reference_images": await AurakeyService._get_task_reference_images(db, item),
             "author": {
                 "user_id": item.user_id,
                 "nickname": nickname,
@@ -527,6 +591,7 @@ class AurakeyService:
             or item.is_deleted
             or item.status != "success"
             or not item.is_published
+            or not item.image_resource_id
             or item.publish_status != AurakeyService.GALLERY_APPROVED_STATUS
         ):
             raise HTTPException(status_code=404, detail="作品不存在")
@@ -625,6 +690,8 @@ class AurakeyService:
     @staticmethod
     async def submit_stream_generate_task(db: AsyncSession, request: TaskStreamGenerateRequest, user_id: uuid.UUID) -> TaskGenerateResponse:
         asset = await AurakeyService.get_or_create_user_asset(db, user_id)
+        reference_image_ids = list(dict.fromkeys(request.reference_images_ids))
+        await AurakeyService._validate_reference_images(db, reference_image_ids)
 
         model_opt = await db.scalar(select(AurakeyModelOption).where(AurakeyModelOption.model_id == request.model_name))
         cost = model_opt.cost if model_opt else 10
@@ -648,6 +715,7 @@ class AurakeyService:
             frozen_points=deducted,
             cost=deducted,
             point_deductions=allocation,
+            reference_image_ids=[str(resource_id) for resource_id in reference_image_ids],
             status="processing",
             progress=5,
         )
@@ -682,11 +750,18 @@ class AurakeyService:
                 res_status = task_res.get("status")
                 
                 if res_status == "SUCCESS":
-                    task.status = "success"
-                    task.progress = 100
                     urls = task_res.get("image_urls", [])
                     if urls:
-                        task.image_url = urls[0]
+                        resource = await StorageService.upload_remote_file(
+                            db=db,
+                            remote_url=urls[0],
+                            owner_id=task.user_id,
+                            scope="hope_aurakey",
+                        )
+                        task.image_resource_id = resource.id
+                        task.image_url = None
+                        task.status = "success"
+                        task.progress = 100
                     else:
                         task.status = "failed"
                         task.failed_reason = "生图成功但上游未返回图片链接"
@@ -728,7 +803,9 @@ class AurakeyService:
             task_id=task.id,
             status=task.status,
             progress=task.progress,
-            image_url=task.image_url,
+            resource=await AurakeyService._get_task_resource(db, task),
+            reference_images_ids=AurakeyService._task_reference_image_ids(task),
+            reference_images=await AurakeyService._get_task_reference_images(db, task),
             failed_reason=task.failed_reason
         )
 
@@ -739,6 +816,8 @@ class AurakeyService:
         author_nickname: Optional[str] = None,
         author_avatar: Optional[str] = None,
     ):
+        if not task.image_resource_id:
+            raise HTTPException(status_code=400, detail="任务尚未生成图片资源，无法公开")
         task.is_published = True
         task.publish_status = task.publish_status or AurakeyService.GALLERY_APPROVED_STATUS
         if not task.published_at:
@@ -755,7 +834,7 @@ class AurakeyService:
         }
 
     @staticmethod
-    def _task_to_admin_gallery_item(task: AurakeyTask, user: Optional[User]) -> dict[str, Any]:
+    def _task_to_admin_gallery_item(task: AurakeyTask, user: Optional[User], resource=None) -> dict[str, Any]:
         return {
             "task_id": task.id,
             "user": {
@@ -764,8 +843,7 @@ class AurakeyService:
                 "nickname": user.nickname if user else None,
                 "avatar": user.avatar if user else None,
             },
-            "image_url": task.image_url,
-            "thumb_url": task.image_url,
+            "resource": resource,
             "prompt": task.prompt,
             "model_name": task.model_name,
             "aspect_ratio": task.aspect_ratio,
@@ -791,7 +869,7 @@ class AurakeyService:
         task = await db.get(AurakeyTask, task_id)
         if not task or task.user_id != user_id or task.is_deleted or task.status != "success":
             raise HTTPException(status_code=404, detail="任务不存在或无法发布")
-        if is_published and not task.image_url:
+        if is_published and not task.image_resource_id:
             raise HTTPException(status_code=400, detail="任务尚未生成图片，无法公开")
 
         task.is_published = is_published
@@ -812,7 +890,7 @@ class AurakeyService:
         task = await db.get(AurakeyTask, task_id)
         if not task or task.is_deleted:
             raise HTTPException(status_code=404, detail="任务不存在")
-        if is_published and (task.status != "success" or not task.image_url):
+        if is_published and (task.status != "success" or not task.image_resource_id):
             raise HTTPException(status_code=400, detail="仅成功且已生成图片的任务可公开")
 
         task.is_published = is_published
@@ -847,7 +925,7 @@ class AurakeyService:
             if not task or task.is_deleted:
                 failed_items.append({"task_id": task_id, "reason": "任务不存在"})
                 continue
-            if is_published and (task.status != "success" or not task.image_url):
+            if is_published and (task.status != "success" or not task.image_resource_id):
                 failed_items.append({"task_id": task_id, "reason": "仅成功且已生成图片的任务可公开"})
                 continue
 

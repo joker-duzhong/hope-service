@@ -705,6 +705,7 @@
         "image_url": "https://cdn.example.com/img/generated_abc.jpg",
         "prompt": "a futuristic city...",
         "status": "success",
+        "progress": 100,
         "cost": 10,
         "is_published": true,
         "publish_status": "approved",
@@ -727,6 +728,7 @@
 | image_url | string \| null | 生成图片 URL，失败时为 null |
 | prompt | string | 提示词（最多展示 20 字，已截断） |
 | status | string | 任务状态（同 2.3） |
+| progress | int | 进度百分比 0-100，计算规则同任务详情接口 |
 | cost | int | 消耗的算力点数 |
 | is_published | bool | 是否已公开到画廊 |
 | publish_status | string | 审核状态：`approved` 可公开展示，`blocked` 关闭公开访问 |

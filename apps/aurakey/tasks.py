@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from typing import List
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -11,6 +12,7 @@ from apps.aurakey.models import AurakeyTask, AurakeyUserAsset, AurakeyAssetLog
 from apps.aurakey.services import AurakeyService
 from core.config import settings
 from core.llm.engine import generate_stream_image_chat
+from core.storage.services import StorageService
 from core.users.models import User
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,30 @@ def _get_session_maker():
             expire_on_commit=False,
         )
     return _stream_session_maker
+
+
+def _parse_reference_image_ids(values: list | None) -> List[uuid.UUID]:
+    ids: List[uuid.UUID] = []
+    for value in values or []:
+        try:
+            ids.append(value if isinstance(value, uuid.UUID) else uuid.UUID(str(value)))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+async def _build_stream_image_user_content(db: AsyncSession, task: AurakeyTask):
+    content: list[dict] = [{"type": "text", "text": task.prompt}]
+    reference_ids = _parse_reference_image_ids(task.reference_image_ids)
+    if not reference_ids:
+        return task.prompt
+
+    resource_map = await StorageService.get_resources_by_ids(db, reference_ids)
+    for resource_id in reference_ids:
+        resource = resource_map.get(resource_id)
+        if resource:
+            content.append({"type": "image_url", "image_url": {"url": resource.url}})
+    return content if len(content) > 1 else task.prompt
 
 
 async def _refund_task(db: AsyncSession, task: AurakeyTask, reason: str):
@@ -73,10 +99,11 @@ async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
             return
 
         try:
+            user_content = await _build_stream_image_user_content(db, task)
             result = await generate_stream_image_chat(
                 messages=[
                     {"role": "system", "content": "你是一个专业的图片生成助手，只返回最终图片结果。"},
-                    {"role": "user", "content": task.prompt},
+                    {"role": "user", "content": user_content},
                 ],
                 model="gpt-image-2",
                 temperature=0.7,
@@ -85,7 +112,14 @@ async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
             )
             task.status = "success"
             task.progress = 100
-            task.image_url = result["image_url"]
+            resource = await StorageService.upload_remote_file(
+                db=db,
+                remote_url=result["image_url"],
+                owner_id=task.user_id,
+                scope="hope_aurakey",
+            )
+            task.image_resource_id = resource.id
+            task.image_url = None
             task.failed_reason = None
             task.remote_task_id = None
             task.frozen_points = 0

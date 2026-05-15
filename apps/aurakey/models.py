@@ -47,6 +47,7 @@ class AurakeyTask(CoreModel):
     remote_task_id: Mapped[str] = mapped_column(String, nullable=True) # 记录上游大模型/生图接口的任务ID
     progress: Mapped[int] = mapped_column(Integer, default=0)
     image_url: Mapped[str] = mapped_column(String, nullable=True)
+    image_resource_id: Mapped[Optional[uuid.UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
     prompt: Mapped[str] = mapped_column(Text)
     model_name: Mapped[str] = mapped_column(String)
     aspect_ratio: Mapped[str] = mapped_column(String)
@@ -54,6 +55,7 @@ class AurakeyTask(CoreModel):
     failed_reason: Mapped[str] = mapped_column(String, nullable=True)
     cost: Mapped[int] = mapped_column(Integer, default=0)
     point_deductions: Mapped[list] = mapped_column(JSON, default=list)
+    reference_image_ids: Mapped[list] = mapped_column(JSON, default=list)
     like_count: Mapped[int] = mapped_column(Integer, default=0)
 
     is_published: Mapped[bool] = mapped_column(Boolean, default=False)

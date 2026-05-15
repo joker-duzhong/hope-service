@@ -10,6 +10,7 @@ from core.database import get_db
 from core.users.dependencies import get_current_user, get_optional_user
 from core.users.models import User
 from core.response import ResponseModel, PaginatedResponse, PaginatedData
+from core.storage.services import StorageService
 
 from apps.aurakey.schemas import (
     DictModelOption, GalleryCategorySchema, GalleryItemSchema, GalleryDetailSchema,
@@ -320,12 +321,24 @@ async def get_user_history(
     stmt = select(AurakeyTask).where(AurakeyTask.user_id == current_user.id, AurakeyTask.is_deleted == False).order_by(desc(AurakeyTask.created_at)).offset((page-1)*pageSize).limit(pageSize)
     tasks = (await db.execute(stmt)).scalars().all()
     total = await db.scalar(select(func.count()).select_from(AurakeyTask).where(AurakeyTask.user_id == current_user.id, AurakeyTask.is_deleted == False))
+    resource_map = await StorageService.get_resources_by_ids(
+        db,
+        [task.image_resource_id for task in tasks if task.image_resource_id],
+    )
+    reference_resource_map = await AurakeyService._get_task_reference_image_map(db, tasks)
     
     items = [{
         "task_id": t.id,
-        "image_url": t.image_url,
+        "resource": resource_map.get(t.image_resource_id) if t.image_resource_id else None,
+        "reference_images_ids": AurakeyService._task_reference_image_ids(t),
+        "reference_images": [
+            reference_resource_map[resource_id]
+            for resource_id in AurakeyService._task_reference_image_ids(t)
+            if resource_id in reference_resource_map
+        ],
         "prompt": t.prompt[:20] + "..." if len(t.prompt) > 20 else t.prompt,
         "status": t.status,
+        "progress": t.progress,
         "cost": t.cost,
         "is_published": t.is_published,
         "publish_status": t.publish_status,

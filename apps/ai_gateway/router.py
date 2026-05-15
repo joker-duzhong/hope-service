@@ -26,6 +26,7 @@ from core.users.dependencies import get_current_user
 from core.users.models import User
 from core.response import ResponseModel, PaginatedResponse
 from core.llm import engine
+from core.storage.services import StorageService
 
 router = APIRouter()
 
@@ -174,6 +175,8 @@ async def chat_completions(
 async def image_stream_chat(
     request_data: ImageStreamChatRequest,
     current_user: User = Depends(get_current_user),
+    scope: str = Depends(get_app_key),
+    db: SqlAsyncSession = Depends(get_db),
 ):
     """
     流式图片生成调试接口。
@@ -195,4 +198,10 @@ async def image_stream_chat(
         timeout=request_data.timeout,
         extra_body=request_data.extra_body,
     )
-    return ResponseModel(data=ImageStreamChatResponse(**result))
+    resource = await StorageService.upload_remote_file(
+        db=db,
+        remote_url=result["image_url"],
+        owner_id=current_user.id,
+        scope=scope,
+    )
+    return ResponseModel(data=ImageStreamChatResponse(content=result["content"], resource=resource))

@@ -40,3 +40,20 @@ class TokenResponse(BaseModel):
     """上传 Token 响应"""
     token: str
     domain: str
+
+
+class ServerImageCompressionOptions(BaseModel):
+    """后端图片压缩参数"""
+    enabled: bool = True
+    max_size_mb: float = Field(default=1, gt=0)
+    max_width_or_height: int = Field(default=1920, gt=0)
+    file_type: Optional[str] = None
+    initial_quality: float = Field(default=0.85, gt=0, le=1)
+
+
+class ServerImageThumbnailOptions(BaseModel):
+    """后端缩略图参数"""
+    enabled: bool = True
+    max_width_or_height: int = Field(default=512, gt=0)
+    file_type: Optional[str] = None
+    quality: float = Field(default=0.85, gt=0, le=1)

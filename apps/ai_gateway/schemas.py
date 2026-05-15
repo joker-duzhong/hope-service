@@ -7,6 +7,8 @@ from typing import Any, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.storage.schemas import ResourceResponse
+
 
 class AISessionBase(BaseModel):
     title: str = "新对话"
@@ -77,5 +79,4 @@ class ImageStreamChatRequest(BaseModel):
 
 class ImageStreamChatResponse(BaseModel):
     content: str
-    image_url: str
-    download_url: Optional[str] = None
+    resource: ResourceResponse
