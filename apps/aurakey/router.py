@@ -326,6 +326,18 @@ async def get_user_history(
         [task.image_resource_id for task in tasks if task.image_resource_id],
     )
     reference_resource_map = await AurakeyService._get_task_reference_image_map(db, tasks)
+    average_duration_seconds = await AurakeyService._get_recent_average_task_duration_seconds(db, current_user.id)
+    progress_changed = False
+    for task in tasks:
+        old_progress = task.progress
+        await AurakeyService.resolve_task_progress(
+            db,
+            task,
+            average_duration_seconds=average_duration_seconds,
+        )
+        progress_changed = progress_changed or task.progress != old_progress
+    if progress_changed:
+        await db.commit()
     
     items = [{
         "task_id": t.id,

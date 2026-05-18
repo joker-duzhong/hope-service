@@ -35,6 +35,7 @@ LOCAL_TZ = timezone(timedelta(hours=8))
 class AurakeyService:
 
     GALLERY_APPROVED_STATUS = "approved"
+    DEFAULT_TASK_DURATION_SECONDS = 120
 
     @staticmethod
     def _now_utc() -> datetime:
@@ -126,6 +127,91 @@ class AurakeyService:
         for task in tasks:
             resource_ids.extend(AurakeyService._task_reference_image_ids(task))
         return await StorageService.get_resources_by_ids(db, list(dict.fromkeys(resource_ids)))
+
+    @staticmethod
+    def _coerce_progress(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip().rstrip("%")
+        try:
+            progress = int(float(value))
+        except (TypeError, ValueError):
+            return None
+        return max(0, min(100, progress))
+
+    @staticmethod
+    async def _get_recent_average_task_duration_seconds(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        *,
+        limit: int = 10,
+    ) -> int:
+        stmt = (
+            select(AurakeyTask.created_at, AurakeyTask.updated_at)
+            .where(
+                AurakeyTask.user_id == user_id,
+                AurakeyTask.status == "success",
+                AurakeyTask.is_deleted == False,
+            )
+            .order_by(desc(AurakeyTask.updated_at))
+            .limit(limit)
+        )
+        rows = (await db.execute(stmt)).all()
+        durations = []
+        for created_at, updated_at in rows:
+            if not created_at or not updated_at:
+                continue
+            seconds = (updated_at - created_at).total_seconds()
+            if seconds > 0:
+                durations.append(seconds)
+        if not durations:
+            return AurakeyService.DEFAULT_TASK_DURATION_SECONDS
+        return max(1, int(sum(durations) / len(durations)))
+
+    @staticmethod
+    def _simulate_task_progress(task: AurakeyTask, average_duration_seconds: int) -> int:
+        if task.status == "success":
+            return 100
+        if task.status == "failed":
+            return AurakeyService._coerce_progress(task.progress) or 100
+        current_progress = AurakeyService._coerce_progress(task.progress) or 0
+        if task.status != "processing":
+            return current_progress
+
+        created_at = task.created_at
+        if not created_at:
+            return min(current_progress, 99)
+        now = AurakeyService._now_utc()
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        elapsed_seconds = max(0, (now - created_at).total_seconds())
+        simulated = int(elapsed_seconds / max(1, average_duration_seconds) * 100)
+        return min(99, max(current_progress, simulated))
+
+    @staticmethod
+    async def resolve_task_progress(
+        db: AsyncSession,
+        task: AurakeyTask,
+        *,
+        upstream_progress: Any = None,
+        average_duration_seconds: Optional[int] = None,
+    ) -> int:
+        if task.status == "success":
+            task.progress = 100
+            return task.progress
+
+        progress = AurakeyService._coerce_progress(upstream_progress)
+        if progress is not None:
+            if task.status == "processing":
+                progress = min(progress, 99)
+            task.progress = progress
+            return task.progress
+
+        if average_duration_seconds is None:
+            average_duration_seconds = await AurakeyService._get_recent_average_task_duration_seconds(db, task.user_id)
+        task.progress = AurakeyService._simulate_task_progress(task, average_duration_seconds)
+        return task.progress
 
     @staticmethod
     async def _validate_reference_images(db: AsyncSession, resource_ids: List[uuid.UUID]):
@@ -744,6 +830,7 @@ class AurakeyService:
             raise HTTPException(status_code=404, detail="任务不存在")
             
         # 若处于处理中且有上游ID，前端轮询时在服务端同步查询一次真实状态
+        progress_resolved_during_poll = False
         if task.status == "processing" and task.remote_task_id:
             try:
                 task_res = await fetch_image_result(task_id=task.remote_task_id)
@@ -769,9 +856,12 @@ class AurakeyService:
                     task.status = "failed"
                     task.failed_reason = task_res.get("msg", "上游 API 生图失败")
                 else:
-                    # pending / RUNNING
-                    if task.progress < 95:
-                        task.progress += 2
+                    await AurakeyService.resolve_task_progress(
+                        db,
+                        task,
+                        upstream_progress=task_res.get("progress"),
+                    )
+                    progress_resolved_during_poll = True
                         
                 await db.commit()
             except Exception as e:
@@ -797,6 +887,11 @@ class AurakeyService:
                         balance_after=asset.balance, description="生图失败自动退回"
                     )
                     db.add(log)
+                await db.commit()
+        if task.status == "processing" and not progress_resolved_during_poll:
+            old_progress = task.progress
+            await AurakeyService.resolve_task_progress(db, task)
+            if task.progress != old_progress:
                 await db.commit()
             
         return TaskStatusResponse(

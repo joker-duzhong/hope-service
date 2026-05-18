@@ -41,6 +41,18 @@ def extract_image_result_from_content(content: str) -> dict[str, Optional[str]]:
     return {"image_url": image_url, "download_url": download_url}
 
 
+def _coerce_progress(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip().rstrip("%")
+    try:
+        progress = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return max(0, min(100, progress))
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
@@ -484,12 +496,20 @@ async def fetch_image_result(
         info = fetch_res.get("info", {})
         status = info.get("status") or fetch_res.get("status")
 
+        raw_progress = info.get("progress")
+        if raw_progress is None:
+            raw_progress = fetch_res.get("progress")
+        progress = _coerce_progress(raw_progress)
+
         if status == "SUCCESS":
             image_urls = info.get("imageUrl") or []
-            return {"status": "SUCCESS", "image_urls": image_urls}
+            result = {"status": "SUCCESS", "image_urls": image_urls}
         elif status == "FAILURE":
             status_dict = fetch_res.get("status") if isinstance(fetch_res.get("status"), dict) else {}
             msg = info.get("msg") or status_dict.get("msg") or "上游拉取报错"
-            return {"status": "FAILURE", "msg": msg}
+            result = {"status": "FAILURE", "msg": msg}
         else:
-            return {"status": status}
+            result = {"status": status}
+        if progress is not None:
+            result["progress"] = progress
+        return result

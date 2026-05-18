@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from apps.aurakey.router import get_invite_info
+from apps.aurakey import router as aurakey_router
 from apps.aurakey.config import merge_aurakey_config
 from apps.aurakey.schemas import (
     AssetLogItem,
@@ -198,6 +199,8 @@ async def test_task_status_response_preserves_optional_fields():
         progress=100,
         remote_task_id=None,
         image_url="https://cdn.example.com/result.png",
+        image_resource_id=None,
+        reference_image_ids=[],
         failed_reason="上游 API 生图失败",
         frozen_points=0,
     )
@@ -209,8 +212,115 @@ async def test_task_status_response_preserves_optional_fields():
 
     result = await AurakeyService.get_task_status(FakeDb(), task_id, user_id)
 
-    assert result.image_url == "https://cdn.example.com/result.png"
+    assert result.resource is None
     assert result.failed_reason == "上游 API 生图失败"
+
+
+@pytest.mark.asyncio
+async def test_task_progress_uses_upstream_progress():
+    user_id = uuid.uuid4()
+    task = SimpleNamespace(
+        user_id=user_id,
+        status="processing",
+        progress=5,
+        created_at=datetime.now(timezone.utc) - timedelta(seconds=30),
+    )
+
+    progress = await AurakeyService.resolve_task_progress(
+        SimpleNamespace(),
+        task,
+        upstream_progress="45",
+        average_duration_seconds=120,
+    )
+
+    assert progress == 45
+    assert task.progress == 45
+
+
+@pytest.mark.asyncio
+async def test_task_progress_simulates_from_recent_average_duration():
+    user_id = uuid.uuid4()
+    task = SimpleNamespace(
+        user_id=user_id,
+        status="processing",
+        progress=5,
+        created_at=datetime.now(timezone.utc) - timedelta(seconds=60),
+    )
+
+    progress = await AurakeyService.resolve_task_progress(
+        SimpleNamespace(),
+        task,
+        average_duration_seconds=120,
+    )
+
+    assert 45 <= progress <= 55
+    assert progress > 5
+
+
+@pytest.mark.asyncio
+async def test_user_history_resolves_progress_with_shared_logic(monkeypatch):
+    user_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        image_resource_id=None,
+        reference_image_ids=[],
+        prompt="生成一张猫图",
+        status="processing",
+        progress=5,
+        cost=10,
+        is_published=False,
+        publish_status="approved",
+        category_id=None,
+    )
+
+    class FakeRows:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [task]
+
+    class FakeDb:
+        commits = 0
+
+        async def execute(self, _stmt):
+            return FakeRows()
+
+        async def scalar(self, _stmt):
+            return 1
+
+        async def commit(self):
+            self.commits += 1
+
+    async def get_resources_by_ids(_db, _ids):
+        return {}
+
+    async def get_reference_map(_db, _tasks):
+        return {}
+
+    async def get_average(_db, requested_user_id):
+        assert requested_user_id == user_id
+        return 120
+
+    async def resolve_progress(_db, item, *, average_duration_seconds=None, upstream_progress=None):
+        assert average_duration_seconds == 120
+        assert upstream_progress is None
+        item.progress = 66
+        return item.progress
+
+    monkeypatch.setattr(aurakey_router.StorageService, "get_resources_by_ids", get_resources_by_ids)
+    monkeypatch.setattr(AurakeyService, "_get_task_reference_image_map", get_reference_map)
+    monkeypatch.setattr(AurakeyService, "_get_recent_average_task_duration_seconds", get_average)
+    monkeypatch.setattr(AurakeyService, "resolve_task_progress", resolve_progress)
+
+    response = await aurakey_router.get_user_history(
+        current_user=SimpleNamespace(id=user_id),
+        db=FakeDb(),
+    )
+
+    assert response.data.items[0]["task_id"] == task_id
+    assert response.data.items[0]["progress"] == 66
 
 
 @pytest.mark.asyncio
@@ -224,6 +334,7 @@ async def test_publish_task_to_gallery_updates_task_flags():
         publish_status="approved",
         published_at=None,
         image_url="https://cdn.example.com/result.png",
+        image_resource_id=uuid.uuid4(),
         prompt="生成一张猫图",
         model_name="gpt-image-2",
         aspect_ratio="1:1",
@@ -254,6 +365,7 @@ async def test_update_task_publish_state_updates_category_and_flag():
         category_id=None,
         published_at=None,
         image_url="https://cdn.example.com/result.png",
+        image_resource_id=uuid.uuid4(),
     )
 
     class FakeDb:
@@ -310,6 +422,7 @@ async def test_user_publish_state_can_change_when_review_status_is_blocked():
         is_deleted=False,
         status="success",
         image_url="https://cdn.example.com/result.png",
+        image_resource_id=uuid.uuid4(),
         is_published=False,
         publish_status="blocked",
         category_id=None,
@@ -342,6 +455,7 @@ async def test_admin_batch_publish_updates_valid_tasks_and_reports_failures(monk
         is_deleted=False,
         status="success",
         image_url="https://cdn.example.com/result.png",
+        image_resource_id=uuid.uuid4(),
         is_published=False,
         publish_status="approved",
         category_id=None,
@@ -352,6 +466,7 @@ async def test_admin_batch_publish_updates_valid_tasks_and_reports_failures(monk
         is_deleted=False,
         status="processing",
         image_url=None,
+        image_resource_id=None,
         is_published=False,
         publish_status="approved",
         category_id=None,

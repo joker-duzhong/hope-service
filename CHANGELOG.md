@@ -2,6 +2,7 @@
 
 ## 2026-05-13
 
+- 修复 AuraKey `GET /api/v1/aurakey/user/history` 的 `processing` 任务进度不再固定为初始值，改为复用详情接口的进度计算逻辑。
 - AuraKey 流式生图任务支持最多 9 张参考图资源 ID，后端内部转换为多模态消息传给上游，任务状态、历史和画廊详情返回参考图资源结构。
 - 为 AuraKey 创作历史列表补充 `progress` 进度字段，规则与任务详情接口保持一致。
 - 缩短 Alembic 迁移 `0012` 的 revision ID，修复 PostgreSQL 中 `alembic_version.version_num` 长度不足导致升级失败的问题。
