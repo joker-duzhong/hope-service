@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 import uuid
 from typing import List
@@ -46,6 +47,23 @@ def _parse_reference_image_ids(values: list | None) -> List[uuid.UUID]:
     return ids
 
 
+async def _build_image_data_url(resource) -> str:
+    if resource.url.startswith("data:image/"):
+        return resource.url
+
+    file_bytes, mime_type, _ = await StorageService._download_remote_file(
+        remote_url=resource.url,
+        name=resource.name,
+        timeout=20.0,
+        max_bytes=20 * 1024 * 1024,
+    )
+    if not mime_type.startswith("image/"):
+        raise ValueError(f"参考图资源不是图片类型: {resource.id}")
+
+    encoded = base64.b64encode(file_bytes).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
 async def _build_stream_image_user_content(db: AsyncSession, task: AurakeyTask):
     content: list[dict] = [{"type": "text", "text": task.prompt}]
     reference_ids = _parse_reference_image_ids(task.reference_image_ids)
@@ -56,7 +74,7 @@ async def _build_stream_image_user_content(db: AsyncSession, task: AurakeyTask):
     for resource_id in reference_ids:
         resource = resource_map.get(resource_id)
         if resource:
-            content.append({"type": "image_url", "image_url": {"url": resource.url}})
+            content.append({"type": "image_url", "image_url": {"url": await _build_image_data_url(resource)}})
     return content if len(content) > 1 else task.prompt
 
 

@@ -8,6 +8,7 @@ import pytest
 
 from apps.aurakey.router import get_invite_info
 from apps.aurakey import router as aurakey_router
+from apps.aurakey import tasks as aurakey_tasks
 from apps.aurakey.config import merge_aurakey_config
 from apps.aurakey.schemas import (
     AssetLogItem,
@@ -101,6 +102,41 @@ def test_task_stream_generate_request_accepts_public_flag():
     )
 
     assert req.is_public is True
+
+
+@pytest.mark.asyncio
+async def test_stream_image_user_content_converts_reference_images_to_base64(monkeypatch):
+    resource_id = uuid.uuid4()
+    task = SimpleNamespace(
+        prompt="基于参考图生成头像",
+        reference_image_ids=[str(resource_id)],
+    )
+    resource = SimpleNamespace(
+        id=resource_id,
+        name="avatar.png",
+        url="https://cdn.example.com/avatar.png",
+    )
+
+    async def get_resources_by_ids(_db, requested_ids):
+        assert requested_ids == [resource_id]
+        return {resource_id: resource}
+
+    async def download_remote_file(remote_url, name, timeout, max_bytes):
+        assert remote_url == resource.url
+        assert name == resource.name
+        assert timeout == 20.0
+        assert max_bytes == 20 * 1024 * 1024
+        return b"png-bytes", "image/png", name
+
+    monkeypatch.setattr(aurakey_tasks.StorageService, "get_resources_by_ids", get_resources_by_ids)
+    monkeypatch.setattr(aurakey_tasks.StorageService, "_download_remote_file", download_remote_file)
+
+    content = await aurakey_tasks._build_stream_image_user_content(None, task)
+
+    assert content == [
+        {"type": "text", "text": "基于参考图生成头像"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5nLWJ5dGVz"}},
+    ]
 
 
 @pytest.mark.asyncio
