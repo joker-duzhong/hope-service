@@ -30,6 +30,7 @@ def test_celery_worker_registers_core_models_and_tasks():
         "from worker.celery_app import celery_app\n"
         "configure_mappers()\n"
         "assert 'aurakey_stream_image_task' in celery_app.tasks\n"
+        "assert 'aurakey_fail_stale_stream_image_tasks' in celery_app.tasks\n"
         "assert 'apps.just_right.tasks.notify_state_updates' in celery_app.tasks\n"
     )
     completed = subprocess.run(
@@ -116,6 +117,86 @@ def test_stream_image_timeout_uses_provider_image_timeout(monkeypatch):
     monkeypatch.setattr(aurakey_tasks.settings, "LLM_PROVIDERS", {"zaiwenopenapi": {"image_timeout": "480"}})
 
     assert aurakey_tasks._get_stream_image_timeout() == 480.0
+
+
+def test_recent_stream_image_task_is_not_stale(monkeypatch):
+    now_utc = datetime(2026, 5, 19, 12, 0, 0, tzinfo=timezone.utc)
+    task = SimpleNamespace(
+        status="processing",
+        remote_task_id=None,
+        image_resource_id=None,
+        created_at=now_utc - timedelta(seconds=120),
+    )
+    monkeypatch.setattr(aurakey_tasks, "_get_stream_image_timeout", lambda: 600.0)
+
+    assert aurakey_tasks._is_stale_stream_image_task(task, now_utc=now_utc) is False
+
+
+def test_old_stream_image_task_without_remote_id_is_stale(monkeypatch):
+    now_utc = datetime(2026, 5, 19, 12, 0, 0, tzinfo=timezone.utc)
+    task = SimpleNamespace(
+        status="processing",
+        remote_task_id=None,
+        image_resource_id=None,
+        created_at=now_utc - timedelta(seconds=700),
+    )
+    monkeypatch.setattr(aurakey_tasks, "_get_stream_image_timeout", lambda: 600.0)
+
+    assert aurakey_tasks._is_stale_stream_image_task(task, now_utc=now_utc) is True
+
+
+@pytest.mark.asyncio
+async def test_stale_stream_image_task_fails_and_refunds(monkeypatch):
+    user_id = uuid.uuid4()
+    task = SimpleNamespace(
+        user_id=user_id,
+        status="processing",
+        remote_task_id=None,
+        image_resource_id=None,
+        created_at=datetime.now(timezone.utc) - timedelta(seconds=700),
+        frozen_points=10,
+        point_deductions=[],
+        failed_reason=None,
+        progress=99,
+    )
+    asset = SimpleNamespace(user_id=user_id, balance=20)
+    added = []
+
+    class FakeDb:
+        committed = False
+
+        async def scalar(self, _stmt):
+            return asset
+
+        def add(self, item):
+            added.append(item)
+
+        async def commit(self):
+            self.committed = True
+
+    async def restore_points(_db, target_asset, allocation, fallback_amount, *, description):
+        assert target_asset is asset
+        assert allocation == []
+        assert fallback_amount == 10
+        assert description == aurakey_tasks.STREAM_IMAGE_INTERRUPTED_REASON
+        target_asset.balance += fallback_amount
+        return fallback_amount
+
+    monkeypatch.setattr(aurakey_tasks, "_get_stream_image_timeout", lambda: 600.0)
+    monkeypatch.setattr(aurakey_tasks.AurakeyService, "_restore_points", restore_points)
+
+    db = FakeDb()
+    result = await aurakey_tasks.fail_stale_stream_image_task_if_needed(db, task)
+
+    assert result is True
+    assert task.status == "failed"
+    assert task.failed_reason == aurakey_tasks.STREAM_IMAGE_INTERRUPTED_REASON
+    assert task.progress == 100
+    assert task.frozen_points == 0
+    assert task.point_deductions == []
+    assert asset.balance == 30
+    assert len(added) == 1
+    assert db.committed is True
 
 
 @pytest.mark.asyncio

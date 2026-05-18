@@ -2,9 +2,11 @@ import asyncio
 import base64
 import logging
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 import httpx
+from celery.signals import worker_ready
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.pool import NullPool
@@ -20,6 +22,9 @@ from core.users.models import User
 logger = logging.getLogger(__name__)
 
 STREAM_IMAGE_DEFAULT_TIMEOUT_SECONDS = 600.0
+STREAM_IMAGE_STALE_GRACE_SECONDS = 60.0
+STREAM_IMAGE_INTERRUPTED_REASON = "服务中断导致流式生图任务连接丢失，请重新提交任务"
+LOCAL_TZ = timezone(timedelta(hours=8))
 
 _stream_engine = None
 _stream_session_maker = None
@@ -75,6 +80,29 @@ def _get_stream_image_timeout() -> float:
         )
         return STREAM_IMAGE_DEFAULT_TIMEOUT_SECONDS
     return parsed
+
+
+def _normalize_task_time(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=LOCAL_TZ)
+    return value.astimezone(timezone.utc)
+
+
+def _is_stale_stream_image_task(task: AurakeyTask, *, now_utc: datetime | None = None) -> bool:
+    if task.status != "processing":
+        return False
+    if task.remote_task_id or task.image_resource_id:
+        return False
+
+    created_at = _normalize_task_time(task.created_at)
+    if created_at is None:
+        return False
+
+    now = now_utc or datetime.now(timezone.utc)
+    stale_after = _get_stream_image_timeout() + STREAM_IMAGE_STALE_GRACE_SECONDS
+    return (now - created_at).total_seconds() >= stale_after
 
 
 async def _build_image_data_url(resource) -> str:
@@ -137,6 +165,37 @@ async def _refund_task(db: AsyncSession, task: AurakeyTask, reason: str):
     await db.commit()
 
 
+async def fail_stale_stream_image_tasks_async(limit: int = 50) -> int:
+    session_maker = _get_session_maker()
+    async with session_maker() as db:
+        result = await db.execute(
+            select(AurakeyTask)
+            .where(
+                AurakeyTask.status == "processing",
+                AurakeyTask.remote_task_id.is_(None),
+                AurakeyTask.image_resource_id.is_(None),
+                AurakeyTask.is_deleted == False,
+            )
+            .order_by(AurakeyTask.created_at)
+            .limit(limit)
+        )
+        tasks = result.scalars().all()
+        failed_count = 0
+        for task in tasks:
+            if not _is_stale_stream_image_task(task):
+                continue
+            await _refund_task(db, task, STREAM_IMAGE_INTERRUPTED_REASON)
+            failed_count += 1
+        return failed_count
+
+
+async def fail_stale_stream_image_task_if_needed(db: AsyncSession, task: AurakeyTask) -> bool:
+    if not _is_stale_stream_image_task(task):
+        return False
+    await _refund_task(db, task, STREAM_IMAGE_INTERRUPTED_REASON)
+    return True
+
+
 async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
     session_maker = _get_session_maker()
     task_uuid = uuid.UUID(task_id)
@@ -196,3 +255,13 @@ async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
 @celery_app.task(name="aurakey_stream_image_task")
 def run_stream_image_task(task_id: str, is_public: bool = False):
     return asyncio.run(_run_stream_image_task_async(task_id, is_public))
+
+
+@celery_app.task(name="aurakey_fail_stale_stream_image_tasks")
+def fail_stale_stream_image_tasks(limit: int = 50):
+    return asyncio.run(fail_stale_stream_image_tasks_async(limit))
+
+
+@worker_ready.connect
+def fail_stale_stream_image_tasks_on_worker_ready(**kwargs):
+    fail_stale_stream_image_tasks.delay()

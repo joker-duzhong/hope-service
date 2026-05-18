@@ -65,6 +65,12 @@ celery_app.conf.beat_schedule = {
         # 每 1 小时扫表一次打标
         "schedule": crontab(minute=0, hour="*/1"),
     },
+    # ==================== AuraKey (AI 绘画) 定时任务 ====================
+    "aurakey_fail_stale_stream_image_tasks": {
+        "task": "aurakey_fail_stale_stream_image_tasks",
+        # 每分钟兜底失败不可续接的流式生图遗留任务，避免进度永久停在 99%
+        "schedule": crontab(minute="*/1"),
+    },
     # ==================== JustRight (情侣应用) 定时任务 ====================
     "justright_anniversary_reminders": {
         "task": "apps.just_right.tasks.send_anniversary_reminders",

@@ -837,6 +837,12 @@ class AurakeyService:
         task = await db.get(AurakeyTask, task_id)
         if not task or task.user_id != user_id:
             raise HTTPException(status_code=404, detail="任务不存在")
+
+        if task.status == "processing" and not task.remote_task_id:
+            from apps.aurakey.tasks import fail_stale_stream_image_task_if_needed
+
+            if await fail_stale_stream_image_task_if_needed(db, task):
+                await db.refresh(task)
             
         # 若处于处理中且有上游ID，前端轮询时在服务端同步查询一次真实状态
         progress_resolved_during_poll = False
