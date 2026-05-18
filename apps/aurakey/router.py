@@ -348,13 +348,15 @@ async def get_user_history(
             for resource_id in AurakeyService._task_reference_image_ids(t)
             if resource_id in reference_resource_map
         ],
-        "prompt": t.prompt[:20] + "..." if len(t.prompt) > 20 else t.prompt,
+        "prompt": t.prompt,
         "status": t.status,
         "progress": t.progress,
         "cost": t.cost,
         "is_published": t.is_published,
         "publish_status": t.publish_status,
         "category_id": t.category_id,
+        "aspect_ratio": t.aspect_ratio,
+        "model_name": t.model_name,
     } for t in tasks]
     total_pages = (total + pageSize - 1) // pageSize if total > 0 else 0
     return PaginatedResponse(

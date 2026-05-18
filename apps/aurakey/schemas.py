@@ -222,6 +222,8 @@ class TaskHistoryItem(BaseModel):
     is_published: bool = False
     publish_status: str = "approved"
     category_id: Optional[uuid.UUID] = None
+    model_name: Optional[str] = None
+    aspect_ratio: Optional[str] = None
 
 
 class TaskPublishUpdateRequest(BaseModel):

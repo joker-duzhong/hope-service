@@ -104,11 +104,26 @@ def test_task_stream_generate_request_accepts_public_flag():
     assert req.is_public is True
 
 
+def test_stream_image_timeout_defaults_to_600(monkeypatch):
+    monkeypatch.setattr(aurakey_tasks.settings, "LLM_DEFAULT_PROVIDER", "zaiwenopenapi")
+    monkeypatch.setattr(aurakey_tasks.settings, "LLM_PROVIDERS", {"zaiwenopenapi": {"timeout": 120}})
+
+    assert aurakey_tasks._get_stream_image_timeout() == 600.0
+
+
+def test_stream_image_timeout_uses_provider_image_timeout(monkeypatch):
+    monkeypatch.setattr(aurakey_tasks.settings, "LLM_DEFAULT_PROVIDER", "zaiwenopenapi")
+    monkeypatch.setattr(aurakey_tasks.settings, "LLM_PROVIDERS", {"zaiwenopenapi": {"image_timeout": "480"}})
+
+    assert aurakey_tasks._get_stream_image_timeout() == 480.0
+
+
 @pytest.mark.asyncio
 async def test_stream_image_user_content_converts_reference_images_to_base64(monkeypatch):
     resource_id = uuid.uuid4()
     task = SimpleNamespace(
         prompt="基于参考图生成头像",
+        aspect_ratio="1:1",
         reference_image_ids=[str(resource_id)],
     )
     resource = SimpleNamespace(
@@ -134,7 +149,7 @@ async def test_stream_image_user_content_converts_reference_images_to_base64(mon
     content = await aurakey_tasks._build_stream_image_user_content(None, task)
 
     assert content == [
-        {"type": "text", "text": "基于参考图生成头像"},
+        {"type": "text", "text": "基于参考图生成头像,aspect_ratio:1:1"},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5nLWJ5dGVz"}},
     ]
 
@@ -294,6 +309,47 @@ async def test_task_progress_simulates_from_recent_average_duration():
 
 
 @pytest.mark.asyncio
+async def test_task_progress_simulates_from_naive_local_created_at(monkeypatch):
+    user_id = uuid.uuid4()
+    now_utc = datetime(2026, 5, 18, 15, 0, 0, tzinfo=timezone.utc)
+    task = SimpleNamespace(
+        user_id=user_id,
+        status="processing",
+        progress=5,
+        created_at=datetime(2026, 5, 18, 22, 59, 0),
+    )
+    monkeypatch.setattr(AurakeyService, "_now_utc", staticmethod(lambda: now_utc))
+
+    progress = await AurakeyService.resolve_task_progress(
+        SimpleNamespace(),
+        task,
+        average_duration_seconds=120,
+    )
+
+    assert 45 <= progress <= 55
+    assert progress > 5
+
+
+@pytest.mark.asyncio
+async def test_average_task_duration_caps_outlier_duration():
+    user_id = uuid.uuid4()
+    created_at = datetime(2026, 5, 18, 10, 0, 0)
+    updated_at = datetime(2026, 5, 18, 11, 0, 0)
+
+    class FakeResult:
+        def all(self):
+            return [(created_at, updated_at)]
+
+    class FakeDb:
+        async def execute(self, _stmt):
+            return FakeResult()
+
+    duration = await AurakeyService._get_recent_average_task_duration_seconds(FakeDb(), user_id)
+
+    assert duration == AurakeyService.MAX_TASK_DURATION_SECONDS
+
+
+@pytest.mark.asyncio
 async def test_user_history_resolves_progress_with_shared_logic(monkeypatch):
     user_id = uuid.uuid4()
     task_id = uuid.uuid4()
@@ -308,6 +364,8 @@ async def test_user_history_resolves_progress_with_shared_logic(monkeypatch):
         is_published=False,
         publish_status="approved",
         category_id=None,
+        aspect_ratio="1:1",
+        model_name="gpt-image-2",
     )
 
     class FakeRows:

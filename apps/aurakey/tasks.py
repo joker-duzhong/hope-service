@@ -4,6 +4,7 @@ import logging
 import uuid
 from typing import List
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.pool import NullPool
@@ -17,6 +18,8 @@ from core.storage.services import StorageService
 from core.users.models import User
 
 logger = logging.getLogger(__name__)
+
+STREAM_IMAGE_DEFAULT_TIMEOUT_SECONDS = 600.0
 
 _stream_engine = None
 _stream_session_maker = None
@@ -47,6 +50,33 @@ def _parse_reference_image_ids(values: list | None) -> List[uuid.UUID]:
     return ids
 
 
+def _get_stream_image_timeout() -> float:
+    provider = settings.LLM_DEFAULT_PROVIDER
+    config = settings.LLM_PROVIDERS.get(provider, {}) if provider else {}
+    timeout = config.get("image_timeout")
+    if timeout is None:
+        return STREAM_IMAGE_DEFAULT_TIMEOUT_SECONDS
+    try:
+        parsed = float(timeout)
+    except (TypeError, ValueError):
+        logger.warning(
+            "[AuraKey] 无效的流式生图 image_timeout 配置 provider=%s value=%r，使用默认 %.0f 秒",
+            provider,
+            timeout,
+            STREAM_IMAGE_DEFAULT_TIMEOUT_SECONDS,
+        )
+        return STREAM_IMAGE_DEFAULT_TIMEOUT_SECONDS
+    if parsed <= 0:
+        logger.warning(
+            "[AuraKey] 流式生图 image_timeout 必须大于 0 provider=%s value=%r，使用默认 %.0f 秒",
+            provider,
+            timeout,
+            STREAM_IMAGE_DEFAULT_TIMEOUT_SECONDS,
+        )
+        return STREAM_IMAGE_DEFAULT_TIMEOUT_SECONDS
+    return parsed
+
+
 async def _build_image_data_url(resource) -> str:
     if resource.url.startswith("data:image/"):
         return resource.url
@@ -65,17 +95,19 @@ async def _build_image_data_url(resource) -> str:
 
 
 async def _build_stream_image_user_content(db: AsyncSession, task: AurakeyTask):
-    content: list[dict] = [{"type": "text", "text": task.prompt}]
+    prompt = task.prompt + ', 图片比例为:' + task.aspect_ratio
+    print('发送给模型:' + prompt)
+    content: list[dict] = [{"type": "text", "text": prompt}]
     reference_ids = _parse_reference_image_ids(task.reference_image_ids)
     if not reference_ids:
-        return task.prompt
+        return prompt
 
     resource_map = await StorageService.get_resources_by_ids(db, reference_ids)
     for resource_id in reference_ids:
         resource = resource_map.get(resource_id)
         if resource:
             content.append({"type": "image_url", "image_url": {"url": await _build_image_data_url(resource)}})
-    return content if len(content) > 1 else task.prompt
+    return content if len(content) > 1 else prompt
 
 
 async def _refund_task(db: AsyncSession, task: AurakeyTask, reason: str):
@@ -118,6 +150,7 @@ async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
 
         try:
             user_content = await _build_stream_image_user_content(db, task)
+            timeout_seconds = _get_stream_image_timeout()
             result = await generate_stream_image_chat(
                 messages=[
                     {"role": "system", "content": "你是一个专业的图片生成助手，只返回最终图片结果。"},
@@ -126,7 +159,7 @@ async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
                 model="gpt-image-2",
                 temperature=0.7,
                 top_p=1.0,
-                timeout=180,
+                timeout=timeout_seconds,
             )
             task.status = "success"
             task.progress = 100
@@ -150,6 +183,11 @@ async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
                     user.avatar if user else None,
                 )
             await db.commit()
+        except httpx.ReadTimeout as exc:
+            timeout_seconds = _get_stream_image_timeout()
+            reason = f"上游图片生成超过 {timeout_seconds:g} 秒未返回，请稍后重试"
+            logger.error(f"[AuraKey] 流式生图任务超时 task_id={task_id}: {reason}", exc_info=True)
+            await _refund_task(db, task, reason)
         except Exception as exc:
             logger.error(f"[AuraKey] 流式生图任务失败 task_id={task_id}: {exc}", exc_info=True)
             await _refund_task(db, task, str(exc))

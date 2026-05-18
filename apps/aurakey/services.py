@@ -36,6 +36,7 @@ class AurakeyService:
 
     GALLERY_APPROVED_STATUS = "approved"
     DEFAULT_TASK_DURATION_SECONDS = 120
+    MAX_TASK_DURATION_SECONDS = 600
 
     @staticmethod
     def _now_utc() -> datetime:
@@ -141,6 +142,14 @@ class AurakeyService:
         return max(0, min(100, progress))
 
     @staticmethod
+    def _normalize_task_time(value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=LOCAL_TZ)
+        return value.astimezone(timezone.utc)
+
+    @staticmethod
     async def _get_recent_average_task_duration_seconds(
         db: AsyncSession,
         user_id: uuid.UUID,
@@ -160,11 +169,13 @@ class AurakeyService:
         rows = (await db.execute(stmt)).all()
         durations = []
         for created_at, updated_at in rows:
+            created_at = AurakeyService._normalize_task_time(created_at)
+            updated_at = AurakeyService._normalize_task_time(updated_at)
             if not created_at or not updated_at:
                 continue
             seconds = (updated_at - created_at).total_seconds()
             if seconds > 0:
-                durations.append(seconds)
+                durations.append(min(seconds, AurakeyService.MAX_TASK_DURATION_SECONDS))
         if not durations:
             return AurakeyService.DEFAULT_TASK_DURATION_SECONDS
         return max(1, int(sum(durations) / len(durations)))
@@ -179,12 +190,10 @@ class AurakeyService:
         if task.status != "processing":
             return current_progress
 
-        created_at = task.created_at
+        created_at = AurakeyService._normalize_task_time(task.created_at)
         if not created_at:
             return min(current_progress, 99)
         now = AurakeyService._now_utc()
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
         elapsed_seconds = max(0, (now - created_at).total_seconds())
         simulated = int(elapsed_seconds / max(1, average_duration_seconds) * 100)
         return min(99, max(current_progress, simulated))
