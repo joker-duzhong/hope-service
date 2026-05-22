@@ -64,6 +64,11 @@ try:
 except ImportError:
     pass
 
+try:
+    from apps.typo_craft import tasks as typo_craft_tasks
+except ImportError:
+    pass
+
 # 导入 Beat 调度表配置，确保 celery_app.conf.beat_schedule 被填充
 # 必须在 celery_app 创建之后导入，避免循环引用
 import worker.scheduler  # noqa: E402, F401

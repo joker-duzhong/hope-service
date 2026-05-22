@@ -208,8 +208,11 @@ def update_region_prices_task():
 
 async def _update_region_price_logs_async() -> Dict[str, Any]:
     """更新区域均价日志的异步实现"""
-    async with async_session_maker() as session:
-        try:
+    local_engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
+    local_session_maker = async_sessionmaker(local_engine, expire_on_commit=False)
+
+    try:
+        async with local_session_maker() as session:
             today = date.today()
 
             # 获取所有活跃区域
@@ -274,10 +277,11 @@ async def _update_region_price_logs_async() -> Dict[str, Any]:
             logger.info(f"区域均价日志更新完成，共 {updated_regions} 个区域")
             return {"updated_regions": updated_regions, "date": str(today)}
 
-        except Exception as e:
-            logger.error(f"更新区域均价日志失败: {e}")
-            await session.rollback()
-            raise
+    except Exception as e:
+        logger.error(f"更新区域均价日志失败: {e}")
+        raise
+    finally:
+        await local_engine.dispose()
 
 
 # ==================== 爬虫与匹配任务 ====================
@@ -490,4 +494,3 @@ async def _notify_users(session: AsyncSession) -> int:
 
     await session.flush()
     return count
-
