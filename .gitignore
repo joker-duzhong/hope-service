@@ -86,3 +86,4 @@ test*
 !tests/
 tests/*
 !tests/user_profile_test.py
+!tests/test_wechat_openid.py

@@ -3,6 +3,7 @@ from core.response import ResponseModel
 from core.config import settings
 from core.wechat.services import WeChatService
 from core.wechat.crypto import WeChatCrypto
+from core.wechat.schemas import WechatCodeToOpenidRequest, WechatOpenidResponse
 from core.redis_client import redis_client
 import xml.etree.ElementTree as ET
 import json
@@ -134,14 +135,33 @@ async def wechat_login(request: Request):
         if not appid or not code:
             return ResponseModel(code=400, message="appid and code are required")
 
-        # 使用微信服务中的登录逻辑
-        result = await WeChatService.login_with_code(appid, code)
+        result = await WeChatService.exchange_h5_code_for_openid(appid, code)
         return ResponseModel(data=result)
     except HTTPException as e:
         return ResponseModel(code=e.status_code, message=e.detail)
     except Exception as e:
         print(f"WeChat login error: {e}")
         return ResponseModel(code=500, message=f"Internal server error: {str(e)}")
+
+
+@router.post(
+    "/auth/wechat/miniapp/openid",
+    response_model=ResponseModel[WechatOpenidResponse],
+    summary="小程序 code 换 openid",
+)
+async def miniapp_code_to_openid(req: WechatCodeToOpenidRequest):
+    result = await WeChatService.exchange_miniapp_code_for_openid(req.appid, req.code)
+    return ResponseModel(data=WechatOpenidResponse(**result))
+
+
+@router.post(
+    "/auth/wechat/h5/openid",
+    response_model=ResponseModel[WechatOpenidResponse],
+    summary="H5 网页授权 code 换 openid",
+)
+async def h5_code_to_openid(req: WechatCodeToOpenidRequest):
+    result = await WeChatService.exchange_h5_code_for_openid(req.appid, req.code)
+    return ResponseModel(data=WechatOpenidResponse(**result))
 
 
 @router.get("/auth/wechat/status", summary="查询微信扫码状态")

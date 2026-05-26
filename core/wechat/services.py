@@ -3,6 +3,7 @@ import httpx
 import uuid
 import hashlib
 import urllib.parse
+from typing import Any, Dict
 from fastapi import HTTPException
 from core.redis_client import redis_client
 from core.config import settings
@@ -11,9 +12,68 @@ from core.users.services import UserService
 from core.security import create_access_token
 
 WECHAT_API_BASE_URL = "https://api.weixin.qq.com/cgi-bin"
+WECHAT_SNS_BASE_URL = "https://api.weixin.qq.com/sns"
 
 
 class WeChatService:
+    @staticmethod
+    def _get_secret(appid: str, app_type: str) -> str:
+        config = settings.get_wechat_config(appid)
+        if not config or not config.get("secret"):
+            raise HTTPException(status_code=400, detail=f"未配置该{app_type}: {appid}")
+        return config["secret"]
+
+    @staticmethod
+    def _build_openid_response(data: Dict[str, Any], error_prefix: str) -> dict:
+        if "errcode" in data and data["errcode"] != 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{error_prefix}: {data.get('errmsg', '未知错误')}",
+            )
+
+        openid = data.get("openid")
+        if not openid:
+            raise HTTPException(status_code=400, detail="获取 openid 失败")
+
+        result = {"openid": openid}
+        if data.get("unionid"):
+            result["unionid"] = data["unionid"]
+        return result
+
+    @staticmethod
+    async def exchange_miniapp_code_for_openid(appid: str, code: str) -> dict:
+        secret = WeChatService._get_secret(appid, "小程序")
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{WECHAT_SNS_BASE_URL}/jscode2session",
+                params={
+                    "appid": appid,
+                    "secret": secret,
+                    "js_code": code,
+                    "grant_type": "authorization_code",
+                },
+            )
+            data = resp.json()
+
+        return WeChatService._build_openid_response(data, "微信小程序登录失败")
+
+    @staticmethod
+    async def exchange_h5_code_for_openid(appid: str, code: str) -> dict:
+        secret = WeChatService._get_secret(appid, "公众号")
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{WECHAT_SNS_BASE_URL}/oauth2/access_token",
+                params={
+                    "appid": appid,
+                    "secret": secret,
+                    "code": code,
+                    "grant_type": "authorization_code",
+                },
+            )
+            data = resp.json()
+
+        return WeChatService._build_openid_response(data, "微信网页授权失败")
+
     @staticmethod
     async def get_access_token(appid: str) -> str:
         config = settings.get_wechat_config(appid)
