@@ -1,9 +1,15 @@
-from fastapi import APIRouter, Request, Response, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, Request, Response, HTTPException, Query
 from core.response import ResponseModel
 from core.config import settings
 from core.wechat.services import WeChatService
 from core.wechat.crypto import WeChatCrypto
-from core.wechat.schemas import WechatCodeToOpenidRequest, WechatOpenidResponse
+from core.wechat.schemas import (
+    WechatCodeToOpenidRequest,
+    WechatJssdkConfigResponse,
+    WechatOpenidResponse,
+)
 from core.redis_client import redis_client
 import xml.etree.ElementTree as ET
 import json
@@ -162,6 +168,19 @@ async def miniapp_code_to_openid(req: WechatCodeToOpenidRequest):
 async def h5_code_to_openid(req: WechatCodeToOpenidRequest):
     result = await WeChatService.exchange_h5_code_for_openid(req.appid, req.code)
     return ResponseModel(data=WechatOpenidResponse(**result))
+
+
+@router.get(
+    "/wechat/jssdk-config",
+    response_model=ResponseModel[WechatJssdkConfigResponse],
+    summary="获取微信网页 JSSDK 配置",
+)
+async def get_jssdk_config(
+    url: str = Query(..., description="当前网页完整 URL，不包含 URL hash"),
+    appid: Optional[str] = Query(None, description="公众号 AppID，不传则使用默认公众号"),
+):
+    result = await WeChatService.create_jssdk_config(url=url, appid=appid)
+    return ResponseModel(data=WechatJssdkConfigResponse(**result))
 
 
 @router.get("/auth/wechat/status", summary="查询微信扫码状态")

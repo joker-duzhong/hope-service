@@ -3,7 +3,9 @@ import httpx
 import uuid
 import hashlib
 import urllib.parse
-from typing import Any, Dict
+import secrets
+import time
+from typing import Any, Dict, Optional
 from fastapi import HTTPException
 from core.redis_client import redis_client
 from core.config import settings
@@ -16,6 +18,17 @@ WECHAT_SNS_BASE_URL = "https://api.weixin.qq.com/sns"
 
 
 class WeChatService:
+    @staticmethod
+    def get_default_appid() -> str:
+        if not settings.WECHAT_APPS:
+            raise HTTPException(status_code=400, detail="未配置微信公众号")
+
+        first_config = settings.WECHAT_APPS.split(",", 1)[0].strip()
+        appid = first_config.split(":", 1)[0].strip()
+        if not appid:
+            raise HTTPException(status_code=400, detail="未配置微信公众号 AppID")
+        return appid
+
     @staticmethod
     def _get_secret(appid: str, app_type: str) -> str:
         config = settings.get_wechat_config(appid)
@@ -73,6 +86,64 @@ class WeChatService:
             data = resp.json()
 
         return WeChatService._build_openid_response(data, "微信网页授权失败")
+
+    @staticmethod
+    async def get_jsapi_ticket(appid: str) -> str:
+        access_token = await WeChatService.get_access_token(appid)
+        redis_key = f"wechat_jsapi_ticket:{appid}"
+        try:
+            ticket = await redis_client.get(redis_key)
+            if ticket:
+                return ticket.decode("utf-8") if isinstance(ticket, bytes) else ticket
+        except Exception as e:
+            print(f"Redis error when getting jsapi_ticket: {e}")
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{WECHAT_API_BASE_URL}/ticket/getticket",
+                params={"access_token": access_token, "type": "jsapi"},
+            )
+            data = resp.json()
+
+        if data.get("errcode") not in (None, 0):
+            raise HTTPException(
+                status_code=400,
+                detail=f"获取微信 jsapi_ticket 失败: {data.get('errmsg', '未知错误')}",
+            )
+
+        ticket = data.get("ticket")
+        if not ticket:
+            raise HTTPException(status_code=400, detail="获取微信 jsapi_ticket 失败")
+
+        expires_in = int(data.get("expires_in") or 7200)
+        try:
+            await redis_client.setex(redis_key, max(expires_in - 200, 300), ticket)
+        except Exception as e:
+            print(f"Redis error when caching jsapi_ticket: {e}")
+        return ticket
+
+    @staticmethod
+    async def create_jssdk_config(url: str, appid: Optional[str] = None) -> dict:
+        resolved_appid = appid or WeChatService.get_default_appid()
+        if not settings.get_wechat_config(resolved_appid):
+            raise HTTPException(status_code=400, detail=f"未配置该公众号: {resolved_appid}")
+
+        ticket = await WeChatService.get_jsapi_ticket(resolved_appid)
+        timestamp = int(time.time())
+        nonce_str = secrets.token_urlsafe(16)
+        raw = (
+            f"jsapi_ticket={ticket}"
+            f"&noncestr={nonce_str}"
+            f"&timestamp={timestamp}"
+            f"&url={url}"
+        )
+        signature = hashlib.sha1(raw.encode("utf-8")).hexdigest()
+        return {
+            "appId": resolved_appid,
+            "timestamp": timestamp,
+            "nonceStr": nonce_str,
+            "signature": signature,
+        }
 
     @staticmethod
     async def get_access_token(appid: str) -> str:

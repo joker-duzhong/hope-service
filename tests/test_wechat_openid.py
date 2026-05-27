@@ -31,6 +31,8 @@ class FakeAsyncClient:
 
 
 class FakeSettings:
+    WECHAT_APPS = "wx-test:test-secret:token:aeskey,wx-other:other-secret::"
+
     @staticmethod
     def get_wechat_config(appid):
         return {"secret": "test-secret"} if appid == "wx-test" else None
@@ -94,3 +96,42 @@ async def test_exchange_code_for_openid_requires_configured_appid():
 
     assert exc_info.value.status_code == 400
     assert "未配置该公众号" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_jssdk_config_uses_default_appid_and_signs_url(monkeypatch):
+    async def fake_get_jsapi_ticket(appid):
+        assert appid == "wx-test"
+        return "ticket-value"
+
+    monkeypatch.setattr(WeChatService, "get_jsapi_ticket", fake_get_jsapi_ticket)
+    monkeypatch.setattr(wechat_services.time, "time", lambda: 1710000000)
+    monkeypatch.setattr(wechat_services.secrets, "token_urlsafe", lambda length: "nonce-value")
+
+    result = await WeChatService.create_jssdk_config("https://example.com/page?a=1")
+
+    assert result == {
+        "appId": "wx-test",
+        "timestamp": 1710000000,
+        "nonceStr": "nonce-value",
+        "signature": "206c399d33d32b469e5c64b5fa0171aa5237c8d4",
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_jssdk_config_accepts_explicit_appid(monkeypatch):
+    async def fake_get_jsapi_ticket(appid):
+        assert appid == "wx-test"
+        return "ticket-value"
+
+    monkeypatch.setattr(WeChatService, "get_jsapi_ticket", fake_get_jsapi_ticket)
+    monkeypatch.setattr(wechat_services.time, "time", lambda: 1710000000)
+    monkeypatch.setattr(wechat_services.secrets, "token_urlsafe", lambda length: "nonce-value")
+
+    result = await WeChatService.create_jssdk_config(
+        "https://example.com/page?a=1",
+        appid="wx-test",
+    )
+
+    assert result["appId"] == "wx-test"
+    assert result["signature"] == "206c399d33d32b469e5c64b5fa0171aa5237c8d4"

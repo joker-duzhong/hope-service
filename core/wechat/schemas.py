@@ -14,6 +14,14 @@ class WechatOpenidResponse(BaseModel):
     unionid: Optional[str] = Field(None, description="同一开放平台下的 unionid")
 
 
+class WechatJssdkConfigResponse(BaseModel):
+    """微信网页 JSSDK 配置响应"""
+    appId: str = Field(..., description="公众号 AppID")
+    timestamp: int = Field(..., description="签名时间戳")
+    nonceStr: str = Field(..., description="签名随机串")
+    signature: str = Field(..., description="JSSDK 签名")
+
+
 class WechatQRPollResponse(BaseModel):
     status: str
     token: Optional[str] = None

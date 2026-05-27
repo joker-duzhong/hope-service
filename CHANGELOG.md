@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-05-27
+
+- 新增公共微信网页 JSSDK 配置接口 `GET /api/v1/wechat/jssdk-config`，支持生成前端 `wx.config` 所需签名参数。
+
 ## 2026-05-26
 
 - 在微信认证下新增小程序与 H5 网页授权 code 换 openid 接口，前端仅需传入 `appid` 和 `code`。

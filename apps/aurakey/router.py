@@ -263,7 +263,7 @@ async def create_order(
     )
     db.add(order)
     await db.commit()
-    
+
     wechat_client = WechatPayClient()
     wechat_req = WechatPayMiniRequest(
         order_id=order_no,
@@ -273,8 +273,11 @@ async def create_order(
     )
     pay_res = await wechat_client.create_mini_program_order(wechat_req)
     if not pay_res.success:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"微信支付下单失败 - 订单号: {order_no}, 用户ID: {current_user.id}, 商品ID: {product.id}, openid: {req.openid}, 错误信息: {pay_res.message}")
         raise HTTPException(status_code=400, detail=pay_res.message)
-    
+
     return ResponseModel(data={"order_no": order_no, "pay_params": pay_res.pay_data})
 
 @router.get("/order/status/{order_no}", response_model=ResponseModel[OrderStatusResponse])
