@@ -183,7 +183,7 @@ async def get_user_profile(
     res = {
         "user_id": current_user.id,
         "openid": current_user.openid,
-        "nickname": current_user.username,
+        "nickname": current_user.nickname,
         "avatar": current_user.avatar,
         "phone": current_user.phone,
         "balance": entitlement["remaining_points"],
