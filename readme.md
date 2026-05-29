@@ -72,7 +72,7 @@ docker compose up -d --build
 # 本地
 $env:PYTHONPATH="$PWD"; alembic upgrade head
 # 线上：
-$env:PYTHONPATH="$PWD"; alembic upgrade head
+docker compose exec app python -m alembic upgrade head
 ```
 
 ### 3. 本地开发
