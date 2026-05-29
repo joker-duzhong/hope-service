@@ -3,6 +3,7 @@ from datetime import datetime, date, timedelta, timezone
 from typing import List, Tuple, Dict, Any, Optional
 
 from sqlalchemy import select, func, desc, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
@@ -171,6 +172,40 @@ class AurakeyAdminService:
         await db.commit()
         await db.refresh(product)
         return product
+
+    @staticmethod
+    async def upsert_model_option(db: AsyncSession, req) -> AurakeyModelOption:
+        existing = await db.scalar(
+            select(AurakeyModelOption).where(AurakeyModelOption.model_id == req.model_id)
+        )
+        if existing:
+            update_data = req.model_dump(by_alias=False)
+            for key, value in update_data.items():
+                setattr(existing, key, value)
+            await db.commit()
+            await db.refresh(existing)
+            return existing
+
+        model_option = AurakeyModelOption(**req.model_dump(by_alias=False))
+        db.add(model_option)
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            existing = await db.scalar(
+                select(AurakeyModelOption).where(AurakeyModelOption.model_id == req.model_id)
+            )
+            if not existing:
+                raise
+            update_data = req.model_dump(by_alias=False)
+            for key, value in update_data.items():
+                setattr(existing, key, value)
+            await db.commit()
+            await db.refresh(existing)
+            return existing
+
+        await db.refresh(model_option)
+        return model_option
 
     @staticmethod
     async def update_product(db: AsyncSession, product_id: uuid.UUID, req) -> Optional[AurakeyProduct]:

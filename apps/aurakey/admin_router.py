@@ -1,7 +1,7 @@
 import uuid
 import math
 from typing import Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from core.database import get_db
@@ -12,14 +12,14 @@ from core.response import ResponseModel, PaginatedData, PaginatedResponse
 from apps.aurakey.schemas import (
     AdminStatsResponse, AdminAdjustBalanceRequest, AdminAdjustBalanceResponse,
     AdminUserStatusUpdate, AdminRefundRequest, AdminRefundResponse, AdminHistoryListItem,
-    AdminGalleryCategoryCreate,
+    AdminGalleryCategoryCreate, AdminGalleryCategoryUpdate,
     AdminOptionModelResponse, AdminOptionModelCreate,
-    AdminOptionRatioResponse, AdminOptionRatioCreate,
+    AdminOptionRatioResponse, AdminOptionRatioCreate, AdminOptionRatioUpdate,
     AdminUserListItem, AdminUserDetail,
     AdminProductCreate, AdminProductUpdate, AdminProductResponse,
     AurakeySystemConfigResponse, AurakeySystemConfigUpdate,
     AdminGalleryListItem, AdminTaskPublishBatchResponse, AdminTaskPublishBatchUpdateRequest,
-    AdminTaskPublishStatusUpdate, AdminTaskPublishUpdateRequest, TaskPublishStateResponse,
+    AdminGalleryTaskUpdateRequest, AdminTaskPublishStatusUpdate, TaskPublishStateResponse,
 )
 from apps.aurakey.models import (
     AurakeyTask, AurakeyGalleryCategory, AurakeyModelOption, AurakeyAspectRatioOption, AurakeyUserAsset
@@ -109,6 +109,27 @@ async def create_category(req: AdminGalleryCategoryCreate, db: AsyncSession = De
     return ResponseModel(data={"is_success": True})
 
 
+@router.put("/gallery/categories/{id}", response_model=ResponseModel)
+async def update_category(id: uuid.UUID, req: AdminGalleryCategoryUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(require_roles("aurakey_admin"))):
+    cat = await db.get(AurakeyGalleryCategory, id)
+    if not cat or cat.is_deleted:
+        raise HTTPException(status_code=404, detail="分类不存在")
+    for key, value in req.model_dump(exclude_unset=True).items():
+        setattr(cat, key, value)
+    await db.commit()
+    return ResponseModel(data={"is_success": True})
+
+
+@router.delete("/gallery/categories/{id}", response_model=ResponseModel)
+async def delete_category(id: uuid.UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_roles("aurakey_admin"))):
+    cat = await db.get(AurakeyGalleryCategory, id)
+    if not cat or cat.is_deleted:
+        raise HTTPException(status_code=404, detail="分类不存在")
+    cat.is_deleted = True
+    await db.commit()
+    return ResponseModel(data={"is_success": True})
+
+
 @router.put("/gallery/{task_id}/status", response_model=ResponseModel)
 async def update_gallery_status(
     task_id: uuid.UUID,
@@ -120,14 +141,14 @@ async def update_gallery_status(
     return ResponseModel(data=TaskPublishStateResponse(**res))
 
 
-@router.put("/gallery/{task_id}/publish", response_model=ResponseModel[TaskPublishStateResponse])
-async def update_gallery_publish_state(
+@router.put("/gallery/{task_id}", response_model=ResponseModel[TaskPublishStateResponse])
+async def update_gallery_task(
     task_id: uuid.UUID,
-    req: AdminTaskPublishUpdateRequest,
+    req: AdminGalleryTaskUpdateRequest,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_roles("aurakey_admin")),
 ):
-    res = await AurakeyService.update_task_publish_state_by_admin(db, task_id, req.is_published, req.category_id)
+    res = await AurakeyService.update_gallery_task_by_admin(db, task_id, req.model_dump(exclude_unset=True))
     return ResponseModel(data=TaskPublishStateResponse(**res))
 
 
@@ -154,14 +175,16 @@ async def get_models(db: AsyncSession = Depends(get_db), _: User = Depends(requi
 
 @router.post("/task/options/models", response_model=ResponseModel)
 async def create_model(req: AdminOptionModelCreate, db: AsyncSession = Depends(get_db), _: User = Depends(require_roles("aurakey_admin"))):
-    mod = AurakeyModelOption(**req.model_dump(by_alias=False))
-    db.add(mod)
-    await db.commit()
+    await AurakeyAdminService.upsert_model_option(db, req)
     return ResponseModel(data={"is_success": True})
 
 @router.get("/task/options/ratios", response_model=ResponseModel)
 async def get_ratios(db: AsyncSession = Depends(get_db), _: User = Depends(require_roles("aurakey_admin"))):
-    result = await db.execute(select(AurakeyAspectRatioOption).order_by(desc(AurakeyAspectRatioOption.sort)))
+    result = await db.execute(
+        select(AurakeyAspectRatioOption)
+        .where(AurakeyAspectRatioOption.is_deleted == False)
+        .order_by(desc(AurakeyAspectRatioOption.sort))
+    )
     items = result.scalars().all()
     return ResponseModel(data=[AdminOptionRatioResponse.model_validate(item, from_attributes=True) for item in items])
 
@@ -169,6 +192,27 @@ async def get_ratios(db: AsyncSession = Depends(get_db), _: User = Depends(requi
 async def create_ratio(req: AdminOptionRatioCreate, db: AsyncSession = Depends(get_db), _: User = Depends(require_roles("aurakey_admin"))):
     r = AurakeyAspectRatioOption(**req.model_dump())
     db.add(r)
+    await db.commit()
+    return ResponseModel(data={"is_success": True})
+
+
+@router.put("/task/options/ratios/{id}", response_model=ResponseModel)
+async def update_ratio(id: uuid.UUID, req: AdminOptionRatioUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(require_roles("aurakey_admin"))):
+    ratio = await db.get(AurakeyAspectRatioOption, id)
+    if not ratio or ratio.is_deleted:
+        raise HTTPException(status_code=404, detail="比例选项不存在")
+    for key, value in req.model_dump(exclude_unset=True).items():
+        setattr(ratio, key, value)
+    await db.commit()
+    return ResponseModel(data={"is_success": True})
+
+
+@router.delete("/task/options/ratios/{id}", response_model=ResponseModel)
+async def delete_ratio(id: uuid.UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_roles("aurakey_admin"))):
+    ratio = await db.get(AurakeyAspectRatioOption, id)
+    if not ratio or ratio.is_deleted:
+        raise HTTPException(status_code=404, detail="比例选项不存在")
+    ratio.is_deleted = True
     await db.commit()
     return ResponseModel(data={"is_success": True})
 

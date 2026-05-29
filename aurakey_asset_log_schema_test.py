@@ -447,6 +447,8 @@ async def test_user_history_resolves_progress_with_shared_logic(monkeypatch):
         category_id=None,
         aspect_ratio="1:1",
         model_name="gpt-image-2",
+        show_title="猫猫标题",
+        template_prompt="猫猫模板",
     )
 
     class FakeRows:
@@ -557,6 +559,51 @@ async def test_update_task_publish_state_updates_category_and_flag():
     assert task.category_id == category_id
     assert result["is_published"] is True
     assert result["category_id"] == category_id
+
+
+@pytest.mark.asyncio
+async def test_admin_gallery_task_edit_updates_publish_and_display_fields():
+    task_id = uuid.uuid4()
+    category_id = uuid.uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        is_deleted=False,
+        status="success",
+        image_resource_id=uuid.uuid4(),
+        is_published=False,
+        publish_status="approved",
+        category_id=None,
+        published_at=None,
+        show_title=None,
+        template_prompt=None,
+    )
+
+    class FakeDb:
+        async def get(self, _model, requested_task_id):
+            assert requested_task_id == task_id
+            return task
+
+        async def commit(self):
+            pass
+
+    result = await AurakeyService.update_gallery_task_by_admin(
+        FakeDb(),
+        task_id,
+        {
+            "is_published": True,
+            "category_id": category_id,
+            "show_title": "展示标题",
+            "template_prompt": "模板提示词",
+        },
+    )
+
+    assert task.is_published is True
+    assert task.category_id == category_id
+    assert task.show_title == "展示标题"
+    assert task.template_prompt == "模板提示词"
+    assert task.published_at is not None
+    assert result["show_title"] == "展示标题"
+    assert result["template_prompt"] == "模板提示词"
 
 
 @pytest.mark.asyncio

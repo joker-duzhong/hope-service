@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-05-29
+
+- AuraKey 管理端新增画廊分类更新/删除、图片比例选项更新/删除接口；后台作品编辑接口改为 `PUT /api/v1/aurakey/admin/gallery/{task_id}`，支持编辑公开状态、分类、展示标题和模板提示词，并移除旧的后台 publish 接口。
+- AuraKey 公开画廊列表和详情新增返回 `show_title`、`template_prompt` 字段。
+- 修复 AuraKey 管理端 `POST /api/v1/aurakey/admin/task/options/models` 重复提交同一 `model_id` 时触发唯一约束 500 的问题，改为幂等更新。
+
 ## 2026-05-27
 
 - 新增公共微信网页 JSSDK 配置接口 `GET /api/v1/wechat/jssdk-config`，支持生成前端 `wx.config` 所需签名参数。

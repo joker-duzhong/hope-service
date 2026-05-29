@@ -94,7 +94,10 @@
         },
         "like_count": 128,
         "is_liked": false,
-        "view_count": 3200
+        "view_count": 3200,
+        "prompt": "一只穿宇航服的猫",
+        "show_title": "宇航猫",
+        "template_prompt": "赛博插画模板提示词"
       }
     ],
     "total": 200,
@@ -118,6 +121,9 @@
 | like_count | int | 点赞总数 |
 | is_liked | bool | 当前用户是否已点赞（未登录时恒为 `false`） |
 | view_count | int | 浏览量 |
+| prompt | string | 生成作品使用的提示词 |
+| show_title | string | 作品展示标题，可为空 |
+| template_prompt | string | 模板提示词，可为空 |
 
 ---
 
@@ -1282,7 +1288,7 @@ amount + product.bonus_amount`
   **权限**: `aurakey_admin`
   
   **响应**
-  
+
   ```json
   {
     "code": 200,
@@ -1506,9 +1512,36 @@ amount + product.bonus_amount`
     }
   }
   ```
-  
+
 > ---
-  
+
+#### 4.1.3 修改分类
+
+**PUT** `/admin/gallery/categories/{id}`
+
+**权限**: `aurakey_admin`
+
+**请求体**
+
+```json
+{
+  "name": "抽象艺术",
+  "sort": 3
+}
+```
+
+---
+
+#### 4.1.4 删除分类
+
+**DELETE** `/admin/gallery/categories/{id}`
+
+**权限**: `aurakey_admin`
+
+> 删除为软删除，已删除分类不会再出现在前台分类列表中。
+
+---
+
   ### 4.2 生图模型管理
   
   #### 4.2.1 获取所有模型
@@ -1585,7 +1618,7 @@ amount + product.bonus_amount`
     }
   }
   ```
-  
+
 > ---
 
 #### 4.2.3 获取后台作品列表
@@ -1627,6 +1660,8 @@ amount + product.bonus_amount`
         "image_url": "https://cdn.example.com/img/abc_origin.jpg",
         "thumb_url": "https://cdn.example.com/img/abc_origin.jpg",
         "prompt": "一只穿宇航服的猫",
+        "show_title": "宇航猫",
+        "template_prompt": "赛博插画模板提示词",
         "model_name": "gpt-image-2",
         "aspect_ratio": "1:1",
         "status": "success",
@@ -1650,9 +1685,9 @@ amount + product.bonus_amount`
 
 ---
 
-#### 4.2.4 管理员变更作品公开状态
+#### 4.2.4 管理员编辑作品
 
-**PUT** `/admin/gallery/{task_id}/publish`
+**PUT** `/admin/gallery/{task_id}`
 
 **权限**: `aurakey_admin`
 
@@ -1661,11 +1696,13 @@ amount + product.bonus_amount`
 ```json
 {
   "is_published": true,
-  "category_id": "550e8400-e29b-41d4-a716-446655440010"
+  "category_id": "550e8400-e29b-41d4-a716-446655440010",
+  "show_title": "宇航猫",
+  "template_prompt": "赛博插画模板提示词"
 }
 ```
 
-> 该接口只修改用户公开状态，不修改 `publish_status`。公开展示仍需同时满足 `is_published=true` 且 `publish_status=approved`。
+> 该接口可编辑 `is_published`、`category_id`、`show_title`、`template_prompt`，不修改 `publish_status`。公开展示仍需同时满足 `is_published=true` 且 `publish_status=approved`。
 
 ---
 
@@ -1817,9 +1854,37 @@ amount + product.bonus_amount`
     }
   }
   ```
-  
+
 > ---
-  
+
+#### 4.3.3 修改宽高比
+
+**PUT** `/admin/task/options/ratios/{id}`
+
+**权限**: `aurakey_admin`
+
+**请求体**
+
+```json
+{
+  "ratio": "4:5",
+  "sort": 5,
+  "status": "on"
+}
+```
+
+---
+
+#### 4.3.4 删除宽高比
+
+**DELETE** `/admin/task/options/ratios/{id}`
+
+**权限**: `aurakey_admin`
+
+> 删除为软删除，已删除的比例不会再出现在前台可用比例和后台比例列表中。
+
+---
+
   ## 常见操作流程
   
   ### 增加新生图模型流程

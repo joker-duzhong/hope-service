@@ -58,7 +58,11 @@ async def get_gallery_list(
     description="获取画廊可用分类，允许未登录访问。返回的分类 ID 可用于画廊列表 categoryId 参数。",
 )
 async def get_gallery_categories(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(AurakeyGalleryCategory).order_by(desc(AurakeyGalleryCategory.sort)))
+    result = await db.execute(
+        select(AurakeyGalleryCategory)
+        .where(AurakeyGalleryCategory.is_deleted == False)
+        .order_by(desc(AurakeyGalleryCategory.sort))
+    )
     items = result.scalars().all()
     return ResponseModel(data=[GalleryCategorySchema.model_validate(item, from_attributes=True) for item in items])
 
@@ -161,7 +165,11 @@ async def check_task_status(
 )
 async def get_task_options(db: AsyncSession = Depends(get_db)):
     models_result = await db.execute(select(AurakeyModelOption).where(AurakeyModelOption.status == "on"))
-    ratios_result = await db.execute(select(AurakeyAspectRatioOption).where(AurakeyAspectRatioOption.status == "on").order_by(desc(AurakeyAspectRatioOption.sort)))
+    ratios_result = await db.execute(
+        select(AurakeyAspectRatioOption)
+        .where(AurakeyAspectRatioOption.status == "on", AurakeyAspectRatioOption.is_deleted == False)
+        .order_by(desc(AurakeyAspectRatioOption.sort))
+    )
     
     models = [DictModelOption.model_validate(m) for m in models_result.scalars().all()]
     ratios = [r.ratio for r in ratios_result.scalars().all()]
@@ -471,4 +479,3 @@ async def daily_sign_in(
 # ================= Admin Router Include =================
 from apps.aurakey.admin_router import router as admin_router
 router.include_router(admin_router)
-

@@ -4,14 +4,14 @@
 
 ## 技术栈
 
-| 层级 | 技术 |
-|------|------|
-| Web 框架 | FastAPI (async) |
-| ORM | SQLAlchemy 2.0+ (AsyncSession) |
-| 数据验证 | Pydantic V2 |
-| 后台任务 | Celery + Redis |
-| 数据库 | PostgreSQL |
-| 配置管理 | pydantic-settings |
+| 层级     | 技术                           |
+| -------- | ------------------------------ |
+| Web 框架 | FastAPI (async)                |
+| ORM      | SQLAlchemy 2.0+ (AsyncSession) |
+| 数据验证 | Pydantic V2                    |
+| 后台任务 | Celery + Redis                 |
+| 数据库   | PostgreSQL                     |
+| 配置管理 | pydantic-settings              |
 
 ## 项目结构
 
@@ -67,6 +67,12 @@ docker compose down
 
 # 重新构建并启动
 docker compose up -d --build
+
+# alembic 迁移命令
+# 本地
+$env:PYTHONPATH="$PWD"; alembic upgrade head
+# 线上：
+$env:PYTHONPATH="$PWD"; alembic upgrade head
 ```
 
 ### 3. 本地开发
@@ -93,6 +99,7 @@ wt -p "Windows PowerShell" -d . uvicorn main:app --reload --port 8000 `; split-p
 ```
 
 这会在一个终端中启动所有服务：
+
 - **FastAPI** - uvicorn 应用，监听 http://localhost:8000
 - **Celery Worker** - 后台任务处理（AI 回复、数据生成等）
 - **Celery Beat** - 定时任务调度
@@ -107,15 +114,15 @@ wt -p "Windows PowerShell" -d . uvicorn main:app --reload --port 8000 `; split-p
 
 ### 用户授权 `/api/v1/auth`
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | /api/v1/auth/register | 用户名密码注册 |
-| POST | /api/v1/auth/login | 用户名密码登录 |
-| GET  | /api/v1/auth/wechat/url | 获取微信授权 URL |
-| POST | /api/v1/auth/wechat/login | 微信授权登录 |
-| POST | /api/v1/auth/refresh | 刷新令牌 |
-| GET  | /api/v1/auth/me | 获取当前用户信息 |
-| PUT  | /api/v1/auth/me | 更新当前用户信息 |
+| 方法 | 路径                      | 说明             |
+| ---- | ------------------------- | ---------------- |
+| POST | /api/v1/auth/register     | 用户名密码注册   |
+| POST | /api/v1/auth/login        | 用户名密码登录   |
+| GET  | /api/v1/auth/wechat/url   | 获取微信授权 URL |
+| POST | /api/v1/auth/wechat/login | 微信授权登录     |
+| POST | /api/v1/auth/refresh      | 刷新令牌         |
+| GET  | /api/v1/auth/me           | 获取当前用户信息 |
+| PUT  | /api/v1/auth/me           | 更新当前用户信息 |
 
 所有接口统一返回格式：
 
@@ -129,13 +136,13 @@ wt -p "Windows PowerShell" -d . uvicorn main:app --reload --port 8000 `; split-p
 
 ## 配置说明
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| SECRET_KEY | JWT 密钥 | (必填) |
-| POSTGRES_SERVER | 数据库地址 | localhost |
-| POSTGRES_PASSWORD | 数据库密码 | postgres |
-| REDIS_HOST | Redis 地址 | localhost |
-| WECHAT_APPS | 微信公众号配置，格式: appid:secret:token:aeskey | (可选) |
+| 变量              | 说明                                            | 默认值    |
+| ----------------- | ----------------------------------------------- | --------- |
+| SECRET_KEY        | JWT 密钥                                        | (必填)    |
+| POSTGRES_SERVER   | 数据库地址                                      | localhost |
+| POSTGRES_PASSWORD | 数据库密码                                      | postgres  |
+| REDIS_HOST        | Redis 地址                                      | localhost |
+| WECHAT_APPS       | 微信公众号配置，格式: appid:secret:token:aeskey | (可选)    |
 
 ## 新增业务模块
 

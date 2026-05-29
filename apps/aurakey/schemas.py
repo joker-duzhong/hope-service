@@ -40,6 +40,8 @@ class GalleryItemSchema(BaseModel):
     is_liked: bool = Field(default=False, description="当前登录用户是否已点赞，未登录时为 false")
     view_count: int = Field(..., description="浏览量")
     prompt: str = Field(..., description="生成作品使用的提示词")
+    show_title: Optional[str] = Field(default=None, description="作品展示标题")
+    template_prompt: Optional[str] = Field(default=None, description="模板提示词")
 
     class Config:
         from_attributes = True
@@ -237,10 +239,15 @@ class TaskPublishStateResponse(BaseModel):
     publish_status: str
     category_id: Optional[uuid.UUID] = None
     published_at: Optional[int] = None
+    show_title: Optional[str] = None
+    template_prompt: Optional[str] = None
 
 
-class AdminTaskPublishUpdateRequest(TaskPublishUpdateRequest):
-    pass
+class AdminGalleryTaskUpdateRequest(BaseModel):
+    is_published: Optional[bool] = Field(default=None, description="是否公开作品")
+    category_id: Optional[uuid.UUID] = Field(default=None, description="画廊分类 ID，传 null 可清空")
+    show_title: Optional[str] = Field(default=None, description="作品展示标题")
+    template_prompt: Optional[str] = Field(default=None, description="模板提示词")
 
 
 class AdminTaskPublishBatchUpdateRequest(BaseModel):
@@ -373,6 +380,8 @@ class AdminGalleryListItem(BaseModel):
     user: AdminGalleryUserSchema
     resource: Optional[ResourceResponse] = None
     prompt: str
+    show_title: Optional[str] = None
+    template_prompt: Optional[str] = None
     model_name: Optional[str] = None
     aspect_ratio: Optional[str] = None
     status: str
@@ -398,6 +407,11 @@ class AdminGalleryCategoryResponse(BaseModel):
 class AdminGalleryCategoryCreate(BaseModel):
     name: str
     sort: int = 0
+
+
+class AdminGalleryCategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    sort: Optional[int] = None
 
 
 class AdminOptionModelResponse(BaseModel):
@@ -434,6 +448,12 @@ class AdminOptionRatioCreate(BaseModel):
     ratio: str
     sort: int = 0
     status: str = "on"
+
+
+class AdminOptionRatioUpdate(BaseModel):
+    ratio: Optional[str] = None
+    sort: Optional[int] = None
+    status: Optional[str] = None
 
 
 class AdminProductBase(BaseModel):

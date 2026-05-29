@@ -49,6 +49,8 @@ class AurakeyTask(CoreModel):
     image_url: Mapped[str] = mapped_column(String, nullable=True)
     image_resource_id: Mapped[Optional[uuid.UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
     prompt: Mapped[str] = mapped_column(Text)
+    show_title: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    template_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     model_name: Mapped[str] = mapped_column(String)
     aspect_ratio: Mapped[str] = mapped_column(String)
     frozen_points: Mapped[int] = mapped_column(Integer, default=0)

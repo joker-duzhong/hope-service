@@ -555,7 +555,9 @@ class AurakeyService:
                 "like_count": item.like_count,
                 "is_liked": item.id in liked_ids,
                 "view_count": item.view_count,
-                "prompt": item.prompt
+                "prompt": item.prompt,
+                "show_title": getattr(item, "show_title", None),
+                "template_prompt": getattr(item, "template_prompt", None),
             })
         return total or 0, res
 
@@ -665,6 +667,8 @@ class AurakeyService:
             "resource": resource,
             "aspect_ratio": item.aspect_ratio or "1:1",
             "prompt": item.prompt,
+            "show_title": getattr(item, "show_title", None),
+            "template_prompt": getattr(item, "template_prompt", None),
             "model_name": item.model_name or "Pro v1.0",
             "reference_images_ids": reference_image_ids,
             "reference_images": await AurakeyService._get_task_reference_images(db, item),
@@ -941,6 +945,8 @@ class AurakeyService:
             "publish_status": task.publish_status,
             "category_id": task.category_id,
             "published_at": AurakeyService._to_ts(task.published_at),
+            "show_title": getattr(task, "show_title", None),
+            "template_prompt": getattr(task, "template_prompt", None),
         }
 
     @staticmethod
@@ -955,6 +961,8 @@ class AurakeyService:
             },
             "resource": resource,
             "prompt": task.prompt,
+            "show_title": getattr(task, "show_title", None),
+            "template_prompt": getattr(task, "template_prompt", None),
             "model_name": task.model_name,
             "aspect_ratio": task.aspect_ratio,
             "status": task.status,
@@ -1008,6 +1016,33 @@ class AurakeyService:
             task.category_id = category_id
         if is_published and not task.published_at:
             task.published_at = AurakeyService._now_utc()
+        await db.commit()
+        return AurakeyService._task_publish_state(task)
+
+    @staticmethod
+    async def update_gallery_task_by_admin(
+        db: AsyncSession,
+        task_id: uuid.UUID,
+        update_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        task = await db.get(AurakeyTask, task_id)
+        if not task or task.is_deleted:
+            raise HTTPException(status_code=404, detail="任务不存在")
+
+        if update_data.get("is_published") is True and (task.status != "success" or not task.image_resource_id):
+            raise HTTPException(status_code=400, detail="仅成功且已生成图片的任务可公开")
+
+        if "is_published" in update_data:
+            task.is_published = update_data["is_published"]
+            if task.is_published and not task.published_at:
+                task.published_at = AurakeyService._now_utc()
+        if "category_id" in update_data:
+            task.category_id = update_data["category_id"]
+        if "show_title" in update_data:
+            task.show_title = update_data["show_title"]
+        if "template_prompt" in update_data:
+            task.template_prompt = update_data["template_prompt"]
+
         await db.commit()
         return AurakeyService._task_publish_state(task)
 
