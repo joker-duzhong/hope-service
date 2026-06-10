@@ -21,7 +21,11 @@ from apps.aurakey.schemas import (
 )
 from apps.aurakey.services import AurakeyService
 from apps.ai_gateway.schemas import ImageStreamChatRequest
-from core.llm.engine import extract_image_result_from_content
+from core.llm.engine import (
+    _image_generation_url_from_config,
+    extract_image_result_from_content,
+    parse_image_generation_result,
+)
 
 
 def test_celery_worker_registers_core_models_and_tasks():
@@ -73,6 +77,37 @@ def test_extract_image_result_from_stream_content():
 
     assert result["image_url"] == "https://pro.filesystem.site/cdn/20260508/demo.png"
     assert result["download_url"] == "https://pro.filesystem.site/cdn/download/20260508/demo.png"
+
+
+def test_parse_image_generation_result_reads_b64_json():
+    result = parse_image_generation_result(
+        {
+            "created": 1781057917,
+            "data": [{"b64_json": "cG5nLWJ5dGVz"}],
+            "model": "gpt-image-2",
+            "object": "list",
+        }
+    )
+
+    assert result["b64_json"] == "cG5nLWJ5dGVz"
+    assert result["image_url"] is None
+    assert result["mime_type"] == "image/png"
+    assert result["model"] == "gpt-image-2"
+
+
+def test_image_generation_url_from_config_uses_images_generations_path():
+    assert (
+        _image_generation_url_from_config({"base_url": "https://oneapi.example.com/v1"})
+        == "https://oneapi.example.com/v1/images/generations"
+    )
+    assert (
+        _image_generation_url_from_config({"base_url": "https://oneapi.example.com/v1/images/generations"})
+        == "https://oneapi.example.com/v1/images/generations"
+    )
+    assert (
+        _image_generation_url_from_config({"image_chat_url": "https://oneapi.example.com/v1/chat/completions"})
+        == "https://oneapi.example.com/v1/images/generations"
+    )
 
 
 def test_image_stream_chat_request_defaults():
@@ -230,9 +265,36 @@ async def test_stream_image_user_content_converts_reference_images_to_base64(mon
     content = await aurakey_tasks._build_stream_image_user_content(None, task)
 
     assert content == [
-        {"type": "text", "text": "基于参考图生成头像,aspect_ratio:1:1"},
+        {"type": "text", "text": "基于参考图生成头像, 图片比例为:1:1"},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5nLWJ5dGVz"}},
     ]
+
+
+@pytest.mark.asyncio
+async def test_upload_image_generation_result_uploads_b64_bytes(monkeypatch):
+    task_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    task = SimpleNamespace(id=task_id, user_id=user_id)
+    uploaded = {}
+    resource = SimpleNamespace(id=uuid.uuid4())
+
+    async def upload_file_bytes(**kwargs):
+        uploaded.update(kwargs)
+        return resource
+
+    monkeypatch.setattr(aurakey_tasks.StorageService, "upload_file_bytes", upload_file_bytes)
+
+    result = await aurakey_tasks._upload_image_generation_result(
+        None,
+        task,
+        {"b64_json": "cG5nLWJ5dGVz", "mime_type": "image/png"},
+    )
+
+    assert result is resource
+    assert uploaded["file_bytes"] == b"png-bytes"
+    assert uploaded["mime_type"] == "image/png"
+    assert uploaded["owner_id"] == user_id
+    assert uploaded["scope"] == "hope_aurakey"
 
 
 @pytest.mark.asyncio

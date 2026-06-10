@@ -15,7 +15,7 @@ from worker.celery_app import celery_app
 from apps.aurakey.models import AurakeyTask, AurakeyUserAsset, AurakeyAssetLog
 from apps.aurakey.services import AurakeyService
 from core.config import settings
-from core.llm.engine import generate_stream_image_chat
+from core.llm.engine import generate_image_generation
 from core.storage.services import StorageService
 from core.users.models import User
 
@@ -122,8 +122,12 @@ async def _build_image_data_url(resource) -> str:
     return f"data:{mime_type};base64,{encoded}"
 
 
+def _build_stream_image_prompt(task: AurakeyTask) -> str:
+    return task.prompt + ', 图片比例为:' + task.aspect_ratio
+
+
 async def _build_stream_image_user_content(db: AsyncSession, task: AurakeyTask):
-    prompt = task.prompt + ', 图片比例为:' + task.aspect_ratio
+    prompt = _build_stream_image_prompt(task)
     print('发送给模型:' + prompt)
     content: list[dict] = [{"type": "text", "text": prompt}]
     reference_ids = _parse_reference_image_ids(task.reference_image_ids)
@@ -196,6 +200,34 @@ async def fail_stale_stream_image_task_if_needed(db: AsyncSession, task: Aurakey
     return True
 
 
+async def _upload_image_generation_result(db: AsyncSession, task: AurakeyTask, result: dict):
+    b64_json = result.get("b64_json")
+    if b64_json:
+        try:
+            image_bytes = base64.b64decode(str(b64_json).strip(), validate=True)
+        except Exception as exc:
+            raise ValueError("上游返回的 base64 图片数据无效") from exc
+        return await StorageService.upload_file_bytes(
+            db=db,
+            file_bytes=image_bytes,
+            mime_type=result.get("mime_type") or "image/png",
+            owner_id=task.user_id,
+            scope="hope_aurakey",
+            name=f"aurakey-{task.id}.png",
+        )
+
+    image_url = result.get("image_url")
+    if image_url:
+        return await StorageService.upload_remote_file(
+            db=db,
+            remote_url=image_url,
+            owner_id=task.user_id,
+            scope="hope_aurakey",
+        )
+
+    raise ValueError("上游图片生成成功但未返回图片数据")
+
+
 async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
     session_maker = _get_session_maker()
     task_uuid = uuid.UUID(task_id)
@@ -208,26 +240,19 @@ async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
             return
 
         try:
-            user_content = await _build_stream_image_user_content(db, task)
+            prompt = _build_stream_image_prompt(task)
+            print('发送给模型:' + prompt)
             timeout_seconds = _get_stream_image_timeout()
-            result = await generate_stream_image_chat(
-                messages=[
-                    {"role": "system", "content": "你是一个专业的图片生成助手，只返回最终图片结果。"},
-                    {"role": "user", "content": user_content},
-                ],
-                model="gpt-image-2",
-                temperature=0.7,
-                top_p=1.0,
+            result = await generate_image_generation(
+                prompt=prompt,
+                model=task.model_name or "gpt-image-2",
+                n=1,
+                response_format="b64_json",
                 timeout=timeout_seconds,
             )
             task.status = "success"
             task.progress = 100
-            resource = await StorageService.upload_remote_file(
-                db=db,
-                remote_url=result["image_url"],
-                owner_id=task.user_id,
-                scope="hope_aurakey",
-            )
+            resource = await _upload_image_generation_result(db, task, result)
             task.image_resource_id = resource.id
             task.image_url = None
             task.failed_reason = None

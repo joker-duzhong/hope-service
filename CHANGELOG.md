@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-06-10
+
+- AuraKey `generate-stream` 后端兼容上游图片接口变更：内部改用 `/images/generations` JSON 响应中的 `b64_json` 图片数据上传资源，前端提交和轮询接口保持不变。
+
 ## 2026-05-29
 
 - AuraKey 管理端新增画廊分类更新/删除、图片比例选项更新/删除接口；后台作品编辑接口改为 `PUT /api/v1/aurakey/admin/gallery/{task_id}`，支持编辑公开状态、分类、展示标题和模板提示词，并移除旧的后台 publish 接口。

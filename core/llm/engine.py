@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 IMAGE_MARKDOWN_RE = re.compile(r"!\[[^\]]*]\((https?://[^)\s]+)\)")
 DOWNLOAD_MARKDOWN_RE = re.compile(r"\[[^\]]*(?:下载|download)[^\]]*]\((https?://[^)\s]+)\)", re.IGNORECASE)
 URL_RE = re.compile(r"https?://[^\s)]+")
+DATA_URL_IMAGE_RE = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", re.DOTALL)
 
 
 def extract_image_result_from_content(content: str) -> dict[str, Optional[str]]:
@@ -51,6 +52,75 @@ def _coerce_progress(value: Any) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return max(0, min(100, progress))
+
+
+def _image_generation_url_from_config(config: dict[str, Any]) -> Optional[str]:
+    generation_url = config.get("image_generation_url") or config.get("image_generations_url")
+    if generation_url:
+        return generation_url
+
+    for key in ("image_chat_url", "base_url"):
+        base_url = config.get(key)
+        if not base_url:
+            continue
+        trimmed = str(base_url).rstrip("/")
+        if trimmed.endswith("/images/generations"):
+            return trimmed
+        if trimmed.endswith("/chat/completions"):
+            return f"{trimmed[:-len('/chat/completions')]}/images/generations"
+        if trimmed.endswith("/v1"):
+            return f"{trimmed}/images/generations"
+    return None
+
+
+def _mime_type_from_output_format(output_format: Optional[str]) -> str:
+    normalized = (output_format or "png").strip().lower()
+    if normalized in {"jpg", "jpeg"}:
+        return "image/jpeg"
+    if normalized == "webp":
+        return "image/webp"
+    return "image/png"
+
+
+def parse_image_generation_result(result: dict[str, Any], *, output_format: Optional[str] = None) -> dict[str, Any]:
+    data = result.get("data")
+    if not isinstance(data, list) or not data:
+        raise Exception(f"图片生成响应缺少 data[0]: {result}")
+
+    first_item = data[0] if isinstance(data[0], dict) else {}
+    b64_json = first_item.get("b64_json")
+    image_url = first_item.get("url")
+    mime_type = _mime_type_from_output_format(output_format)
+
+    if isinstance(b64_json, str) and b64_json:
+        data_url_match = DATA_URL_IMAGE_RE.match(b64_json.strip())
+        if data_url_match:
+            mime_type = data_url_match.group(1)
+            b64_json = data_url_match.group(2)
+        return {
+            "content": "",
+            "b64_json": b64_json,
+            "image_url": None,
+            "download_url": None,
+            "mime_type": mime_type,
+            "created": result.get("created"),
+            "model": result.get("model"),
+            "object": result.get("object"),
+        }
+
+    if isinstance(image_url, str) and image_url:
+        return {
+            "content": "",
+            "b64_json": None,
+            "image_url": image_url,
+            "download_url": image_url,
+            "mime_type": mime_type,
+            "created": result.get("created"),
+            "model": result.get("model"),
+            "object": result.get("object"),
+        }
+
+    raise Exception(f"图片生成响应未包含 b64_json 或 url: {result}")
 
 
 @retry(
@@ -237,6 +307,88 @@ async def generate_stream_chat(
                     except json.JSONDecodeError:
                         logger.warning(f"[LLM] 无法解析 JSON: {data_str}")
                         continue
+
+
+async def generate_image_generation(
+    prompt: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    size: Optional[str] = None,
+    quality: Optional[str] = None,
+    background: Optional[str] = None,
+    output_format: Optional[str] = None,
+    output_compression: Optional[int] = None,
+    n: Optional[int] = 1,
+    response_format: str = "b64_json",
+    timeout: Optional[float] = None,
+    extra_body: Optional[dict[str, Any]] = None,
+    **kwargs,
+) -> dict[str, Any]:
+    """
+    使用 OpenAI Images Generations 兼容接口生成图片。
+
+    前端 AuraKey 的 generate-stream 入口保持不变；这里仅适配上游从
+    chat/completions SSE 改为 /images/generations JSON 的返回结构。
+    """
+    provider = provider or settings.LLM_DEFAULT_PROVIDER
+    config = settings.LLM_PROVIDERS.get(provider)
+
+    if not config:
+        raise ValueError(f"未配置 LLM 提供商: {provider}")
+
+    api_key = config.get("api_key")
+    generation_url = _image_generation_url_from_config(config)
+    default_model = config.get("default_image_model", "gpt-image-2")
+    request_timeout = timeout or config.get("image_timeout") or config.get("timeout", 180.0)
+
+    if not generation_url:
+        raise ValueError(f"提供商 {provider} 缺少图片生成 URL 配置。")
+
+    payload: dict[str, Any] = {
+        "model": model or default_model,
+        "prompt": prompt,
+        "response_format": response_format,
+    }
+    if n is not None:
+        payload["n"] = n
+    if size is not None:
+        payload["size"] = size
+    if quality is not None:
+        payload["quality"] = quality
+    if background is not None:
+        payload["background"] = background
+    if output_format is not None:
+        payload["output_format"] = output_format
+    if output_compression is not None:
+        payload["output_compression"] = output_compression
+    if extra_body:
+        payload.update(extra_body)
+    for key, value in kwargs.items():
+        if key not in {"model", "prompt"} and value is not None:
+            payload[key] = value
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    logger.info(f"[ImageGeneration] 提交图片生成 - 提供商: {provider}, 模型: {payload['model']}, URL: {generation_url}")
+
+    async with httpx.AsyncClient(timeout=request_timeout) as client:
+        response = await client.post(generation_url, json=payload, headers=headers)
+
+    if response.status_code != 200:
+        error_msg = f"Image generation API 返回错误 {response.status_code}: {response.text}"
+        logger.error(f"[ImageGeneration] {error_msg}")
+        raise Exception(error_msg)
+
+    try:
+        result = response.json()
+    except Exception as exc:
+        logger.error(f"[ImageGeneration] JSON 解析失败: {exc}, 响应体: {response.text}")
+        raise
+
+    return parse_image_generation_result(result, output_format=payload.get("output_format"))
 
 
 async def generate_stream_image_chat(

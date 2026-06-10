@@ -120,6 +120,35 @@ class StorageService:
             timeout=timeout,
             max_bytes=max_bytes,
         )
+        return await StorageService.upload_file_bytes(
+            db=db,
+            file_bytes=file_bytes,
+            mime_type=mime_type,
+            owner_id=owner_id,
+            scope=scope,
+            name=file_name,
+            compression=compression,
+            thumbnail=thumbnail,
+        )
+
+    @staticmethod
+    async def upload_file_bytes(
+        db: AsyncSession,
+        file_bytes: bytes,
+        mime_type: str,
+        owner_id: Optional[UUID] = None,
+        scope: Optional[str] = None,
+        name: Optional[str] = None,
+        compression: Optional[ServerImageCompressionOptions] = None,
+        thumbnail: Optional[ServerImageThumbnailOptions] = None,
+    ) -> ResourceResponse:
+        """通过服务端上传二进制文件到 OSS，返回资源记录。"""
+        if not file_bytes:
+            raise BadRequestException(message="文件内容为空，无法上传")
+        if not settings.QINIU_DOMAIN:
+            raise BadRequestException(message="OSS 域名未配置")
+
+        file_name = (name or f"upload{StorageService._get_extension(mime_type)}")[:500]
         compression_options = compression or ServerImageCompressionOptions()
         thumbnail_options = thumbnail or ServerImageThumbnailOptions()
 
