@@ -247,7 +247,7 @@ async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
                 prompt=prompt,
                 model=task.model_name or "gpt-image-2",
                 n=1,
-                response_format="b64_json",
+                response_format="url",
                 timeout=timeout_seconds,
             )
             task.status = "success"
