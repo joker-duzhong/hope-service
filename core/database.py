@@ -76,6 +76,7 @@ async def init_db() -> None:
     import apps.time_library.models  # noqa: F401
     import apps.trade_copilot.models  # noqa: F401
     import apps.typo_craft.models  # noqa: F401
+    import apps.teacher_logbook.models  # noqa: F401
     import apps.zaiwen_gaokao.models  # noqa: F401
     import core.associations  # noqa: F401
     import core.roles.models  # noqa: F401

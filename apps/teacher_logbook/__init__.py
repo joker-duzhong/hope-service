@@ -1,0 +1,1 @@
+"""Teacher Logbook application."""

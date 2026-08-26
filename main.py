@@ -124,6 +124,10 @@ def create_app() -> FastAPI:
     from apps.aurakey.router import router as aurakey_router
     app.include_router(aurakey_router, prefix=f"{settings.API_V1_PREFIX}/aurakey", tags=["AuraKey AI 绘画"])
 
+    # Apps: 班主任工作台
+    from apps.teacher_logbook.router import router as teacher_logbook_router
+    app.include_router(teacher_logbook_router, prefix=settings.API_V1_PREFIX, tags=["班主任工作台"])
+
     # 健康检查
     @app.get("/health", tags=["健康检查"])
     async def health_check():
