@@ -27,6 +27,7 @@ import core.users.models      # noqa: F401
 import core.roles.models      # noqa: F401
 import core.associations       # noqa: F401
 import apps.just_right.models  # noqa: F401
+import apps.ledger_mate.models  # noqa: F401
 import apps.nest_talk.models   # noqa: F401
 import apps.trade_copilot.models  # noqa: F401
 import apps.typo_craft.models     # noqa: F401

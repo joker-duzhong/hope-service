@@ -69,6 +69,7 @@ async def init_db() -> None:
     import apps.ai_gateway.models  # noqa: F401
     import apps.aurakey.models  # noqa: F401
     import apps.just_right.models  # noqa: F401
+    import apps.ledger_mate.models  # noqa: F401
     import apps.nest_talk.models  # noqa: F401
     import apps.project_sisyphus.models  # noqa: F401
     import apps.shadow_board.models  # noqa: F401

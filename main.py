@@ -88,6 +88,9 @@ def create_app() -> FastAPI:
     from apps.just_right.router import router as just_right_router
     app.include_router(just_right_router, prefix=f"{settings.API_V1_PREFIX}/just-right", tags=["恰好"])
 
+    from apps.ledger_mate.router import router as ledger_mate_router
+    app.include_router(ledger_mate_router, prefix=f"{settings.API_V1_PREFIX}/ledger-mate", tags=["账伴"])
+
     from apps.nest_talk.router import router as nest_talk_router
     app.include_router(nest_talk_router, prefix=f"{settings.API_V1_PREFIX}/nest-talk", tags=["语筑"])
 
