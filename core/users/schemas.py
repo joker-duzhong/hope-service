@@ -5,7 +5,9 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+
+from core.sms import normalize_phone
 
 
 # ==================== 用户模型 ====================
@@ -36,16 +38,6 @@ class UserBase(BaseModel):
     """用户基础模型"""
     nickname: Optional[str] = Field(None, max_length=100)
     avatar: Optional[UserAvatarResponse] = None
-
-
-class UserCreate(BaseModel):
-    """用户名密码注册"""
-    username: str = Field(..., min_length=2, max_length=50)
-    password: str = Field(..., min_length=6, max_length=100)
-    email: Optional[str] = Field(None, max_length=100)
-    phone: Optional[str] = Field(None, max_length=20)
-    nickname: Optional[str] = Field(None, max_length=100)
-    source: str = Field(default="default", max_length=50)
 
 
 class UserUpdate(BaseModel):
@@ -80,6 +72,11 @@ class UserResponse(UserBase):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+    @computed_field
+    @property
+    def needs_phone_binding(self) -> bool:
+        return not bool(self.phone)
+
     class Config:
         from_attributes = True
 
@@ -112,6 +109,10 @@ class Token(BaseModel):
     token_type: str = "bearer"
 
 
+class LoginResponse(Token):
+    user: UserResponse
+
+
 class RefreshRequest(BaseModel):
     """刷新令牌请求"""
     refresh_token: str
@@ -120,15 +121,17 @@ class RefreshRequest(BaseModel):
 # ==================== 短信与手机验证模型 ====================
 
 class SendSmsRequest(BaseModel):
-    phone: str = Field(..., max_length=20, description="手机号")
+    phone: str = Field(..., max_length=20, description="中国大陆手机号，可带 +86 前缀")
 
-class PhoneRegisterRequest(BaseModel):
-    phone: str = Field(..., max_length=20, description="手机号")
-    code: str = Field(..., description="短信验证码")
-    password: Optional[str] = Field(None, description="可选设置密码")
-    nickname: Optional[str] = Field(None, max_length=100)
-    source: str = Field(default="phone", max_length=50)
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str) -> str:
+        return normalize_phone(value)
 
-class BindPhoneRequest(BaseModel):
-    phone: str = Field(..., max_length=20, description="手机号")
-    code: str = Field(..., description="短信验证码")
+
+class PhoneLoginRequest(SendSmsRequest):
+    code: str = Field(..., pattern=r"^[0-9]{4}$", description="四位短信验证码")
+
+
+class BindPhoneRequest(PhoneLoginRequest):
+    """验证码验证后首次绑定手机号，不支持换绑或合并。"""

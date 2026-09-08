@@ -6,14 +6,15 @@ from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.exceptions import BadRequestException
-from core.security import get_password_hash, verify_password
-from core.sms import verify_sms_code
+from core.exceptions import BadRequestException, ForbiddenException
+from core.security import create_token_pair, get_password_hash, verify_password
+from core.sms import normalize_phone, verify_sms_code
 from core.storage.services import StorageService
 from core.users.models import User, UserIdentity
-from core.users.schemas import UserAvatarResponse, UserResponse
+from core.users.schemas import LoginResponse, UserAvatarResponse, UserResponse
 
 class UserService:
     """用户服务：CRUD 与认证逻辑"""
@@ -22,7 +23,7 @@ class UserService:
 
     @staticmethod
     async def get_by_id(db: AsyncSession, user_id: UUID) -> Optional[User]:
-        result = await db.execute(select(User).where(User.id == user_id))
+        result = await db.execute(select(User).where(User.id == user_id, User.is_deleted == False))
         return result.scalar_one_or_none()
 
     @staticmethod
@@ -128,45 +129,41 @@ class UserService:
         return user
 
     @staticmethod
-    async def register_with_phone(
-        db: AsyncSession,
-        phone: str,
-        code: str,
-        password: Optional[str] = None,
-        nickname: Optional[str] = None,
-        source: str = "phone",
-    ) -> Optional[User]:
-        # 验证码检查
-        is_valid = await verify_sms_code(phone, code)
-        if not is_valid:
-            return None
+    def ensure_login_allowed(user: User) -> None:
+        if user.is_deleted or not user.is_active:
+            raise ForbiddenException(message="账号已停用或注销，无法登录")
 
-        # 检查是否已注册
+    @staticmethod
+    async def login_with_phone(db: AsyncSession, phone: str, code: str) -> User:
+        phone = normalize_phone(phone)
+        if not await verify_sms_code(phone, code):
+            raise BadRequestException(message="验证码错误或已过期，请重新获取")
         user = await UserService.get_by_phone(db, phone)
         if user:
-            return None
+            UserService.ensure_login_allowed(user)
+            return user
+        user = User(phone=phone, nickname="手机用户", source="phone", roles=[])
+        db.add(user)
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            user = await UserService.get_by_phone(db, phone)
+            if user is None:
+                raise
+        else:
+            await db.refresh(user)
+        UserService.ensure_login_allowed(user)
+        return user
 
-        # 默认用户名：基于手机号生成，若冲突则追加后缀
-        username = f"user_{phone}"
-        suffix = 1
-        while await UserService.get_by_username(db, username):
-            username = f"user_{phone}_{suffix}"
-            suffix += 1
-
-        hashed_pw = get_password_hash(password) if password else None
-        
-        new_user = User(
-            username=username,
-            hashed_password=hashed_pw,
-            phone=phone,
-            nickname=nickname or f"手机用户{phone[-4:]}",
-            source=source,
-            roles=[],
+    @staticmethod
+    async def build_login_response(db: AsyncSession, user: User) -> LoginResponse:
+        UserService.ensure_login_allowed(user)
+        profile = await UserService.build_user_response(db, user)
+        access_token, refresh_token = await create_token_pair(user.id, user.token_version)
+        return LoginResponse(
+            access_token=access_token, refresh_token=refresh_token, user=profile,
         )
-        db.add(new_user)
-        await db.commit()
-        await db.refresh(new_user)
-        return new_user
 
     # ==================== 认证 ====================
 
@@ -175,12 +172,32 @@ class UserService:
         db: AsyncSession, username: str, password: str
     ) -> Optional[User]:
         user = await UserService.get_by_username(db, username)
-        if not user or not user.hashed_password:
+        if not user or user.is_deleted or not user.is_active or not user.is_superuser or not user.hashed_password:
             return None
         if not verify_password(password, user.hashed_password):
             return None
         if not user.is_active:
             return None
+        return user
+
+    @staticmethod
+    async def _get_wechat_login_user(
+        db: AsyncSession, appid: str, openid: str,
+    ) -> Optional[User]:
+        result = await db.execute(select(UserIdentity).where(
+            UserIdentity.provider == "wechat",
+            UserIdentity.provider_app_id == appid,
+            UserIdentity.subject == openid,
+        ))
+        identity = result.scalar_one_or_none()
+        if identity is None:
+            return None
+        if identity.is_deleted:
+            raise ForbiddenException(message="微信登录身份已停用")
+        user = await UserService.get_by_id(db, identity.user_id)
+        if user is None:
+            raise ForbiddenException(message="账号已停用或注销，无法登录")
+        UserService.ensure_login_allowed(user)
         return user
 
     @staticmethod
@@ -192,33 +209,23 @@ class UserService:
         nickname: Optional[str] = None,
         avatar: Optional[str] = None,
     ) -> User:
-        """微信登录，自动注册新用户"""
-        user = await UserService.get_by_wechat_identity(db, appid, openid)
-
-        if not user:
+        """按应用内微信身份登录或创建账号，不自动合并其他身份。"""
+        if not appid or not openid:
+            raise BadRequestException(message="微信登录身份无效")
+        user = await UserService._get_wechat_login_user(db, appid, openid)
+        if user is not None:
+            return user
+        try:
             user = await UserService.create_by_wechat(
                 db, openid=openid, appid=appid, unionid=unionid,
                 nickname=nickname, avatar=avatar,
             )
-
-        identity = await db.execute(
-            select(UserIdentity).where(
-                UserIdentity.provider == "wechat",
-                UserIdentity.provider_app_id == appid,
-                UserIdentity.subject == openid,
-            )
-        )
-        if not identity.scalar_one_or_none():
-            db.add(UserIdentity(
-                user_id=user.id,
-                provider="wechat",
-                provider_app_id=appid,
-                subject=openid,
-                unionid=unionid,
-                verified_at=datetime.now(timezone.utc),
-            ))
-            await db.commit()
-
+        except IntegrityError:
+            await db.rollback()
+            user = await UserService._get_wechat_login_user(db, appid, openid)
+            if user is None:
+                raise
+        UserService.ensure_login_allowed(user)
         return user
 
     @staticmethod
@@ -324,23 +331,51 @@ class UserService:
 
     @staticmethod
     async def bind_phone(
-        db: AsyncSession,
-        user: User,
-        phone: str,
-        code: str,
-    ) -> Optional[User]:
-        # 验证码检查
-        is_valid = await verify_sms_code(phone, code)
-        if not is_valid:
-            return None
+        db: AsyncSession, user: User, phone: str, code: str,
+    ) -> User:
+        phone = normalize_phone(phone)
+        UserService.ensure_login_allowed(user)
+        if user.phone == phone:
+            return await UserService.bind_verified_phone(db, user, phone)
+        if user.phone and user.phone != phone:
+            raise BadRequestException(message="暂不支持更换已绑定的手机号")
+        if not await verify_sms_code(phone, code):
+            raise BadRequestException(message="验证码错误或已过期，请重新获取")
+        return await UserService.bind_verified_phone(db, user, phone)
 
-        # 检查手机号是否已被他人绑定
-        existing = await UserService.get_by_phone(db, phone)
-        if existing and existing.id != user.id:
-            return None
-
-        user.phone = phone
-        user.updated_at = datetime.now(timezone.utc)
-        await db.commit()
-        await db.refresh(user)
-        return user
+    @staticmethod
+    async def bind_verified_phone(db: AsyncSession, user: User, phone: str) -> User:
+        """仅供已完成短信或微信手机号验证的后端调用。"""
+        try:
+            phone = normalize_phone(phone)
+        except ValueError:
+            raise BadRequestException(message="仅支持绑定中国大陆手机号") from None
+        result = await db.execute(
+            select(User).where(User.id == user.id).with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        locked_user = result.scalar_one_or_none()
+        if locked_user is None:
+            await db.rollback()
+            raise ForbiddenException(message="账号不可用")
+        try:
+            UserService.ensure_login_allowed(locked_user)
+            if locked_user.phone == phone:
+                await db.commit()
+                return locked_user
+            if locked_user.phone:
+                raise BadRequestException(message="暂不支持更换已绑定的手机号")
+            existing = await UserService.get_by_phone(db, phone)
+            if existing and existing.id != locked_user.id:
+                raise BadRequestException(message="手机号已属于其他账号，请使用原账号登录，暂不支持合并")
+            locked_user.phone = phone
+            locked_user.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            raise BadRequestException(message="手机号已被占用，请使用原账号登录") from None
+        except (BadRequestException, ForbiddenException):
+            await db.rollback()
+            raise
+        await db.refresh(locked_user)
+        return locked_user

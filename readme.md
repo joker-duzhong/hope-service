@@ -116,10 +116,14 @@ wt -p "Windows PowerShell" -d . uvicorn main:app --reload --port 8000 `; split-p
 
 | 方法 | 路径                      | 说明             |
 | ---- | ------------------------- | ---------------- |
-| POST | /api/v1/auth/register     | 用户名密码注册   |
-| POST | /api/v1/auth/login        | 用户名密码登录   |
+| POST | /api/v1/auth/sms/send     | 发送四位短信验证码 |
+| POST | /api/v1/auth/phone/login  | 手机号验证码登录，未注册自动创建 |
+| POST | /api/v1/auth/phone/bind   | 已登录账号首次绑定手机号 |
+| POST | /api/v1/auth/login        | 仅保留现有超级管理员密码登录 |
 | GET  | /api/v1/auth/wechat/url   | 获取微信授权 URL |
 | POST | /api/v1/auth/wechat/login | 微信授权登录     |
+| POST | /api/v1/auth/miniapp/login | 小程序微信登录，未注册自动创建 |
+| POST | /api/v1/auth/miniapp/phone | 使用微信手机号授权首次绑定 |
 | POST | /api/v1/auth/refresh      | 刷新令牌         |
 | GET  | /api/v1/auth/me           | 获取当前用户信息 |
 | PUT  | /api/v1/auth/me           | 更新当前用户信息 |
@@ -133,6 +137,18 @@ wt -p "Windows PowerShell" -d . uvicorn main:app --reload --port 8000 `; split-p
     "data": { ... }
 }
 ```
+
+### 登录与绑定流程
+
+- 普通用户只需调用短信发送接口，再提交 phone、code 到 /api/v1/auth/phone/login；首次登录自动创建无密码账号，已存在账号直接登录。独立 /auth/register 和 /auth/phone/register 已移除，旧客户端必须切换入口。
+- 公众号 H5、小程序登录按 (AppID, OpenID) 查找微信身份，没有身份时创建账号，不按 UnionID 自动合并。手机号登录、公众号登录、小程序登录和管理员密码登录统一返回 data.access_token、data.refresh_token、data.token_type、data.user。
+- data.user 及 /auth/me 返回的用户信息包含 phone 和 needs_phone_binding。微信用户未绑定时可以登录，前端根据 needs_phone_binding=true 引导首次绑定；本次不调整各业务的手机号准入策略。
+- 短信绑定使用已登录用户的 Bearer Token，向 /auth/phone/bind 提交 phone、code；小程序也可向 /auth/miniapp/phone 提交 appid、微信手机号授权 code。两条路径共用首次绑定规则，不允许直接更新其他账号的手机号。
+- 号码属于当前账号时返回成功；号码属于其他账号时返回 400 并提示使用原账号登录，不合并账号或迁移资产。已经绑定其他号码的账号不能换绑。手机号登录会进入该号码所属账号，不会自动进入另一个尚未绑定的微信账号。
+- 暂仅支持中国大陆手机号，+86 和 0086 前缀输入统一规范化为 11 位号码；验证码必须以字符串传递，保留前导零。现有数据库中的历史非规范号码需单独核对，本次不批量改写账号数据。
+- 停用或软删除账号、软删除微信身份不能通过自动开户重新登录；软删除账号仍占用原来的唯一手机号。密码字段和历史密码保留，但 /auth/login 仅允许未停用、未软删除的超级管理员使用。
+- 本次无需新增数据库迁移，但运行库仍须完成已有的 0019_core_user_identities。发布后旧验证码会话需要重新发码；验证码可能在数据库或网络故障前已被消费，失败时重新获取，不提供自动重试窗口。
+- 统一登录 H5 和应用参数扫码登录流程暂缓；现有扫码接口不在此次改造范围。
 
 ## 配置说明
 
@@ -148,11 +164,11 @@ wt -p "Windows PowerShell" -d . uvicorn main:app --reload --port 8000 `; split-p
 
 ### 号码认证短信
 
-短信使用阿里云 Dypnsapi，不再使用腾讯云或普通 Dysmsapi。短信模块只提供 send_sms_code(phone) 和 verify_sms_code(phone, code) 两个能力；发送四位数字验证码，有效期 300 秒，验证码仅保存在 Redis 会话中并在成功校验后一次性消费，不携带业务 purpose 参数。
+短信使用阿里云 Dypnsapi，不再使用腾讯云或普通 Dysmsapi。短信模块提供 send_sms_code(phone) 和 verify_sms_code(phone, code) 两个能力；发送四位数字验证码，有效期 300 秒，Redis 只保存 HMAC 摘要及独立会话标识，成功校验后一次性消费，不携带业务 purpose 参数。业务后端直接消费验证码，不信任前端传来的“已校验”标记。
 
 - 配置账户可用的签名和模板；示例模板 100001 需在实际账户中确认可用。
 - 凭据使用项目环境变量 ALIBABA_CLOUD_ACCESS_KEY_ID 和 ALIBABA_CLOUD_ACCESS_KEY_SECRET，不要把真实值提交到仓库；生产环境建议使用受限 RAM 用户的 AccessKey，并通过部署平台的 Secret/环境变量注入。
-- 每个手机号间隔 60 秒，滚动 24 小时最多 5 次发送尝试；每个会话最多 5 次校验尝试。拒绝或超时也保留冷却和已用配额，SDK 不自动重试发送。
+- 每个手机号间隔 60 秒，从首次尝试起的 24 小时窗口最多 5 次发送尝试；每个会话最多 5 次校验尝试。重发后校验次数独立计算，旧请求不能消费新会话；拒绝或超时也保留发送冷却和已用配额，SDK 不自动重试发送。
 - Redis 不可用时拒绝发送或核验，不绕过限流。核验成功后原子消费本地会话；短信发送失败或过期后须重新申请，不保留旧短信服务的验证码兼容路径。
 - 升级前从部署环境中移除废弃的腾讯云短信变量，安装 requirements.txt 中的新依赖，再重启 API、Worker 和 Beat；只修改示例文件不会更新实际部署配置。
 
@@ -166,7 +182,7 @@ wt -p "Windows PowerShell" -d . uvicorn main:app --reload --port 8000 `; split-p
 
 安装依赖后运行以下命令。测试使用 FakeRedis（含 Lua）和 Mock 短信客户端，不发送短信、不连接实际 Redis 或数据库；--noconftest 跳过仓库本地的集成测试数据库初始化。
 
-    python -m pytest --noconftest -q tests/test_sms.py tests/test_security.py tests/test_exceptions.py tests/test_storage_soft_delete.py
+    python -m pytest --noconftest -q tests/test_auth_flows.py tests/test_sms.py tests/test_security.py tests/test_exceptions.py tests/test_storage_soft_delete.py tests/test_wechat_openid.py tests/user_profile_test.py
 
 ## 新增业务模块
 

@@ -118,8 +118,10 @@ async def test_verify_consumes_once(configured_sms):
 async def test_verification_attempt_limit(configured_sms):
     redis, client = configured_sms
     assert await sms.send_sms_code("13800138000")
+    actual_code = json.loads(client.send_requests[0].template_param)["code"]
+    wrong_code = "0000" if actual_code != "0000" else "0001"
     for index in range(6):
-        assert await sms.verify_sms_code("13800138000", "9999") is False
+        assert await sms.verify_sms_code("13800138000", wrong_code) is False
     assert await redis.get("sms:session:13800138000") is None
 
 
@@ -168,10 +170,13 @@ async def test_expired_session_never_calls_provider(configured_sms):
     assert await sms.verify_sms_code("13800138000", "1234") is False
 
 
-async def test_verification_timeout_does_not_accept_code_or_log_details(configured_sms, caplog):
+async def test_verification_redis_failure_does_not_accept_code_or_log_details(configured_sms, caplog, monkeypatch):
     redis, client = configured_sms
     assert await sms.send_sms_code("13800138000")
-    client.error = TimeoutError("sensitive-test-marker")
+    async def fail(*args):
+        raise RedisConnectionError("sensitive-test-marker")
+
+    monkeypatch.setattr(redis, "eval", fail)
     assert await sms.verify_sms_code("13800138000", "1234") is False
     assert await redis.get("sms:session:13800138000") is not None
     assert "sensitive-test-marker" not in caplog.text
@@ -188,3 +193,74 @@ def test_sms_configuration_is_environment_based():
     settings = Settings(_env_file=None)
     assert settings.ALIBABA_CLOUD_ACCESS_KEY_ID == ""
     assert settings.ALIBABA_CLOUD_ACCESS_KEY_SECRET == ""
+
+
+async def test_resend_resets_attempt_budget(configured_sms, monkeypatch):
+    redis, client = configured_sms
+    monkeypatch.setattr(sms.secrets, "randbelow", lambda maximum: 123)
+    assert await sms.send_sms_code("13800138000")
+    first = json.loads(await redis.get("sms:session:13800138000"))
+    for attempt in range(5):
+        assert await sms.verify_sms_code("13800138000", "9999") is False
+    assert await redis.get("sms:session:13800138000") is None
+    await redis.delete("sms:cooldown:13800138000")
+    assert await sms.send_sms_code("13800138000")
+    second = json.loads(await redis.get("sms:session:13800138000"))
+    assert first["session_id"] != second["session_id"]
+    assert await sms.verify_sms_code("13800138000", "0123") is True
+
+
+async def test_old_verification_cannot_consume_identical_code_in_new_session(configured_sms, monkeypatch):
+    redis, client = configured_sms
+    monkeypatch.setattr(sms.secrets, "randbelow", lambda maximum: 123)
+    assert await sms.send_sms_code("13800138000")
+    consume = sms._consume_session
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_consume(cache_key, session_data):
+        started.set()
+        await release.wait()
+        return await consume(cache_key, session_data)
+
+    monkeypatch.setattr(sms, "_consume_session", delayed_consume)
+    task = asyncio.create_task(sms.verify_sms_code("13800138000", "0123"))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        await redis.delete("sms:cooldown:13800138000")
+        assert await sms.send_sms_code("13800138000")
+    finally:
+        release.set()
+        result = await asyncio.wait_for(task, timeout=2)
+    assert result is False
+    assert await sms.verify_sms_code("13800138000", "0123") is True
+
+
+async def test_last_allowed_attempt_can_succeed(configured_sms, monkeypatch):
+    monkeypatch.setattr(sms.secrets, "randbelow", lambda maximum: 123)
+    assert await sms.send_sms_code("13800138000")
+    for attempt in range(4):
+        assert await sms.verify_sms_code("13800138000", "9999") is False
+    assert await sms.verify_sms_code("13800138000", "0123") is True
+
+
+async def test_phone_prefixes_share_cooldown_and_session(configured_sms, monkeypatch):
+    redis, client = configured_sms
+    monkeypatch.setattr(sms.secrets, "randbelow", lambda maximum: 123)
+    assert await sms.send_sms_code("+8613800138000")
+    assert await sms.send_sms_code("13800138000") is False
+    assert client.send_requests[0].phone_number == "13800138000"
+    assert await sms.verify_sms_code("008613800138000", "0123") is True
+
+
+@pytest.mark.parametrize("phone", ["", "123", "+12025550123", "１３８００１３８０００"])
+async def test_invalid_phone_never_calls_sms_provider(configured_sms, phone):
+    redis, client = configured_sms
+    assert await sms.send_sms_code(phone) is False
+    assert client.send_requests == []
+
+
+async def test_legacy_session_cannot_bypass_new_attempt_limits(configured_sms):
+    redis, client = configured_sms
+    await redis.setex("sms:session:13800138000", 300, json.dumps({"code": "old-digest"}))
+    assert await sms.verify_sms_code("13800138000", "0123") is False

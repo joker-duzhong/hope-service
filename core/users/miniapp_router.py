@@ -8,17 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import settings
 from core.database import get_db
 from core.response import ResponseModel
-from core.security import create_token_pair
 from core.users.dependencies import get_current_user
 from core.users.models import User
-from core.users.schemas import Token, UserResponse
+from core.users.schemas import LoginResponse, UserResponse
 from core.users.miniapp_schemas import MiniappLoginRequest, MiniappPhoneRequest
 from core.users.services import UserService
 
 router = APIRouter(prefix="/auth/miniapp", tags=["小程序登录"])
 
 
-@router.post("/login", response_model=ResponseModel[Token])
+@router.post("/login", response_model=ResponseModel[LoginResponse])
 async def miniapp_login(
     req: MiniappLoginRequest,
     db: AsyncSession = Depends(get_db),
@@ -69,8 +68,7 @@ async def miniapp_login(
         avatar=None,
     )
 
-    access_token, refresh_token = await create_token_pair(user.id, user.token_version)
-    return ResponseModel(data=Token(access_token=access_token, refresh_token=refresh_token))
+    return ResponseModel(data=await UserService.build_login_response(db, user))
 
 
 @router.post("/phone", response_model=ResponseModel[UserResponse])
@@ -130,17 +128,6 @@ async def miniapp_get_phone(
             detail="未获取到手机号",
         )
 
-    # 检查手机号是否已被其他用户绑定
-    existing = await UserService.get_by_phone(db, phone)
-    if existing and existing.id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="该手机号已被其他用户绑定",
-        )
-
-    # 直接更新用户手机号（小程序获取的手机号已通过微信验证，无需短信验证码）
-    current_user.phone = phone
-    await db.commit()
-    await db.refresh(current_user)
+    current_user = await UserService.bind_verified_phone(db, current_user, phone)
 
     return ResponseModel(data=await UserService.build_user_response(db, current_user))

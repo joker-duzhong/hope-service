@@ -2,7 +2,9 @@ import json
 import hashlib
 import hmac
 import logging
+import re
 import secrets
+from uuid import uuid4
 
 from alibabacloud_dypnsapi20170525 import models as dypnsapi_models
 from alibabacloud_dypnsapi20170525.client import Client as DypnsapiClient
@@ -18,6 +20,17 @@ CODE_TTL_SECONDS = 300
 PHONE_COOLDOWN_SECONDS = 60
 PHONE_DAILY_SEND_LIMIT = 5
 CODE_VERIFY_ATTEMPT_LIMIT = 5
+
+
+def normalize_phone(phone: str) -> str:
+    normalized = phone.strip()
+    for prefix in ("+86", "0086"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix):].strip()
+            break
+    if not re.fullmatch(r"1[3-9][0-9]{9}", normalized):
+        raise ValueError("请输入有效的中国大陆手机号")
+    return normalized
 
 
 def _provider_error_details(error: Exception) -> str:
@@ -55,6 +68,7 @@ async def send_sms_code(phone: str) -> bool:
         return False
 
     try:
+        phone = normalize_phone(phone)
         allowed = await redis_client.eval(
             """
             if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
@@ -99,6 +113,7 @@ async def send_sms_code(phone: str) -> bool:
             f"sms:session:{phone}",
             CODE_TTL_SECONDS,
             json.dumps({
+                "session_id": uuid4().hex,
                 "code": hmac.new(
                     settings.SECRET_KEY.encode(), code.encode(), hashlib.sha256
                 ).hexdigest(),
@@ -124,16 +139,19 @@ async def _consume_session(cache_key: str, session_data: str) -> bool:
 
 async def verify_sms_code(phone: str, code: str) -> bool:
     """校验短信验证码，本地会话只能成功消费一次。"""
-    if not code.isdigit() or len(code) != 4:
+    if not re.fullmatch(r"[0-9]{4}", code):
         return False
 
-    cache_key = f"sms:session:{phone}"
     try:
+        phone = normalize_phone(phone)
+        cache_key = f"sms:session:{phone}"
         session_data = await redis_client.get(cache_key)
         if not session_data:
             return False
         session = json.loads(session_data)
-        if not isinstance(session, dict):
+        if not isinstance(session, dict) or not isinstance(session.get("session_id"), str):
+            return False
+        if not session["session_id"] or not isinstance(session.get("code"), str):
             return False
         attempts = await redis_client.eval(
             """
@@ -142,7 +160,7 @@ async def verify_sms_code(phone: str, code: str) -> bool:
             return count
             """,
             1,
-            f"sms:attempts:{phone}",
+            f"sms:attempts:{session['session_id']}",
             CODE_TTL_SECONDS,
         )
         if attempts > CODE_VERIFY_ATTEMPT_LIMIT:
@@ -153,6 +171,8 @@ async def verify_sms_code(phone: str, code: str) -> bool:
             settings.SECRET_KEY.encode(), code.encode(), hashlib.sha256
         ).hexdigest()
         if not hmac.compare_digest(session.get("code", ""), expected):
+            if attempts == CODE_VERIFY_ATTEMPT_LIMIT:
+                await _consume_session(cache_key, session_data)
             return False
         return await _consume_session(cache_key, session_data)
     except Exception as error:

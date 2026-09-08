@@ -11,20 +11,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import settings
 from core.database import get_db
 from core.response import ResponseModel
-from core.security import create_token_pair, decode_token, rotate_refresh_token
+from core.security import decode_token, rotate_refresh_token
 from core.users.dependencies import get_current_user
 from core.users.models import User
 from core.users.schemas import (
     RefreshRequest,
     Token,
-    UserCreate,
     UserResponse,
     UserUpdate,
     UsernameLogin,
     WechatAuthUrl,
     WechatLogin,
     SendSmsRequest,
-    PhoneRegisterRequest,
+    PhoneLoginRequest,
+    LoginResponse,
     BindPhoneRequest,
 )
 from core.users.services import UserService
@@ -46,24 +46,15 @@ async def send_sms(req: SendSmsRequest):
         )
     return ResponseModel(msg="发送成功")
 
-@router.post("/phone/register", response_model=ResponseModel[UserResponse])
-async def phone_register(
-    req: PhoneRegisterRequest,
+@router.post("/phone/login", response_model=ResponseModel[LoginResponse])
+async def phone_login(
+    req: PhoneLoginRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """手机号+验证码注册"""
-    user = await UserService.register_with_phone(
-        db, 
-        phone=req.phone, 
-        code=req.code, 
-        password=req.password,
-        nickname=req.nickname
-    )
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="验证码错误或手机号已被注册"
-        )
-    return ResponseModel(data=await UserService.build_user_response(db, user))
+    """手机号验证码登录，未注册自动创建账号。"""
+    user = await UserService.login_with_phone(db, req.phone, req.code)
+    return ResponseModel(data=await UserService.build_login_response(db, user))
+
 
 @router.post("/phone/bind", response_model=ResponseModel[UserResponse])
 async def phone_bind(
@@ -85,55 +76,14 @@ async def phone_bind(
     return ResponseModel(data=await UserService.build_user_response(db, user))
 
 
-# ==================== 注册 ====================
-
-@router.post("/register", response_model=ResponseModel[UserResponse])
-async def register(
-    user_data: UserCreate,
-    db: AsyncSession = Depends(get_db),
-):
-    """用户名密码注册"""
-    if user_data.username:
-        existing = await UserService.get_by_username(db, user_data.username)
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="用户名已存在"
-            )
-
-    if user_data.email:
-        existing = await UserService.get_by_email(db, user_data.email)
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="邮箱已存在"
-            )
-
-    if user_data.phone:
-        existing = await UserService.get_by_phone(db, user_data.phone)
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="手机号已被注册"
-            )
-
-    user = await UserService.create_by_username(
-        db,
-        username=user_data.username,
-        password=user_data.password,
-        email=user_data.email,
-        phone=user_data.phone,
-        nickname=user_data.nickname,
-        source=user_data.source,
-    )
-    return ResponseModel(data=await UserService.build_user_response(db, user))
-
-
 # ==================== 登录 ====================
 
-@router.post("/login", response_model=ResponseModel[Token])
+@router.post("/login", response_model=ResponseModel[LoginResponse])
 async def login(
     login_data: UsernameLogin,
     db: AsyncSession = Depends(get_db),
 ):
-    """用户名密码登录"""
+    """仅供现有超级管理员使用的密码登录；普通用户请使用短信登录。"""
     user = await UserService.authenticate(db, login_data.username, login_data.password)
     if not user:
         raise HTTPException(
@@ -142,8 +92,7 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    access_token, refresh_token = await create_token_pair(user.id, user.token_version)
-    return ResponseModel(data=Token(access_token=access_token, refresh_token=refresh_token))
+    return ResponseModel(data=await UserService.build_login_response(db, user))
 
 
 # ==================== 微信登录 ====================
@@ -172,7 +121,7 @@ async def get_wechat_auth_url(
     return ResponseModel(data=WechatAuthUrl(auth_url=auth_url))
 
 
-@router.post("/wechat/login", response_model=ResponseModel[Token])
+@router.post("/wechat/login", response_model=ResponseModel[LoginResponse])
 async def wechat_login(
     login_data: WechatLogin,
     db: AsyncSession = Depends(get_db),
@@ -227,8 +176,7 @@ async def wechat_login(
         db, openid=openid, appid=login_data.appid, unionid=unionid, nickname=nickname, avatar=avatar,
     )
 
-    access_token, refresh_token = await create_token_pair(user.id, user.token_version)
-    return ResponseModel(data=Token(access_token=access_token, refresh_token=refresh_token))
+    return ResponseModel(data=await UserService.build_login_response(db, user))
 
 
 # ==================== Token 管理 ====================
