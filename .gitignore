@@ -89,6 +89,7 @@ tests/*
 !tests/test_wechat_openid.py
 !tests/test_sms.py
 !tests/test_auth_flows.py
+!tests/test_scan_login.py
 !tests/test_security.py
 !tests/test_exceptions.py
 !tests/test_storage_soft_delete.py

@@ -86,6 +86,9 @@ def create_app() -> FastAPI:
     # Core: 用户授权
     app.include_router(users_router, prefix=settings.API_V1_PREFIX, tags=["用户授权"])
 
+    from core.users.scan_router import router as scan_router
+    app.include_router(scan_router, prefix=settings.API_V1_PREFIX)
+
     # Core: 管理后台
     app.include_router(admin_router, prefix=settings.API_V1_PREFIX, tags=["管理后台"])
 

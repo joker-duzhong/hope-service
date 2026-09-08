@@ -148,7 +148,7 @@ wt -p "Windows PowerShell" -d . uvicorn main:app --reload --port 8000 `; split-p
 - 暂仅支持中国大陆手机号，+86 和 0086 前缀输入统一规范化为 11 位号码；验证码必须以字符串传递，保留前导零。现有数据库中的历史非规范号码需单独核对，本次不批量改写账号数据。
 - 停用或软删除账号、软删除微信身份不能通过自动开户重新登录；软删除账号仍占用原来的唯一手机号。密码字段和历史密码保留，但 /auth/login 仅允许未停用、未软删除的超级管理员使用。
 - 本次无需新增数据库迁移，但运行库仍须完成已有的 0019_core_user_identities。发布后旧验证码会话需要重新发码；验证码可能在数据库或网络故障前已被消费，失败时重新获取，不提供自动重试窗口。
-- 统一登录 H5 和应用参数扫码登录流程暂缓；现有扫码接口不在此次改造范围。
+- 统一登录 H5 页面仍待前端实现；通用扫码后端接口已提供，应用列表为 GET /api/v1/auth/scan/apps。新流程从 WAITING_SCAN 开始，由手机通知 PENDING，登录并绑定手机号后主动确认，再由发起端一次性兑换。完整接入说明见 docs/scan-login-api.md。旧公众号事件扫码接口保持独立。
 
 ## 配置说明
 
@@ -182,7 +182,7 @@ wt -p "Windows PowerShell" -d . uvicorn main:app --reload --port 8000 `; split-p
 
 安装依赖后运行以下命令。测试使用 FakeRedis（含 Lua）和 Mock 短信客户端，不发送短信、不连接实际 Redis 或数据库；--noconftest 跳过仓库本地的集成测试数据库初始化。
 
-    python -m pytest --noconftest -q tests/test_auth_flows.py tests/test_sms.py tests/test_security.py tests/test_exceptions.py tests/test_storage_soft_delete.py tests/test_wechat_openid.py tests/user_profile_test.py
+    python -m pytest --noconftest -q tests/test_scan_login.py tests/test_auth_flows.py tests/test_sms.py tests/test_security.py tests/test_exceptions.py tests/test_storage_soft_delete.py tests/test_wechat_openid.py tests/user_profile_test.py
 
 ## 新增业务模块
 
