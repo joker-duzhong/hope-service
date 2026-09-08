@@ -12,7 +12,7 @@ from core.exceptions import BadRequestException
 from core.security import get_password_hash, verify_password
 from core.sms import verify_sms_code
 from core.storage.services import StorageService
-from core.users.models import User
+from core.users.models import User, UserIdentity
 from core.users.schemas import UserAvatarResponse, UserResponse
 
 class UserService:
@@ -28,6 +28,20 @@ class UserService:
     @staticmethod
     async def get_by_openid(db: AsyncSession, openid: str) -> Optional[User]:
         result = await db.execute(select(User).where(User.openid == openid))
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def get_by_wechat_identity(
+        db: AsyncSession, appid: str, openid: str
+    ) -> Optional[User]:
+        result = await db.execute(
+            select(User).join(UserIdentity, UserIdentity.user_id == User.id).where(
+                UserIdentity.provider == "wechat",
+                UserIdentity.provider_app_id == appid,
+                UserIdentity.subject == openid,
+                UserIdentity.is_deleted == False,
+            )
+        )
         return result.scalar_one_or_none()
 
     @staticmethod
@@ -87,20 +101,28 @@ class UserService:
     async def create_by_wechat(
         db: AsyncSession,
         openid: str,
+        appid: str,
         unionid: Optional[str] = None,
         nickname: Optional[str] = None,
         avatar: Optional[str] = None,
         source: str = "wechat",
     ) -> User:
         user = User(
-            openid=openid,
-            unionid=unionid,
             nickname=nickname,
             avatar=avatar,
             source=source,
             roles=[],
         )
         db.add(user)
+        await db.flush()
+        db.add(UserIdentity(
+            user_id=user.id,
+            provider="wechat",
+            provider_app_id=appid,
+            subject=openid,
+            unionid=unionid,
+            verified_at=datetime.now(timezone.utc),
+        ))
         await db.commit()
         await db.refresh(user)
         return user
@@ -115,7 +137,7 @@ class UserService:
         source: str = "phone",
     ) -> Optional[User]:
         # 验证码检查
-        is_valid = await verify_sms_code(phone, "register", code)
+        is_valid = await verify_sms_code(phone, code)
         if not is_valid:
             return None
 
@@ -165,27 +187,60 @@ class UserService:
     async def wechat_login(
         db: AsyncSession,
         openid: str,
+        appid: str,
         unionid: Optional[str] = None,
         nickname: Optional[str] = None,
         avatar: Optional[str] = None,
     ) -> User:
         """微信登录，自动注册新用户"""
-        user = await UserService.get_by_openid(db, openid)
-
-        if not user and unionid:
-            user = await UserService.get_by_unionid(db, unionid)
-            if user:
-                user.openid = openid
-                await db.commit()
-                await db.refresh(user)
+        user = await UserService.get_by_wechat_identity(db, appid, openid)
 
         if not user:
             user = await UserService.create_by_wechat(
-                db, openid=openid, unionid=unionid,
+                db, openid=openid, appid=appid, unionid=unionid,
                 nickname=nickname, avatar=avatar,
             )
 
+        identity = await db.execute(
+            select(UserIdentity).where(
+                UserIdentity.provider == "wechat",
+                UserIdentity.provider_app_id == appid,
+                UserIdentity.subject == openid,
+            )
+        )
+        if not identity.scalar_one_or_none():
+            db.add(UserIdentity(
+                user_id=user.id,
+                provider="wechat",
+                provider_app_id=appid,
+                subject=openid,
+                unionid=unionid,
+                verified_at=datetime.now(timezone.utc),
+            ))
+            await db.commit()
+
         return user
+
+    @staticmethod
+    async def get_wechat_openid(
+        db: AsyncSession, user_id: UUID, appid: str
+    ) -> Optional[str]:
+        result = await db.execute(
+            select(UserIdentity.subject).where(
+                UserIdentity.user_id == user_id,
+                UserIdentity.provider == "wechat",
+                UserIdentity.provider_app_id == appid,
+                UserIdentity.is_deleted == False,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def revoke_tokens(db: AsyncSession, user: User) -> None:
+        user.token_version += 1
+        user.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(user)
 
     # ==================== 更新 ====================
 
@@ -275,7 +330,7 @@ class UserService:
         code: str,
     ) -> Optional[User]:
         # 验证码检查
-        is_valid = await verify_sms_code(phone, "bind", code)
+        is_valid = await verify_sms_code(phone, code)
         if not is_valid:
             return None
 

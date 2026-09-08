@@ -1,8 +1,10 @@
 """
 全局自定义异常与拦截器
 """
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 class AppException(Exception):
@@ -44,10 +46,44 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppException)
     async def app_exception_handler(_request: Request, exc: AppException):
         return JSONResponse(
-            status_code=status.HTTP_200_OK,
+            status_code=exc.code,
             content={
                 "code": exc.code,
                 "message": exc.message,
                 "data": exc.detail or None,
             },
+        )
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(_request: Request, exc: HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"code": exc.status_code, "message": exc.detail, "data": None},
+            headers=exc.headers,
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def starlette_http_exception_handler(_request: Request, exc: StarletteHTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"code": exc.status_code, "message": exc.detail, "data": None},
+            headers=exc.headers,
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(_request: Request, exc: RequestValidationError):
+        errors = [
+            {"type": error["type"], "loc": error["loc"], "msg": error["msg"]}
+            for error in exc.errors()
+        ]
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"code": 422, "message": "请求参数校验失败", "data": errors},
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(_request: Request, _exc: Exception):
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"code": 500, "message": "服务器内部错误", "data": None},
         )

@@ -9,6 +9,8 @@ from sqlalchemy import select, desc, func
 from core.database import get_db
 from core.users.dependencies import get_current_user, get_optional_user
 from core.users.models import User
+from core.users.services import UserService
+from core.config import settings
 from core.response import ResponseModel, PaginatedResponse, PaginatedData
 from core.storage.services import StorageService
 
@@ -245,6 +247,12 @@ async def create_order(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    payment_openid = await UserService.get_wechat_openid(
+        db, current_user.id, settings.WECHAT_PAY_APP_ID
+    )
+    if not payment_openid:
+        raise HTTPException(status_code=400, detail="当前账户未绑定微信支付小程序身份")
+
     product = await db.get(AurakeyProduct, req.product_id)
     if not product:
         raise HTTPException(status_code=404, detail="商品不存在")
@@ -277,13 +285,15 @@ async def create_order(
         order_id=order_no,
         amount=product.price,
         subject=product.name,
-        openid=req.openid
+        openid=payment_openid,
     )
     pay_res = await wechat_client.create_mini_program_order(wechat_req)
     if not pay_res.success:
+        order.status = "failed"
+        await db.commit()
         import logging
         logger = logging.getLogger(__name__)
-        logger.error(f"微信支付下单失败 - 订单号: {order_no}, 用户ID: {current_user.id}, 商品ID: {product.id}, openid: {req.openid}, 错误信息: {pay_res.message}")
+        logger.error(f"微信支付下单失败 - 订单号: {order_no}, 用户ID: {current_user.id}, 商品ID: {product.id}, 错误信息: {pay_res.message}")
         raise HTTPException(status_code=400, detail=pay_res.message)
 
     return ResponseModel(data={"order_no": order_no, "pay_params": pay_res.pay_data})

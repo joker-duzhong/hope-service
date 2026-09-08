@@ -2,35 +2,50 @@
 基础全局依赖 (Dependencies)
 如请求头解析等通用组件，与具体业务解耦
 """
-from typing import Callable
-from fastapi import Header, HTTPException, Depends, status
+from contextvars import ContextVar
+from typing import AsyncGenerator, Callable
+from fastapi import HTTPException, Depends, status
 
 from core.apps_config import REGISTERED_APPS
 from core.users.models import User
 from core.users.dependencies import get_current_user
 
-# ==================== 1. 应用标识解析 ====================
+_current_app_key: ContextVar[str | None] = ContextVar("current_app_key", default=None)
 
-async def get_app_key(
-    app: str = Header(..., description="前端固定传入的具体业务APP标识, 例如: hope_care")
-) -> str:
+def bind_app_key(app_key: str) -> Callable[[], AsyncGenerator[None, None]]:
+    """Create a router dependency that fixes the trusted application scope."""
+    if app_key not in REGISTERED_APPS:
+        raise ValueError(f"未知应用配置: {app_key}")
+
+    async def _bind() -> AsyncGenerator[None, None]:
+        token = _current_app_key.set(app_key)
+        try:
+            yield
+        finally:
+            _current_app_key.reset(token)
+
+    return _bind
+
+
+async def get_app_key() -> str:
     """
-    验证并在路由中注入前端请求头的 app 标识。该标识对应于 Role 的 scope。
+    返回当前后端路由注册时绑定的应用标识，绝不信任客户端 Header。
     """
-    if not app or app not in REGISTERED_APPS:
+    app_key = _current_app_key.get()
+    if not app_key or app_key not in REGISTERED_APPS:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"未知的请求来源(app): {app}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="当前接口未绑定应用上下文",
         )
-        
-    app_config = REGISTERED_APPS[app]
+
+    app_config = REGISTERED_APPS[app_key]
     if not app_config.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"当前应用 [{app_config.name}] 已停用"
         )
-        
-    return app
+
+    return app_key
 
 
 # ==================== 2. 结合请求头的动态角色权限工厂 ====================

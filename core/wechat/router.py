@@ -1,16 +1,24 @@
 from typing import Optional
+import secrets
 
-from fastapi import APIRouter, Request, Response, HTTPException, Query
+from fastapi import APIRouter, Depends, Request, Response, HTTPException, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from core.database import get_db
 from core.response import ResponseModel
 from core.config import settings
+from core.security import create_token_pair
 from core.wechat.services import WeChatService
 from core.wechat.crypto import WeChatCrypto
 from core.wechat.schemas import (
+    WechatQRExchangeRequest,
     WechatCodeToOpenidRequest,
     WechatJssdkConfigResponse,
     WechatOpenidResponse,
 )
 from core.redis_client import redis_client
+from core.users.schemas import Token
+from core.users.services import UserService
 import xml.etree.ElementTree as ET
 import json
 
@@ -30,9 +38,19 @@ def get_crypto(appid: str) -> WeChatCrypto:
 
 
 @router.get("/auth/wechat/qrcode", summary="获取微信登录二维码")
-async def get_qrcode(appid: str):
+async def get_qrcode(appid: str, response: Response):
     try:
-        result = await WeChatService.create_qrcode(appid)
+        browser_token = secrets.token_urlsafe(32)
+        result = await WeChatService.create_qrcode(appid, browser_token)
+        response.set_cookie(
+            key="wechat_login",
+            value=browser_token,
+            max_age=300,
+            httponly=True,
+            secure=not settings.DEBUG,
+            samesite="lax",
+            path=f"{settings.API_V1_PREFIX}/auth/wechat",
+        )
         return ResponseModel(data=result)
     except HTTPException:
         raise
@@ -65,7 +83,14 @@ async def verify_wechat_webhook(
 
 
 @router.post("/wechat/callback/{appid}", summary="处理微信扫码回调事件")
-async def handle_wechat_event(appid: str, request: Request, msg_signature: str = None, timestamp: str = None, nonce: str = None):
+async def handle_wechat_event(
+    appid: str,
+    request: Request,
+    signature: str = None,
+    msg_signature: str = None,
+    timestamp: str = None,
+    nonce: str = None,
+):
     body = await request.body()
     body_str = body.decode("utf-8")
 
@@ -75,6 +100,10 @@ async def handle_wechat_event(appid: str, request: Request, msg_signature: str =
     print(f"[WeChat Callback] msg_signature: {msg_signature}, timestamp: {timestamp}, nonce: {nonce}")
 
     try:
+        config = settings.get_wechat_config(appid)
+        if not config or not config.get("token"):
+            return Response(content="forbidden", status_code=403, media_type="text/plain")
+
         root = ET.fromstring(body_str)
 
         # 检查是否是加密消息
@@ -83,16 +112,19 @@ async def handle_wechat_event(appid: str, request: Request, msg_signature: str =
         if encrypt:
             print(f"[WeChat Callback] Encrypted message detected")
             # 安全模式：解密消息
-            config = settings.get_wechat_config(appid)
-            if config and config.get("encoding_aes_key") and msg_signature and timestamp and nonce:
-                crypto = get_crypto(appid)
-                decrypted_xml = crypto.decrypt_message(body_str, msg_signature, timestamp, nonce)
-                root = ET.fromstring(decrypted_xml)
-                print(f"[WeChat Callback] Message decrypted successfully")
-            else:
-                print("[WeChat Callback] Missing crypto config or parameters for encrypted message")
+            if not config.get("encoding_aes_key") or not msg_signature or not timestamp or not nonce:
+                return Response(content="forbidden", status_code=403, media_type="text/plain")
+            crypto = get_crypto(appid)
+            decrypted_xml = crypto.decrypt_message(body_str, msg_signature, timestamp, nonce)
+            root = ET.fromstring(decrypted_xml)
+            print(f"[WeChat Callback] Message decrypted successfully")
         else:
             print(f"[WeChat Callback] Plain text message")
+            if not signature or not timestamp or not nonce:
+                return Response(content="forbidden", status_code=403, media_type="text/plain")
+            crypto = WeChatCrypto(token=config["token"], appid=appid)
+            if not crypto.verify_signature(signature, timestamp, nonce):
+                return Response(content="forbidden", status_code=403, media_type="text/plain")
 
         msg_type = root.findtext("MsgType", default="")
         openid = root.findtext("FromUserName", default="")
@@ -123,31 +155,9 @@ async def handle_wechat_event(appid: str, request: Request, msg_signature: str =
         print(f"[WeChat Callback] Error parsing wechat XML: {e}")
         import traceback
         traceback.print_exc()
+        return Response(content="bad request", status_code=400, media_type="text/plain")
 
     return Response(content="success", media_type="text/plain")
-
-
-@router.post("/auth/wechat/login", summary="微信登记页面登录")
-async def wechat_login(request: Request):
-    """
-    使用微信授权码登录
-    请求体: {"appid": "xxx", "code": "xxx"}
-    """
-    try:
-        body = await request.json()
-        appid = body.get("appid")
-        code = body.get("code")
-
-        if not appid or not code:
-            return ResponseModel(code=400, message="appid and code are required")
-
-        result = await WeChatService.exchange_h5_code_for_openid(appid, code)
-        return ResponseModel(data=result)
-    except HTTPException as e:
-        return ResponseModel(code=e.status_code, message=e.detail)
-    except Exception as e:
-        print(f"WeChat login error: {e}")
-        return ResponseModel(code=500, message=f"Internal server error: {str(e)}")
 
 
 @router.post(
@@ -184,13 +194,37 @@ async def get_jssdk_config(
 
 
 @router.get("/auth/wechat/status", summary="查询微信扫码状态")
-async def get_scan_status(scene_id: str):
+async def get_scan_status(scene_id: str, request: Request):
     try:
         data = await redis_client.get(f"wechat_scan:{scene_id}")
         if not data:
             return ResponseModel(data={"status": "EXPIRED"})
 
         parsed = json.loads(data)
-        return ResponseModel(data=parsed)
+        browser_token = request.cookies.get("wechat_login")
+        if not browser_token or not secrets.compare_digest(parsed.get("browser_token", ""), browser_token):
+            raise HTTPException(status_code=403, detail="扫码登录会话不匹配")
+        return ResponseModel(data={"status": parsed.get("status", "WAITING")})
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
         return ResponseModel(code=400, message=str(e))
+
+
+@router.post("/auth/wechat/exchange", response_model=ResponseModel[Token], summary="兑换微信扫码登录令牌")
+async def exchange_scan_login(
+    body: WechatQRExchangeRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    browser_token = request.cookies.get("wechat_login")
+    if not browser_token:
+        raise HTTPException(status_code=403, detail="扫码登录会话不匹配")
+
+    user_id = await WeChatService.consume_scan_login(body.scene_id, browser_token)
+    user = await UserService.get_by_id(db, user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="用户不存在或已禁用")
+
+    access_token, refresh_token = await create_token_pair(user.id, user.token_version)
+    return ResponseModel(data=Token(access_token=access_token, refresh_token=refresh_token))

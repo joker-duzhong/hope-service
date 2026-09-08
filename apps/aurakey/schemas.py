@@ -149,7 +149,6 @@ class ProductItem(BaseModel):
 
 class OrderCreateRequest(BaseModel):
     product_id: uuid.UUID
-    openid: str
 
 
 class OrderCreateResponse(BaseModel):

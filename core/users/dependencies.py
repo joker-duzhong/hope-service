@@ -32,7 +32,10 @@ async def get_optional_user(
         if not user_id_str:
             return None
         user_id = UUID(user_id_str)
-        return await UserService.get_by_id(db, user_id)
+        user = await UserService.get_by_id(db, user_id)
+        if not user or not user.is_active or payload.get("token_version") != user.token_version:
+            return None
+        return user
     except Exception:
         return None
 
@@ -69,6 +72,9 @@ async def get_current_user(
             status_code=status.HTTP_403_FORBIDDEN, detail="用户已被禁用"
         )
 
+    if payload.get("token_version") != user.token_version:
+        raise credentials_exception
+
     return user
 
 
@@ -98,7 +104,7 @@ def require_roles(*role_codes: str) -> Callable:
     async def _checker(current_user: User = Depends(get_current_user)) -> User:
         if current_user.is_superuser:
             return current_user
-        user_role_codes = {r.code for r in current_user.roles}
+        user_role_codes = {r.code for r in current_user.roles if r.is_active}
         if not user_role_codes.intersection(set(role_codes)):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -135,7 +141,7 @@ def require_role_in_scope(scope: str, *role_codes: str) -> Callable:
         if current_user.is_superuser:
             return current_user
         # 将用户角色按照 (scope, code) 组合映射
-        user_scope_codes = {(r.scope, r.code) for r in current_user.roles}
+        user_scope_codes = {(r.scope, r.code) for r in current_user.roles if r.is_active}
         # 确认指定 scope 下至少有一个 code 命中
         matched = any(
             (scope, code) in user_scope_codes for code in role_codes

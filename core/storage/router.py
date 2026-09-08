@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
-from core.dependencies import get_app_key
 from core.response import ResponseModel
 from core.storage.schemas import ResourceResponse, ConfirmUploadRequest, TokenResponse
 from core.storage.services import StorageService
@@ -28,15 +27,14 @@ async def get_upload_token():
 async def confirm_upload(
     data: ConfirmUploadRequest,
     current_user: User = Depends(get_current_user),
-    scope: str = Depends(get_app_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """确认文件上传（落库元数据并支持秒传）"""
+    """确认文件上传并落库元数据"""
     resource = await StorageService.confirm_upload(
         db=db,
         data=data,
         owner_id=current_user.id,
-        scope=scope,
+        scope="global",
     )
     return ResponseModel(data=resource)
 
@@ -47,7 +45,7 @@ async def delete_resource(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """逻辑删除文件并触发 OSS 物理删除异步任务"""
+    """软删除资源记录，不删除 OSS 文件。"""
     success = await StorageService.delete_resource(
         db=db,
         resource_id=resource_id,
@@ -63,5 +61,7 @@ async def get_resource(
     db: AsyncSession = Depends(get_db),
 ):
     """获取资源详情（含拼接好的 CDN 访问 URL）"""
-    resource = await StorageService.get_resource(db=db, resource_id=resource_id)
+    resource = await StorageService.get_resource(
+        db=db, resource_id=resource_id, owner_id=current_user.id
+    )
     return ResponseModel(data=resource)

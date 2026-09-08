@@ -2,12 +2,15 @@
 🟢 唯一入口 —— FastAPI 实例化，路由挂载，中间件配置
 """
 from contextlib import asynccontextmanager
+from importlib import import_module
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from core.apps_config import REGISTERED_APPS, AppConfig
 from core.config import settings
 from core.database import init_db
+from core.dependencies import bind_app_key
 from core.exceptions import register_exception_handlers
 from core.users import router as users_router
 from core.admin import router as admin_router
@@ -16,10 +19,31 @@ from core.admin import router as admin_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    settings.validate_runtime_security()
     # 仅在 DEBUG 模式下自动建表，生产环境应使用 Alembic 迁移
     if settings.DEBUG:
         await init_db()
     yield
+
+
+def register_business_apps(app: FastAPI) -> None:
+    """Register every business router from the shared application registry."""
+    for app_config in REGISTERED_APPS.values():
+        if app_config.key == "admin_web":
+            continue
+
+        for router_config in app_config.router_modules:
+            if not app_config.is_active:
+                continue
+
+            module = import_module(router_config.module)
+            router = getattr(module, "router")
+            app.include_router(
+                router,
+                prefix=f"{settings.API_V1_PREFIX}{router_config.prefix}",
+                tags=router_config.tags,
+                dependencies=[Depends(bind_app_key(app_config.key))],
+            )
 
 
 def create_app() -> FastAPI:
@@ -81,52 +105,7 @@ def create_app() -> FastAPI:
     from core.pay.router import router as pay_router
     app.include_router(pay_router, prefix=settings.API_V1_PREFIX, tags=["支付"])
 
-    # Apps: 在此挂载各业务模块路由
-    from apps.trade_copilot.router import router as trade_copilot_router
-    app.include_router(trade_copilot_router, prefix=f"{settings.API_V1_PREFIX}/trade-copilot", tags=["交易助手"])
-
-    from apps.just_right.router import router as just_right_router
-    app.include_router(just_right_router, prefix=f"{settings.API_V1_PREFIX}/just-right", tags=["恰好"])
-
-    from apps.ledger_mate.router import router as ledger_mate_router
-    app.include_router(ledger_mate_router, prefix=f"{settings.API_V1_PREFIX}/ledger-mate", tags=["账伴"])
-
-    from apps.nest_talk.router import router as nest_talk_router
-    app.include_router(nest_talk_router, prefix=f"{settings.API_V1_PREFIX}/nest-talk", tags=["语筑"])
-
-    # Apps: 时空图书馆 (Time Library)
-    from apps.time_library.router import router as time_library_router
-    from apps.time_library.admin_router import router as time_library_admin_router
-    app.include_router(time_library_router, prefix=f"{settings.API_V1_PREFIX}/time-library", tags=["时空图书馆"])
-    app.include_router(time_library_admin_router, prefix=f"{settings.API_V1_PREFIX}/time-library/admin", tags=["时空图书馆-管理端"])
-
-    # Apps: AI Gateway
-    from apps.ai_gateway.router import router as ai_gateway_router
-    app.include_router(ai_gateway_router, prefix=f"{settings.API_V1_PREFIX}/ai", tags=["AI对话网关"])
-
-    # Apps: 在线高考 (Zaiwen Gaokao)
-    from apps.zaiwen_gaokao.router import router as gaokao_router
-    app.include_router(gaokao_router, prefix=f"{settings.API_V1_PREFIX}/zaiwen-gaokao", tags=["在线高考"])
-
-    # Apps: Project Sisyphus (西西弗斯认知引擎)
-    from apps.project_sisyphus.router import router as sisyphus_router
-    app.include_router(sisyphus_router, prefix=f"{settings.API_V1_PREFIX}/sisyphus", tags=["西西弗斯认知引擎"])
-
-    # Apps: 影子董事会 (Shadow Board AI)
-    from apps.shadow_board.router import router as shadow_board_router
-    app.include_router(shadow_board_router, prefix=f"{settings.API_V1_PREFIX}/shadow-board", tags=["影子董事会"])
-
-    # Apps: TypoCraft (言图)
-    from apps.typo_craft.router import router as typo_craft_router
-    app.include_router(typo_craft_router, prefix=f"{settings.API_V1_PREFIX}/typo-craft", tags=["言图引擎"])
-
-    # Apps: AuraKey (AI 绘画)
-    from apps.aurakey.router import router as aurakey_router
-    app.include_router(aurakey_router, prefix=f"{settings.API_V1_PREFIX}/aurakey", tags=["AuraKey AI 绘画"])
-
-    # Apps: 班主任工作台
-    from apps.teacher_logbook.router import router as teacher_logbook_router
-    app.include_router(teacher_logbook_router, prefix=settings.API_V1_PREFIX, tags=["班主任工作台"])
+    register_business_apps(app)
 
     # 健康检查
     @app.get("/health", tags=["健康检查"])

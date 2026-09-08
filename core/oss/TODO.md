@@ -18,7 +18,7 @@
 - [ ] 基于七牛云官方 Python SDK 提供凭证生成等能力。
 - **验收标准**：
   - 实现 `generate_upload_token()` 方法，支持前端直传策略。
-  - 实现 `delete_file_from_oss(object_key: str)` 方法，供后续异步调用。
+  - 不提供物理删除能力；资源删除仅更新数据库软删除标记。
 
 ### TODO 2.3 数据库模型 (`apps/storage/models.py`)
 - [ ] 确保存在 `storage_files` 表，继承全局 `CoreModel`。
@@ -33,8 +33,8 @@
 
 ### TODO 2.5 接口与异步删除逻辑 (`apps/storage/router.py` & `apps/storage/tasks.py`)
 - [ ] 暴露获取 Upload Token、确认上传元数据保存、获取文件信息、逻辑删除文件接口。
-- [ ] 在 `tasks.py` 中编写异步物理删除任务。
+- [x] 旧删除任务保留为空操作，仅用于安全消费队列遗留消息。
 - **验收标准**：
   - **上传流**：接口 1 (`/upload-token`) 颁发 Token 给前端 -> 前端直传七牛 -> 接口 2 (`/confirm-upload`) 接收前端传回的 hash、key 等元数据并落库。所有操作必须带入 `get_current_user` 以绑定 `owner`。
-  - **删除流（必须严格执行）**：当用户调用 `/delete/{file_id}` 时，Router 调用 Service 先将数据库对应的记录标记为 `is_deleted = True`（软删除），随后触发 `delete_oss_file_task.delay(object_key)` 交由 Celery 在后台异步调用七牛云 SDK 清理真实存储，避免产生无用资费且不阻塞当前接口响应。
+  - **删除流（必须严格执行）**：当用户调用 `/delete/{file_id}` 时，仅将资源记录标记为 `is_deleted = True`；不得硬删除记录或触发 OSS 物理删除，原图和缩略图均保留。发布时先停止旧 Worker，防止旧代码继续删除文件。
   - 统一使用 `ResponseModel` 封装返回值。

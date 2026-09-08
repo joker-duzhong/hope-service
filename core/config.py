@@ -5,7 +5,7 @@
 from functools import lru_cache
 from typing import List, Optional
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "hope-service"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
+    ENVIRONMENT: str = "development"
 
     @field_validator("DEBUG", mode="before")
     @classmethod
@@ -71,6 +72,8 @@ class Settings(BaseSettings):
     # JWT 配置
     SECRET_KEY: str = "your-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
+    JWT_ISSUER: str = "hope-service"
+    JWT_AUDIENCE: str = "hope-platform"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24小时
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
@@ -96,14 +99,11 @@ class Settings(BaseSettings):
     # 飞书 Webhook 配置
     FEISHU_WEBHOOK_URL: Optional[str] = None
     
-    # 腾讯云短信配置
-    TENCENT_SMS_SECRET_ID: str = ""
-    TENCENT_SMS_SECRET_KEY: str = ""
-    TENCENT_SMS_APP_ID: str = ""
-    TENCENT_SMS_SIGN_NAME: str = ""
-    TENCENT_SMS_TEMPLATE_ID_REGISTER: str = ""
-    TENCENT_SMS_TEMPLATE_ID_BIND: str = ""
-    TENCENT_SMS_REGION: str = "ap-guangzhou"
+    # 阿里云号码认证短信配置
+    ALIBABA_CLOUD_ACCESS_KEY_ID: str = ""
+    ALIBABA_CLOUD_ACCESS_KEY_SECRET: str = ""
+    ALIYUN_SMS_SIGN_NAME: str = ""
+    ALIYUN_SMS_TEMPLATE_CODE: str = ""
 
     # LLM 配置
     # 格式: {"openai": {"api_key": "sk-...", "base_url": "...", "default_model": "gpt-4o", "timeout": 60, "max_retries": 3}}
@@ -133,8 +133,22 @@ class Settings(BaseSettings):
     ALIPAY_GATEWAY: str = "https://openapi.alipay.com/gateway.do"
     ALIPAY_NOTIFY_URL: str = ""
 
+    @property
+    def is_production(self) -> bool:
+        return self.ENVIRONMENT.strip().lower() in {"production", "prod"}
+
+    def validate_runtime_security(self) -> None:
+        """Reject insecure JWT settings before a production process starts."""
+        if not self.is_production:
+            return
+        if self.SECRET_KEY == "your-secret-key-change-in-production" or len(self.SECRET_KEY.encode("utf-8")) < 32:
+            raise RuntimeError("生产环境必须配置至少 32 字节的随机 SECRET_KEY")
+        if self.ALGORITHM != "HS256":
+            raise RuntimeError("生产环境仅支持 HS256 JWT 算法")
+
     class Config:
         env_file = ".env"
+        env_file_encoding = "utf-8"
         case_sensitive = True
 
 

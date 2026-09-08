@@ -6,6 +6,7 @@
 """
 from celery.schedules import crontab
 
+from core.apps_config import REGISTERED_APPS
 from worker.celery_app import celery_app
 
 celery_app.conf.beat_schedule = {
@@ -83,4 +84,23 @@ celery_app.conf.beat_schedule = {
         # 每 10 分钟检查状态更新并发送通知
         "schedule": crontab(minute="*/10"),
     },
+}
+
+BEAT_APP_KEYS = {
+    "trade_copilot_market_thermometer": "hope_trade_copilot",
+    "trade_copilot_sync_stock_info": "hope_trade_copilot",
+    "nest_talk_detect_bargain": "hope_nest_talk",
+    "nest_talk_update_region_prices": "hope_nest_talk",
+    "nest_talk_crawl_and_match": "hope_nest_talk",
+    "gaokao_check_room_lifecycles": "hope_zaiwen_gaokao",
+    "typo_craft_auto_tag": "hope_typo_craft",
+    "aurakey_fail_stale_stream_image_tasks": "hope_aurakey",
+    "justright_anniversary_reminders": "hope_just_right",
+    "justright_state_update_notifications": "hope_just_right",
+}
+
+celery_app.conf.beat_schedule = {
+    name: schedule
+    for name, schedule in celery_app.conf.beat_schedule.items()
+    if REGISTERED_APPS[BEAT_APP_KEYS[name]].is_active
 }

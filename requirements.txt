@@ -32,10 +32,16 @@ tenacity>=8.2.0
 # ==================== 开发工具 ====================
 pytest>=7.4.0
 pytest-asyncio>=0.23.0
+fakeredis[lua]>=2.37.1
 black>=24.1.0
 isort>=5.13.0
-tencentcloud-sdk-python>=3.0.0
 pycryptodome>=3.20.0
+
+# ==================== 号码认证短信 ====================
+alibabacloud-dypnsapi20170525>=2.0.0,<3.0.0
+alibabacloud-credentials>=1.0.12,<2.0.0
+alibabacloud-tea-openapi>=0.4.6,<1.0.0
+alibabacloud-tea-util>=0.3.15,<1.0.0
 
 # ==================== 对象存储 & 图片处理 ====================
 qiniu>=7.14.0

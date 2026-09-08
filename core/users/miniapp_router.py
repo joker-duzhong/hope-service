@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import settings
 from core.database import get_db
 from core.response import ResponseModel
-from core.security import create_access_token, create_refresh_token
+from core.security import create_token_pair
 from core.users.dependencies import get_current_user
 from core.users.models import User
 from core.users.schemas import Token, UserResponse
@@ -63,17 +63,14 @@ async def miniapp_login(
     user = await UserService.wechat_login(
         db,
         openid=openid,
+        appid=req.appid,
         unionid=unionid,
         nickname=None,
         avatar=None,
     )
 
-    return ResponseModel(
-        data=Token(
-            access_token=create_access_token(subject=user.id),
-            refresh_token=create_refresh_token(subject=user.id),
-        )
-    )
+    access_token, refresh_token = await create_token_pair(user.id, user.token_version)
+    return ResponseModel(data=Token(access_token=access_token, refresh_token=refresh_token))
 
 
 @router.post("/phone", response_model=ResponseModel[UserResponse])

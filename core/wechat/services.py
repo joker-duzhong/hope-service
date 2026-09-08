@@ -11,7 +11,6 @@ from core.redis_client import redis_client
 from core.config import settings
 from core.database import async_session_maker
 from core.users.services import UserService
-from core.security import create_access_token
 
 WECHAT_API_BASE_URL = "https://api.weixin.qq.com/cgi-bin"
 WECHAT_SNS_BASE_URL = "https://api.weixin.qq.com/sns"
@@ -181,7 +180,7 @@ class WeChatService:
             raise HTTPException(status_code=400, detail=f"获取微信access_token失败: {errmsg} (code: {errcode})")
 
     @staticmethod
-    async def create_qrcode(appid: str) -> dict:
+    async def create_qrcode(appid: str, browser_token: str) -> dict:
         # 检查配置是否存在
         config = settings.get_wechat_config(appid)
         if not config:
@@ -207,8 +206,11 @@ class WeChatService:
                 ticket = data["ticket"]
                 qr_url = f"https://mp.weixin.qq.com/cgi-bin/showqrcode?ticket={urllib.parse.quote(ticket)}"
 
-                # Cache status
-                await redis_client.setex(f"wechat_scan:{scene_id}", 300, json.dumps({"status": "WAITING"}))
+                await redis_client.setex(
+                    f"wechat_scan:{scene_id}",
+                    300,
+                    json.dumps({"status": "WAITING", "browser_token": browser_token}),
+                )
 
                 return {"scene_id": scene_id, "qr_url": qr_url}
 
@@ -236,9 +238,16 @@ class WeChatService:
         print(f"[process_scan_event] Starting - appid: {appid}, scene_id: {scene_id}, openid: {openid}, event_type: {event_type}")
 
         try:
+            redis_key = f"wechat_scan:{scene_id}"
+            scan_data = await redis_client.get(redis_key)
+            if not scan_data:
+                print(f"[process_scan_event] Expired scene_id: {scene_id}")
+                return
+            scan_state = json.loads(scan_data)
+
             async with async_session_maker() as db:
                 print(f"[process_scan_event] Getting user by openid: {openid}")
-                user = await UserService.get_by_openid(db, openid)
+                user = await UserService.get_by_wechat_identity(db, appid, openid)
                 is_new_user = False
 
                 if not user:
@@ -247,29 +256,19 @@ class WeChatService:
                     user = await UserService.create_by_wechat(
                         db,
                         openid=openid,
+                        appid=appid,
                         source="wechat_scan"
                     )
                     print(f"[process_scan_event] New user created with id: {user.id}")
                 else:
                     print(f"[process_scan_event] Existing user found with id: {user.id}")
 
-            token = create_access_token(subject=user.id)
-            print(f"[process_scan_event] Access token created")
-
-            user_info = {
-                "id": user.id,
-                "openid": user.openid,
-                "nickname": user.nickname,
-                "avatar": user.avatar
-            }
-
             cache_data = {
                 "status": "SUCCESS",
-                "token": token,
-                "userInfo": user_info
+                "browser_token": scan_state["browser_token"],
+                "user_id": str(user.id),
             }
 
-            redis_key = f"wechat_scan:{scene_id}"
             print(f"[process_scan_event] Setting Redis key: {redis_key}")
             await redis_client.set(redis_key, json.dumps(cache_data), ex=300)
             print(f"[process_scan_event] Redis key set successfully")
@@ -291,6 +290,33 @@ class WeChatService:
             import traceback
             traceback.print_exc()
             raise
+
+    @staticmethod
+    async def consume_scan_login(scene_id: str, browser_token: str) -> uuid.UUID:
+        redis_key = f"wechat_scan:{scene_id}"
+        result = await redis_client.eval(
+            """
+            local value = redis.call('GET', KEYS[1])
+            if not value then return {0, ''} end
+            local state = cjson.decode(value)
+            if state.browser_token ~= ARGV[1] then return {1, ''} end
+            if state.status ~= 'SUCCESS' or not state.user_id then return {2, ''} end
+            redis.call('DEL', KEYS[1])
+            return {3, value}
+            """,
+            1,
+            redis_key,
+            browser_token,
+        )
+        status, data = result
+        if status == 0:
+            raise HTTPException(status_code=400, detail="二维码已过期")
+        if status == 1:
+            raise HTTPException(status_code=403, detail="扫码登录会话不匹配")
+        if status == 2:
+            raise HTTPException(status_code=409, detail="扫码登录尚未完成")
+
+        return uuid.UUID(json.loads(data)["user_id"])
 
     @staticmethod
     async def send_customer_message(appid: str, openid: str, content: str):

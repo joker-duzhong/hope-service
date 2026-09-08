@@ -26,7 +26,6 @@ from core.storage.schemas import (
     ServerImageThumbnailOptions,
     TokenResponse,
 )
-from core.storage.tasks import delete_oss_file_task
 
 
 MIME_EXTENSION_MAP = {
@@ -46,7 +45,7 @@ COMPRESSIBLE_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 
 class StorageService:
-    """资源存储服务：上传 Token 获取、确认上传、CDN URL 拼接、软删除触发异步物理删除"""
+    """资源存储服务：上传 Token 获取、确认上传、CDN URL 拼接与软删除"""
 
     @staticmethod
     def get_upload_token() -> TokenResponse:
@@ -68,19 +67,6 @@ class StorageService:
         scope: Optional[str] = None,
     ) -> ResourceResponse:
         """接收前端上传成功后的元数据并落库"""
-        # 秒传检查：查找相同 hash 且未删除的记录
-        result = await db.execute(
-            select(Resource).where(
-                Resource.hash == data.hash,
-                Resource.is_deleted == False,
-            )
-        )
-        existing = result.scalar_one_or_none()
-        if existing:
-            # 如果已有资源但没有 scope，可以考虑更新它，或者直接返回
-            return await StorageService._build_response(existing)
-
-        # 全局资源落库
         resource = Resource(
             name=data.name,
             url=data.url,
@@ -162,10 +148,6 @@ class StorageService:
             )
 
         file_hash = hashlib.md5(upload_bytes).hexdigest()
-        existing = await StorageService._get_existing_by_hash(db, file_hash)
-        if existing:
-            return await StorageService._build_response(existing)
-
         object_key = StorageService._build_object_key(upload_mime_type, file_name)
         qiniu_result = QiniuClient.upload_bytes_to_oss(object_key, upload_bytes, upload_mime_type)
         finalized_key = StorageService._get_qiniu_key(qiniu_result, object_key)
@@ -211,9 +193,7 @@ class StorageService:
         resource_id: UUID,
         owner_id: Optional[UUID] = None,
     ) -> bool:
-        """
-        逻辑删除资源记录 + 触发物理删除
-        """
+        """仅软删除资源记录，保留 OSS 文件和数据库记录。"""
         result = await db.execute(
             select(Resource).where(
                 Resource.id == resource_id,
@@ -225,19 +205,12 @@ class StorageService:
         if not resource:
             raise NotFoundException(message="资源未找到")
 
-        # 权限检查（非管理员只能删自己的文件，此处简单实现，后续可结合角色系统）
-        if owner_id and resource.owner and resource.owner != owner_id:
+        if owner_id is not None and resource.owner != owner_id:
             raise BadRequestException(message="无权操作此资源")
 
         # 逻辑删除
         resource.is_deleted = True
         await db.commit()
-
-        # 触发物理清理异步任务
-        if resource.url:
-            delete_oss_file_task.delay(resource.url)
-        if resource.thumb_url:
-            delete_oss_file_task.delay(resource.thumb_url)
 
         return True
 
@@ -245,11 +218,14 @@ class StorageService:
     async def get_resource(
         db: AsyncSession,
         resource_id: UUID,
+        owner_id: Optional[UUID] = None,
     ) -> ResourceResponse:
         """查询资源详情，拼接公网 URL"""
         resource = await StorageService.get_resource_response_or_none(db, resource_id)
 
         if not resource:
+            raise NotFoundException(message="资源不存在")
+        if owner_id is not None and resource.owner != owner_id:
             raise NotFoundException(message="资源不存在")
 
         return resource

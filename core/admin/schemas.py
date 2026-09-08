@@ -19,10 +19,10 @@ class AdminUserListItem(BaseModel):
     username: Optional[str] = None
     phone: Optional[str] = None
     openid: Optional[str] = None
-    source: str
-    is_active: bool
+    source: Optional[str] = "default"
+    is_active: Optional[bool] = True
     roles: List[RoleInfo] = []
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -38,12 +38,12 @@ class AdminUserDetail(BaseModel):
     phone: Optional[str] = None
     openid: Optional[str] = None
     unionid: Optional[str] = None
-    source: str
-    is_active: bool
-    is_superuser: bool
+    source: Optional[str] = "default"
+    is_active: Optional[bool] = True
+    is_superuser: Optional[bool] = False
     roles: List[RoleInfo] = []
-    created_at: datetime
-    updated_at: datetime
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

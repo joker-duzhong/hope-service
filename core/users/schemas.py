@@ -73,12 +73,12 @@ class UserResponse(UserBase):
     username: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
-    source: str
-    is_active: bool
-    is_superuser: bool
+    source: Optional[str] = "default"
+    is_active: Optional[bool] = True
+    is_superuser: Optional[bool] = False
     roles: List[RoleInfo] = []
-    created_at: datetime
-    updated_at: datetime
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -121,7 +121,6 @@ class RefreshRequest(BaseModel):
 
 class SendSmsRequest(BaseModel):
     phone: str = Field(..., max_length=20, description="手机号")
-    purpose: str = Field(..., description="用途: register, bind")
 
 class PhoneRegisterRequest(BaseModel):
     phone: str = Field(..., max_length=20, description="手机号")

@@ -5,14 +5,13 @@ from core.config import settings
 from core.exceptions import AppException
 
 try:
-    from qiniu import Auth, BucketManager, put_data
+    from qiniu import Auth, put_data
 except ImportError:  # pragma: no cover - optional dependency guard
     Auth = None
-    BucketManager = None
     put_data = None
 
 class QiniuClient:
-    """七牛云 OSS 客户端：直传 Token 生成与文件物理删除"""
+    """七牛云 OSS 客户端：直传 Token 生成与文件上传"""
 
     @staticmethod
     def get_auth() -> Auth:
@@ -56,17 +55,3 @@ class QiniuClient:
         if not ok:
             raise AppException(code=500, message=f"上传对象存储文件失败: {info}")
         return ret or {}
-
-    @classmethod
-    def delete_file_from_oss(cls, object_key: str) -> bool:
-        """
-        从七牛云物理删除文件
-        """
-        if not object_key or not settings.QINIU_BUCKET_NAME:
-            return False
-        if BucketManager is None:
-            raise AppException(code=500, message="缺少 qiniu 依赖，无法删除对象存储文件")
-        q = cls.get_auth()
-        bucket = BucketManager(q)
-        ret, info = bucket.delete(settings.QINIU_BUCKET_NAME, object_key)
-        return info.status_code == 200

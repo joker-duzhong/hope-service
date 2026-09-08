@@ -143,6 +143,30 @@ wt -p "Windows PowerShell" -d . uvicorn main:app --reload --port 8000 `; split-p
 | POSTGRES_PASSWORD | 数据库密码                                      | postgres  |
 | REDIS_HOST        | Redis 地址                                      | localhost |
 | WECHAT_APPS       | 微信公众号配置，格式: appid:secret:token:aeskey | (可选)    |
+| ALIYUN_SMS_SIGN_NAME | 号码认证服务可用的短信签名 | (短信必填) |
+| ALIYUN_SMS_TEMPLATE_CODE | 阿里云号码认证服务短信模板 Code | (必填) |
+
+### 号码认证短信
+
+短信使用阿里云 Dypnsapi，不再使用腾讯云或普通 Dysmsapi。短信模块只提供 send_sms_code(phone) 和 verify_sms_code(phone, code) 两个能力；发送四位数字验证码，有效期 300 秒，验证码仅保存在 Redis 会话中并在成功校验后一次性消费，不携带业务 purpose 参数。
+
+- 配置账户可用的签名和模板；示例模板 100001 需在实际账户中确认可用。
+- 凭据使用项目环境变量 ALIBABA_CLOUD_ACCESS_KEY_ID 和 ALIBABA_CLOUD_ACCESS_KEY_SECRET，不要把真实值提交到仓库；生产环境建议使用受限 RAM 用户的 AccessKey，并通过部署平台的 Secret/环境变量注入。
+- 每个手机号间隔 60 秒，滚动 24 小时最多 5 次发送尝试；每个会话最多 5 次校验尝试。拒绝或超时也保留冷却和已用配额，SDK 不自动重试发送。
+- Redis 不可用时拒绝发送或核验，不绕过限流。核验成功后原子消费本地会话；短信发送失败或过期后须重新申请，不保留旧短信服务的验证码兼容路径。
+- 升级前从部署环境中移除废弃的腾讯云短信变量，安装 requirements.txt 中的新依赖，再重启 API、Worker 和 Beat；只修改示例文件不会更新实际部署配置。
+
+### 资源删除与刷新令牌
+
+公共资源删除只把数据库记录的 is_deleted 设为 true，原图、缩略图和数据库记录都保留；软删除不等于撤销已经公开的 CDN 链接。旧删除任务在新 Worker 中为空操作，上线时必须先停止旧 Worker，避免旧进程继续执行物理删除。保留的文件仍占用存储空间。
+
+刷新接口先校验账户状态与 token_version，再通过 Redis Lua 原子写入新会话并消耗旧会话。旧 refresh token 严格一次性使用，不设 30 秒重试窗口；客户端应避免并发刷新。若刷新已成功但响应丢失，用户需重新登录。
+
+### 公共服务隔离回归测试
+
+安装依赖后运行以下命令。测试使用 FakeRedis（含 Lua）和 Mock 短信客户端，不发送短信、不连接实际 Redis 或数据库；--noconftest 跳过仓库本地的集成测试数据库初始化。
+
+    python -m pytest --noconftest -q tests/test_sms.py tests/test_security.py tests/test_exceptions.py tests/test_storage_soft_delete.py
 
 ## 新增业务模块
 

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import settings
 from core.database import get_db
 from core.response import ResponseModel
-from core.security import create_access_token, create_refresh_token, decode_token
+from core.security import create_token_pair, decode_token, rotate_refresh_token
 from core.users.dependencies import get_current_user
 from core.users.models import User
 from core.users.schemas import (
@@ -38,11 +38,11 @@ router = APIRouter(prefix="/auth", tags=["用户授权"])
 @router.post("/sms/send", response_model=ResponseModel)
 async def send_sms(req: SendSmsRequest):
     """发送短信验证码"""
-    success = await send_sms_code(req.phone, req.purpose)
+    success = await send_sms_code(req.phone)
     if not success:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="发送短信失败"
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="短信服务调用失败，请检查服务端日志中的阿里云错误信息",
         )
     return ResponseModel(msg="发送成功")
 
@@ -142,12 +142,8 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    return ResponseModel(
-        data=Token(
-            access_token=create_access_token(subject=user.id),
-            refresh_token=create_refresh_token(subject=user.id),
-        )
-    )
+    access_token, refresh_token = await create_token_pair(user.id, user.token_version)
+    return ResponseModel(data=Token(access_token=access_token, refresh_token=refresh_token))
 
 
 # ==================== 微信登录 ====================
@@ -228,15 +224,11 @@ async def wechat_login(
         pass
 
     user = await UserService.wechat_login(
-        db, openid=openid, unionid=unionid, nickname=nickname, avatar=avatar,
+        db, openid=openid, appid=login_data.appid, unionid=unionid, nickname=nickname, avatar=avatar,
     )
 
-    return ResponseModel(
-        data=Token(
-            access_token=create_access_token(subject=user.id),
-            refresh_token=create_refresh_token(subject=user.id),
-        )
-    )
+    access_token, refresh_token = await create_token_pair(user.id, user.token_version)
+    return ResponseModel(data=Token(access_token=access_token, refresh_token=refresh_token))
 
 
 # ==================== Token 管理 ====================
@@ -248,7 +240,7 @@ async def refresh_token(
 ):
     """刷新令牌"""
     payload = decode_token(body.refresh_token)
-    if not payload or payload.get("type") != "refresh":
+    if not payload or payload.get("type") != "refresh" or not payload.get("jti"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的刷新令牌"
         )
@@ -265,13 +257,18 @@ async def refresh_token(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已禁用"
         )
-
-    return ResponseModel(
-        data=Token(
-            access_token=create_access_token(subject=user.id),
-            refresh_token=create_refresh_token(subject=user.id),
+    if payload.get("token_version") != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="刷新令牌已失效"
         )
-    )
+
+    token_pair = await rotate_refresh_token(body.refresh_token, user.id, user.token_version)
+    if token_pair is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的刷新令牌"
+        )
+    access_token, refresh_token = token_pair
+    return ResponseModel(data=Token(access_token=access_token, refresh_token=refresh_token))
 
 
 # ==================== 用户信息 ====================

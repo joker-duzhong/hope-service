@@ -82,6 +82,8 @@ class AdminUserService:
     async def set_active(db: AsyncSession, user: User, is_active: bool) -> User:
         """冻结 / 解冻用户"""
         user.is_active = is_active
+        if not is_active:
+            user.token_version += 1
         await db.commit()
         await db.refresh(user)
         return user
@@ -100,6 +102,7 @@ class AdminUserService:
             new_roles = []
 
         user.roles = new_roles
+        user.token_version += 1
         await db.commit()
         await db.refresh(user)
         return user

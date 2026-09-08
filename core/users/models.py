@@ -2,10 +2,12 @@
 用户 ORM 表结构
 表名前缀: core_
 """
+import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Boolean, DateTime, Integer, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.associations import user_roles_table
@@ -46,6 +48,7 @@ class User(CoreModel):
     # 状态
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False)
+    token_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     # 来源标识
     source: Mapped[str] = mapped_column(String(50), default="default")
@@ -60,3 +63,21 @@ class User(CoreModel):
 
     def __repr__(self) -> str:
         return f"<User id={self.id} openid={self.openid}>"
+
+
+class UserIdentity(CoreModel):
+    """An external login identity, scoped to the provider application."""
+    __tablename__ = "core_user_identities"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_app_id", "subject", name="uq_user_identity_provider_subject"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("core_users.id"), index=True, nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, default="wechat")
+    provider_app_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject: Mapped[str] = mapped_column(String(128), nullable=False)
+    unionid: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    meta_data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)

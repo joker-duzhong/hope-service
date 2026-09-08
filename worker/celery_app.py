@@ -1,10 +1,15 @@
 """
 Celery 实例初始化与配置
 """
-from celery import Celery
+from importlib import import_module
 import platform
 
+from celery import Celery
+
+from core.apps_config import REGISTERED_APPS
 from core.config import settings
+
+settings.validate_runtime_security()
 
 celery_app = Celery(
     "hope_service",
@@ -26,48 +31,27 @@ celery_app.conf.update(
     worker_pool=pool_type,
     worker_prefetch_multiplier=1,
     worker_concurrency=1 if pool_type == "solo" else 4,
-    # 自动发现 apps 下所有 tasks.py
-    autodiscover_tasks=["apps"],
 )
 
 # Register Role before task modules import User and SQLAlchemy configures mappers.
 import core.roles.models  # noqa: E402, F401
 
-# 显式导入所有任务模块，确保 Celery 能发现它们
-try:
-    from apps.trade_copilot import tasks as trade_copilot_tasks
-except ImportError:
-    pass
+CORE_TASK_MODULES = ("core.storage.tasks",)
 
-try:
-    from apps.zaiwen_gaokao import tasks as zaiwen_gaokao_tasks
-except ImportError:
-    pass
 
-try:
-    from apps.nest_talk import tasks as nest_talk_tasks
-except ImportError:
-    pass
+def register_app_tasks() -> None:
+    """Import core tasks and task modules for active applications."""
+    for task_module in CORE_TASK_MODULES:
+        import_module(task_module)
 
-try:
-    from apps.shadow_board import tasks as shadow_board_tasks
-except ImportError:
-    pass
+    for app_config in REGISTERED_APPS.values():
+        if not app_config.is_active:
+            continue
+        for task_module in app_config.task_modules:
+            import_module(task_module)
 
-try:
-    from apps.aurakey import tasks as aurakey_tasks
-except ImportError:
-    pass
 
-try:
-    from apps.just_right import tasks as just_right_tasks
-except ImportError:
-    pass
-
-try:
-    from apps.typo_craft import tasks as typo_craft_tasks
-except ImportError:
-    pass
+register_app_tasks()
 
 # 导入 Beat 调度表配置，确保 celery_app.conf.beat_schedule 被填充
 # 必须在 celery_app 创建之后导入，避免循环引用

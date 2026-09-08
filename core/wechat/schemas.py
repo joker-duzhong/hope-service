@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Optional
 
 
 class WechatCodeToOpenidRequest(BaseModel):
@@ -24,5 +24,7 @@ class WechatJssdkConfigResponse(BaseModel):
 
 class WechatQRPollResponse(BaseModel):
     status: str
-    token: Optional[str] = None
-    userInfo: Optional[Dict[str, Any]] = None
+
+
+class WechatQRExchangeRequest(BaseModel):
+    scene_id: str = Field(..., description="扫码登录场景 ID")
