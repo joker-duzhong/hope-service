@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-10 Identity Link Database Diagnostics
+
+- 账号关联数据库异常新增 `Identity link database failure` 日志，记录操作阶段、重试次数、SQLAlchemy/驱动异常类型、经格式校验的 SQLSTATE 及本模块出错代码位置。
+- 阶段覆盖事务锁、身份/手机号用户/身份所属用户查询、账号创建与关联、事务提交及刷新；通过 ContextVar 隔离并发请求，在回滚前记录异常，并在每次尝试后恢复上下文。
+- 不记录异常文本、完整堆栈、SQL 语句或参数、手机号、OpenID、验证码及登录票据；保留已有事务、重试及客户端错误响应行为。本次为诊断改动，线上根因需部署后根据新日志确认。
+- 补充故障阶段、诊断脱敏、SQLSTATE 格式过滤、完整性冲突重试、回滚失败和并发阶段隔离测试。
+- 验证：身份登录与旧登录回归共 191 项通过，`git diff --check` 通过；使用模拟依赖及 `--noconftest`，未连接业务数据库、未发送真实短信或微信请求、未部署线上。
+- 文件：`core/users/identity_service.py`、`tests/test_identity_login.py`、`CHANGELOG.md`。
+
 ## 2026-09-09 SMS Test Flow Without Send Limits
 
 - `test: "hope"` 生成验证码时跳过发送冷却及每日配额检查，不占用或清除真实短信的限流记录；真实发送仍保留 60 秒冷却和 24 小时 5 次上限。

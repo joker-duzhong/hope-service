@@ -1,5 +1,8 @@
 import hashlib
+import logging
+import re
 import secrets
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
@@ -25,6 +28,27 @@ from core.users.services import UserService
 from core.wechat.services import WeChatService
 
 TICKET_TTL_SECONDS = 600
+logger = logging.getLogger(__name__)
+_identity_link_stage: ContextVar[str] = ContextVar("identity_link_stage", default="unknown")
+
+
+def _log_link_database_error(error: SQLAlchemyError, attempt: int) -> None:
+    original = getattr(error, "orig", None)
+    sqlstate = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+    if not isinstance(sqlstate, str) or not re.fullmatch(r"[A-Z0-9]{5}", sqlstate):
+        sqlstate = "unknown"
+    source = "unknown"
+    traceback = error.__traceback__
+    while traceback is not None:
+        if traceback.tb_frame.f_globals.get("__name__") == __name__:
+            source = f"identity_service.py:{traceback.tb_lineno}:{traceback.tb_frame.f_code.co_name}"
+        traceback = traceback.tb_next
+    # SQLAlchemy 异常文本、完整堆栈及局部变量可能包含 SQL 参数或凭据。
+    logger.error(
+        "Identity link database failure stage=%s attempt=%s error=%s driver_error=%s sqlstate=%s source=%s",
+        _identity_link_stage.get(), attempt, type(error).__name__,
+        type(original).__name__ if original is not None else "unknown", sqlstate, source,
+    )
 
 
 async def _redis(method: str, *args, **kwargs):
@@ -143,15 +167,18 @@ async def _consume_ticket(ticket: str, raw: str) -> None:
 
 
 async def _link_once(db: AsyncSession, stored: StoredIdentity, phone: str) -> User:
+    _identity_link_stage.set("acquire_lock")
     lock_names = sorted([f"phone:{phone}", f"wechat:{stored.appid}:{stored.openid}"])
     for name in lock_names:
         lock_id = int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big", signed=True)
         await db.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": lock_id})
+    _identity_link_stage.set("query_identity")
     result = await db.execute(select(UserIdentity).where(
         UserIdentity.provider == "wechat", UserIdentity.provider_app_id == stored.appid,
         UserIdentity.subject == stored.openid,
     ).with_for_update())
     identity = result.scalar_one_or_none()
+    _identity_link_stage.set("query_phone_user")
     result = await db.execute(select(User).where(User.phone == phone).with_for_update())
     phone_user = result.scalar_one_or_none()
     if phone_user is not None:
@@ -159,6 +186,7 @@ async def _link_once(db: AsyncSession, stored: StoredIdentity, phone: str) -> Us
     if identity is not None:
         if identity.is_deleted:
             raise HTTPException(403, "该微信身份已停用")
+        _identity_link_stage.set("query_identity_user")
         result = await db.execute(select(User).where(User.id == identity.user_id).with_for_update())
         user = result.scalar_one_or_none()
         if user is None:
@@ -172,6 +200,7 @@ async def _link_once(db: AsyncSession, stored: StoredIdentity, phone: str) -> Us
             raise HTTPException(409, "账号状态已改变，请重新验证微信身份")
         if phone_user is not None and phone_user.id != user.id:
             raise HTTPException(409, "历史微信账号与手机号账号不同，请联系管理员处理；不会自动合并数据")
+        _identity_link_stage.set("update_identity")
         user.phone = phone
         identity.verified_at = datetime.now(timezone.utc)
         return user
@@ -179,9 +208,11 @@ async def _link_once(db: AsyncSession, stored: StoredIdentity, phone: str) -> Us
         raise HTTPException(409, "原微信身份已改变，请重新登录")
     user = phone_user
     if user is None:
+        _identity_link_stage.set("create_user")
         user = User(phone=phone, nickname="Hope 用户", source="wechat", roles=[])
         db.add(user)
         await db.flush()
+    _identity_link_stage.set("attach_identity")
     db.add(UserIdentity(
         user_id=user.id, provider="wechat", provider_app_id=stored.appid,
         subject=stored.openid, unionid=stored.unionid, verified_at=datetime.now(timezone.utc),
@@ -191,25 +222,33 @@ async def _link_once(db: AsyncSession, stored: StoredIdentity, phone: str) -> Us
 
 async def link_identity(db: AsyncSession, stored: StoredIdentity, phone: str) -> User:
     for attempt in range(2):
+        stage_token = _identity_link_stage.set("link_identity")
         try:
             user = await _link_once(db, stored, phone)
+            _identity_link_stage.set("validate_scope")
             validate_scope(stored.app_scope, user)
+            _identity_link_stage.set("commit")
             await db.commit()
+            _identity_link_stage.set("refresh")
             await db.refresh(user)
             return user
-        except IntegrityError:
+        except IntegrityError as error:
+            _log_link_database_error(error, attempt + 1)
             await db.rollback()
             if attempt:
                 raise HTTPException(409, "身份关联发生并发冲突，请重新登录确认结果") from None
         except HTTPException:
             await db.rollback()
             raise
-        except SQLAlchemyError:
+        except SQLAlchemyError as error:
+            _log_link_database_error(error, attempt + 1)
             await db.rollback()
             raise HTTPException(503, "账号关联暂未完成，请重新获取微信 code 并验证手机号") from None
         except Exception:
             await db.rollback()
             raise
+        finally:
+            _identity_link_stage.reset(stage_token)
     raise HTTPException(409, "身份关联未完成")
 
 

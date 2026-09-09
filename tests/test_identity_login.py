@@ -9,7 +9,7 @@ from fakeredis.aioredis import FakeRedis
 from fastapi import Depends, FastAPI, HTTPException, Request
 from httpx import ASGITransport, AsyncClient
 from redis.exceptions import ConnectionError as RedisConnectionError
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import core.roles.models
@@ -211,6 +211,110 @@ async def test_unique_race_retries_after_rollback(store, database, monkeypatch):
     assert await service.link_identity(database, stored_identity(), winner.phone) is winner
     database.rollback.assert_awaited_once()
     database.commit.assert_awaited_once()
+
+
+@pytest.mark.parametrize("stage,execute_count,method", [
+    ("acquire_lock", 0, "execute"),
+    ("query_identity", 2, "execute"),
+    ("query_phone_user", 3, "execute"),
+    ("query_identity_user", 4, "execute"),
+    ("create_user", None, "flush"),
+    ("attach_identity", None, "add"),
+    ("commit", None, "commit"),
+    ("refresh", None, "refresh"),
+])
+async def test_link_database_failure_logs_stage_without_sensitive_details(store, database, caplog, stage, execute_count, method):
+    original = RuntimeError("private-driver-message")
+    original.sqlstate = "42703"
+    failure = OperationalError(
+        "private-sql-statement", {"phone": "13800138000", "code": "private-code", "ticket": "private-ticket"}, original,
+    )
+    if method == "execute":
+        results = [result_for(None) for _ in range(execute_count)]
+        if stage == "query_identity_user":
+            results[2] = result_for(SimpleNamespace(user_id=uuid4(), is_deleted=False))
+        database.execute.side_effect = [*results, failure]
+    elif method == "add":
+        def fail_on_identity(value):
+            if isinstance(value, UserIdentity):
+                raise failure
+
+        database.add.side_effect = fail_on_identity
+    else:
+        getattr(database, method).side_effect = failure
+    with pytest.raises(HTTPException) as error:
+        await service.link_identity(database, stored_identity(), "13800138000")
+    assert error.value.status_code == 503
+    assert error.value.detail == "账号关联暂未完成，请重新获取微信 code 并验证手机号"
+    database.rollback.assert_awaited_once()
+    records = [record for record in caplog.records if record.name == service.__name__]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert f"stage={stage} attempt=1" in message
+    assert "error=OperationalError driver_error=RuntimeError sqlstate=42703" in message
+    assert "source=identity_service.py:" in message
+    assert records[0].exc_info is None
+    assert records[0].stack_info is None
+    for marker in ("private-driver-message", "private-sql-statement", "13800138000", "private-code", "private-ticket", "verified-openid"):
+        assert marker not in caplog.text
+    assert service._identity_link_stage.get() == "unknown"
+
+
+@pytest.mark.parametrize("attribute,value,expected", [
+    ("sqlstate", "08006", "08006"), ("pgcode", "23505", "23505"),
+    ("sqlstate", "private-sqlstate\nforged-log", "unknown"),
+])
+async def test_link_error_sqlstate_is_validated(store, database, monkeypatch, caplog, attribute, value, expected):
+    original = RuntimeError("private-driver-message")
+    setattr(original, attribute, value)
+    monkeypatch.setattr(service, "_link_once", AsyncMock(side_effect=OperationalError(None, None, original)))
+    with pytest.raises(HTTPException):
+        await service.link_identity(database, stored_identity(), "13800138000")
+    assert f"sqlstate={expected}" in caplog.text
+    assert "private-" not in caplog.text
+    assert "forged-log" not in caplog.text
+
+
+async def test_link_integrity_retry_logs_both_attempts(store, database, monkeypatch, caplog):
+    failure = IntegrityError(None, {"phone": "13800138000"}, RuntimeError("private-integrity-message"))
+    monkeypatch.setattr(service, "_link_once", AsyncMock(side_effect=failure))
+    with pytest.raises(HTTPException) as error:
+        await service.link_identity(database, stored_identity(), "13800138000")
+    assert error.value.status_code == 409
+    assert database.rollback.await_count == 2
+    assert "attempt=1 error=IntegrityError" in caplog.text
+    assert "attempt=2 error=IntegrityError" in caplog.text
+    assert "private-integrity-message" not in caplog.text
+    assert "13800138000" not in caplog.text
+    assert service._identity_link_stage.get() == "unknown"
+
+
+async def test_link_error_logged_before_rollback_failure(store, database, monkeypatch, caplog):
+    monkeypatch.setattr(service, "_link_once", AsyncMock(side_effect=SQLAlchemyError("private-original-error")))
+    database.rollback.side_effect = SQLAlchemyError("private-rollback-error")
+    with pytest.raises(SQLAlchemyError):
+        await service.link_identity(database, stored_identity(), "13800138000")
+    assert "error=SQLAlchemyError driver_error=unknown sqlstate=unknown" in caplog.text
+    assert "private-" not in caplog.text
+    assert service._identity_link_stage.get() == "unknown"
+
+
+async def test_concurrent_link_diagnostics_keep_separate_stages(store, monkeypatch, caplog):
+    async def fail_at_stage(db, stored, phone):
+        service._identity_link_stage.set("query_phone_user" if phone.endswith("0") else "commit")
+        await asyncio.sleep(0)
+        raise SQLAlchemyError("private-message")
+
+    monkeypatch.setattr(service, "_link_once", fail_at_stage)
+    results = await asyncio.gather(*(
+        service.link_identity(AsyncMock(spec=AsyncSession), stored_identity(), phone)
+        for phone in ("13800138000", "13800138001")
+    ), return_exceptions=True)
+    assert all(isinstance(result, HTTPException) and result.status_code == 503 for result in results)
+    assert "stage=query_phone_user" in caplog.text
+    assert "stage=commit" in caplog.text
+    assert "private-message" not in caplog.text
+    assert service._identity_link_stage.get() == "unknown"
 
 
 async def test_bad_sms_preserves_ticket_and_never_links(store, database, exchange, lookup, monkeypatch):
