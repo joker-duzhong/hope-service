@@ -9,8 +9,7 @@ from typing import Any, Dict, Optional
 from fastapi import HTTPException
 from core.redis_client import redis_client
 from core.config import settings
-from core.database import async_session_maker
-from core.users.services import UserService
+from core.sms import normalize_phone
 
 WECHAT_API_BASE_URL = "https://api.weixin.qq.com/cgi-bin"
 WECHAT_SNS_BASE_URL = "https://api.weixin.qq.com/sns"
@@ -85,6 +84,34 @@ class WeChatService:
             data = resp.json()
 
         return WeChatService._build_openid_response(data, "微信网页授权失败")
+
+    @staticmethod
+    async def exchange_phone_code(appid: str, code: str) -> str:
+        secret = WeChatService._get_secret(appid, "小程序")
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(f"{WECHAT_API_BASE_URL}/token", params={
+                    "grant_type": "client_credential", "appid": appid, "secret": secret,
+                })
+                response.raise_for_status()
+                token_data = response.json()
+                access_token = token_data.get("access_token")
+                if not isinstance(access_token, str) or not access_token:
+                    raise HTTPException(502, "微信手机号服务暂不可用，请重新登录")
+                response = await client.post(
+                    "https://api.weixin.qq.com/wxa/business/getuserphonenumber",
+                    params={"access_token": access_token}, json={"code": code},
+                )
+                response.raise_for_status()
+                data = response.json()
+                if data.get("errcode") != 0:
+                    raise HTTPException(400, "手机号授权已失效，请重新登录并授权手机号")
+                info = data.get("phone_info", {})
+                if str(info.get("countryCode")) != "86":
+                    raise HTTPException(400, "当前仅支持中国大陆手机号")
+                return normalize_phone(info.get("purePhoneNumber") or info.get("phoneNumber"))
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+            raise HTTPException(502, "微信手机号验证失败，请重新登录后重试") from None
 
     @staticmethod
     async def get_jsapi_ticket(appid: str) -> str:
@@ -235,61 +262,8 @@ class WeChatService:
 
     @staticmethod
     async def process_scan_event(appid: str, scene_id: str, openid: str, event_type: str = "SCAN"):
-        print(f"[process_scan_event] Starting - appid: {appid}, scene_id: {scene_id}, openid: {openid}, event_type: {event_type}")
-
-        try:
-            redis_key = f"wechat_scan:{scene_id}"
-            scan_data = await redis_client.get(redis_key)
-            if not scan_data:
-                print(f"[process_scan_event] Expired scene_id: {scene_id}")
-                return
-            scan_state = json.loads(scan_data)
-
-            async with async_session_maker() as db:
-                print(f"[process_scan_event] Getting user by openid: {openid}")
-                user = await UserService.get_by_wechat_identity(db, appid, openid)
-                is_new_user = False
-
-                if not user:
-                    print(f"[process_scan_event] User not found, creating new user")
-                    is_new_user = True
-                    user = await UserService.create_by_wechat(
-                        db,
-                        openid=openid,
-                        appid=appid,
-                        source="wechat_scan"
-                    )
-                    print(f"[process_scan_event] New user created with id: {user.id}")
-                else:
-                    print(f"[process_scan_event] Existing user found with id: {user.id}")
-
-            cache_data = {
-                "status": "SUCCESS",
-                "browser_token": scan_state["browser_token"],
-                "user_id": str(user.id),
-            }
-
-            print(f"[process_scan_event] Setting Redis key: {redis_key}")
-            await redis_client.set(redis_key, json.dumps(cache_data), ex=300)
-            print(f"[process_scan_event] Redis key set successfully")
-
-            # Verify Redis write
-            verify_data = await redis_client.get(redis_key)
-            if verify_data:
-                print(f"[process_scan_event] Redis verification successful: {verify_data[:100]}...")
-            else:
-                print(f"[process_scan_event] WARNING: Redis verification failed - key not found!")
-
-            # Send greeting message via WeChat Customer Service API
-            message = "✅ 注册并登录成功，欢迎来到 Hope Service！" if is_new_user else "✅ 登录成功，欢迎回来！"
-            await WeChatService.send_customer_message(appid, openid, message)
-            print(f"[process_scan_event] Process completed successfully")
-
-        except Exception as e:
-            print(f"[process_scan_event] ERROR: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
+        """旧公众号事件只作回调应答，不创建账号或改变登录状态。"""
+        return None
 
     @staticmethod
     async def consume_scan_login(scene_id: str, browser_token: str) -> uuid.UUID:

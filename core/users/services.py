@@ -15,6 +15,7 @@ from core.sms import normalize_phone, verify_sms_code
 from core.storage.services import StorageService
 from core.users.models import User, UserIdentity
 from core.users.schemas import LoginResponse, UserAvatarResponse, UserResponse
+from core.auth_scope import PASSPORT_SCOPE, validate_scope
 
 class UserService:
     """用户服务：CRUD 与认证逻辑"""
@@ -157,12 +158,15 @@ class UserService:
         return user
 
     @staticmethod
-    async def build_login_response(db: AsyncSession, user: User) -> LoginResponse:
+    async def build_login_response(db: AsyncSession, user: User, app_scope: str = PASSPORT_SCOPE) -> LoginResponse:
         UserService.ensure_login_allowed(user)
-        profile = await UserService.build_user_response(db, user)
-        access_token, refresh_token = await create_token_pair(user.id, user.token_version)
+        validate_scope(app_scope, user)
+        if not user.phone and not (app_scope == "admin_web" and user.is_superuser):
+            raise BadRequestException(message="请通过两阶段身份登录接口验证手机号")
+        profile = await UserService.build_scoped_user_response(db, user, app_scope)
+        access_token, refresh_token = await create_token_pair(user.id, user.token_version, app_scope)
         return LoginResponse(
-            access_token=access_token, refresh_token=refresh_token, user=profile,
+            access_token=access_token, refresh_token=refresh_token, user=profile, app_scope=app_scope,
         )
 
     # ==================== 认证 ====================
@@ -209,24 +213,13 @@ class UserService:
         nickname: Optional[str] = None,
         avatar: Optional[str] = None,
     ) -> User:
-        """按应用内微信身份登录或创建账号，不自动合并其他身份。"""
+        """Legacy login only accepts an already linked account with a verified phone."""
         if not appid or not openid:
             raise BadRequestException(message="微信登录身份无效")
         user = await UserService._get_wechat_login_user(db, appid, openid)
-        if user is not None:
+        if user is not None and user.phone:
             return user
-        try:
-            user = await UserService.create_by_wechat(
-                db, openid=openid, appid=appid, unionid=unionid,
-                nickname=nickname, avatar=avatar,
-            )
-        except IntegrityError:
-            await db.rollback()
-            user = await UserService._get_wechat_login_user(db, appid, openid)
-            if user is None:
-                raise
-        UserService.ensure_login_allowed(user)
-        return user
+        raise BadRequestException(message="该身份尚未完成手机号验证，请使用 /auth/identity 两阶段登录")
 
     @staticmethod
     async def get_wechat_openid(
@@ -240,7 +233,10 @@ class UserService:
                 UserIdentity.is_deleted == False,
             )
         )
-        return result.scalar_one_or_none()
+        subjects = result.scalars().all()
+        if len(subjects) > 1:
+            raise BadRequestException(message="当前应用关联了多个微信身份，请通过新的微信验证明确操作身份")
+        return subjects[0] if subjects else None
 
     @staticmethod
     async def revoke_tokens(db: AsyncSession, user: User) -> None:
@@ -308,6 +304,14 @@ class UserService:
     async def build_user_response(db: AsyncSession, user: User) -> UserResponse:
         data = UserResponse.model_validate(user)
         data.avatar = await UserService.resolve_avatar(db, user.avatar)
+        return data
+
+    @staticmethod
+    async def build_scoped_user_response(db: AsyncSession, user: User, app_scope: str) -> UserResponse:
+        data = await UserService.build_user_response(db, user)
+        data.openid = None
+        active_role_ids = {role.id for role in user.roles if role.is_active and not role.is_deleted}
+        data.roles = [role for role in data.roles if role.scope == app_scope and role.id in active_role_ids]
         return data
 
     @staticmethod

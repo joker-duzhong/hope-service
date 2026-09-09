@@ -2,7 +2,7 @@
 微信小程序登录路由
 """
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
@@ -13,16 +13,18 @@ from core.users.models import User
 from core.users.schemas import LoginResponse, UserResponse
 from core.users.miniapp_schemas import MiniappLoginRequest, MiniappPhoneRequest
 from core.users.services import UserService
+from core.users.identity_service import resolve_identity_scope
 
 router = APIRouter(prefix="/auth/miniapp", tags=["小程序登录"])
 
 
-@router.post("/login", response_model=ResponseModel[LoginResponse])
+@router.post("/login", response_model=ResponseModel[LoginResponse], deprecated=True)
 async def miniapp_login(
     req: MiniappLoginRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """小程序登录（使用 wx.login 获取的 code）"""
+    app_scope = resolve_identity_scope("miniapp", req.appid)
     wx_config = settings.get_wechat_config(req.appid)
     if not wx_config or not wx_config.get("secret"):
         raise HTTPException(
@@ -58,7 +60,6 @@ async def miniapp_login(
             detail="获取 openid 失败",
         )
 
-    # 复用公众号登录逻辑，自动注册或登录
     user = await UserService.wechat_login(
         db,
         openid=openid,
@@ -68,16 +69,20 @@ async def miniapp_login(
         avatar=None,
     )
 
-    return ResponseModel(data=await UserService.build_login_response(db, user))
+    return ResponseModel(data=await UserService.build_login_response(db, user, app_scope))
 
 
-@router.post("/phone", response_model=ResponseModel[UserResponse])
+@router.post("/phone", response_model=ResponseModel[UserResponse], deprecated=True)
 async def miniapp_get_phone(
     req: MiniappPhoneRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取并绑定手机号（使用 getPhoneNumber 返回的 code）"""
+    app_scope = resolve_identity_scope("miniapp", req.appid)
+    if request.state.auth_scope != app_scope:
+        raise HTTPException(403, "当前凭据不适用于该小程序")
     wx_config = settings.get_wechat_config(req.appid)
     if not wx_config or not wx_config.get("secret"):
         raise HTTPException(
@@ -130,4 +135,4 @@ async def miniapp_get_phone(
 
     current_user = await UserService.bind_verified_phone(db, current_user, phone)
 
-    return ResponseModel(data=await UserService.build_user_response(db, current_user))
+    return ResponseModel(data=await UserService.build_scoped_user_response(db, current_user, app_scope))

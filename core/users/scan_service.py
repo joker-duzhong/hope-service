@@ -226,7 +226,7 @@ async def exchange_session(
     _check_user(user, session.app_key)
     if session.token_version != user.token_version:
         raise HTTPException(401, "授权登录已失效，请重新扫码")
-    profile = await UserService.build_user_response(db, user)
+    profile = await UserService.build_scoped_user_response(db, user, session.app_key)
     if session.expires_at <= datetime.now(timezone.utc):
         raise HTTPException(410, "二维码已过期，请重新生成")
     session.status = ScanStatus.CONSUMED
@@ -234,8 +234,8 @@ async def exchange_session(
     if not await _replace(raw, session):
         raise HTTPException(409, "扫码兑换码已被使用或过期，请重新查询")
     try:
-        access_token, refresh_token = await create_token_pair(user.id, user.token_version)
+        access_token, refresh_token = await create_token_pair(user.id, user.token_version, session.app_key)
     except RedisError:
         logger.warning("Scan login token issuance failed")
         raise HTTPException(503, "签发登录凭据失败，请重新扫码") from None
-    return LoginResponse(access_token=access_token, refresh_token=refresh_token, user=profile)
+    return LoginResponse(access_token=access_token, refresh_token=refresh_token, user=profile, app_scope=session.app_key)

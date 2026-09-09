@@ -8,12 +8,12 @@ from uuid import uuid4
 
 import pytest
 from fakeredis.aioredis import FakeRedis
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from httpx import ASGITransport, AsyncClient
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import security
+from core import auth_scope, security
 from core.apps_config import AppConfig
 from core.database import get_db
 from core.exceptions import ForbiddenException, register_exception_handlers
@@ -44,6 +44,7 @@ async def store(monkeypatch):
         "disabled_app": AppConfig(key="disabled_app", name="已停用", created_at="2026-09-08", is_active=False),
         "admin_web": AppConfig(key="admin_web", name="管理后台", created_at="2026-09-08"),
     })
+    monkeypatch.setattr(auth_scope, "REGISTERED_APPS", scan_service.REGISTERED_APPS)
     yield redis
     await redis.aclose()
 
@@ -217,7 +218,7 @@ async def test_exchange_consumes_once_and_issues_tokens_only_once(store, user, d
     response = await scan_service.exchange_session(created.transaction_id, code, created.poll_token, database)
     assert response.access_token == "test-access"
     assert response.user.id == user.id
-    token_factory.assert_awaited_once_with(user.id, user.token_version)
+    token_factory.assert_awaited_once_with(user.id, user.token_version, "test_app")
     poll = await scan_service.poll_session(created.transaction_id, created.poll_token)
     assert poll.status == ScanStatus.CONSUMED
     assert poll.exchange_code is None
@@ -389,7 +390,10 @@ async def api(store, database, token_factory):
 
 async def test_http_full_scan_login_flow(api, user, monkeypatch, store):
     app, client = api
-    app.dependency_overrides[get_current_user] = lambda: user
+    async def authenticated(request: Request):
+        request.state.auth_scope = "passport"
+        return user
+    app.dependency_overrides[get_current_user] = authenticated
     monkeypatch.setattr(security, "redis_client", store)
     monkeypatch.setattr(scan_service, "create_token_pair", security.create_token_pair)
     response = await client.get("/api/v1/auth/scan/apps")
@@ -420,6 +424,8 @@ async def test_http_full_scan_login_flow(api, user, monkeypatch, store):
     assert login["user"]["id"] == str(user.id)
     assert login["user"]["needs_phone_binding"] is False
     assert security.decode_token(login["access_token"])["sub"] == str(user.id)
+    assert security.decode_token(login["access_token"])["app_scope"] == "test_app"
+    assert login["app_scope"] == "test_app"
     refresh_id = security.decode_token(login["refresh_token"])["jti"]
     assert await store.exists(f"auth:refresh:{refresh_id}") == 1
     assert (await client.get(base, headers=headers)).json()["data"]["status"] == "CONSUMED"

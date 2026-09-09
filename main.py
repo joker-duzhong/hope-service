@@ -77,6 +77,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["Retry-After"],
     )
 
     # 全局异常处理
@@ -88,9 +89,11 @@ def create_app() -> FastAPI:
 
     from core.users.scan_router import router as scan_router
     app.include_router(scan_router, prefix=settings.API_V1_PREFIX)
+    from core.users.identity_router import router as identity_router
+    app.include_router(identity_router, prefix=settings.API_V1_PREFIX)
 
     # Core: 管理后台
-    app.include_router(admin_router, prefix=settings.API_V1_PREFIX, tags=["管理后台"])
+    app.include_router(admin_router, prefix=settings.API_V1_PREFIX, tags=["管理后台"], dependencies=[Depends(bind_app_key("admin_web"))])
 
     # Core: 资源存储
     from core.storage.router import router as storage_router

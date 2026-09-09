@@ -2,10 +2,11 @@
 用户授权路由 —— 仅解析请求，调用 service
 """
 import urllib.parse
+from typing import Literal
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
@@ -29,6 +30,8 @@ from core.users.schemas import (
 )
 from core.users.services import UserService
 from core.sms import send_sms_code
+from core.auth_scope import PASSPORT_SCOPE, validate_scope
+from core.users.identity_service import resolve_identity_scope, validate_oauth_target
 
 router = APIRouter(prefix="/auth", tags=["用户授权"])
 
@@ -52,13 +55,16 @@ async def phone_login(
     db: AsyncSession = Depends(get_db),
 ):
     """手机号验证码登录，未注册自动创建账号。"""
+    scope = req.app_key or PASSPORT_SCOPE
+    validate_scope(scope)
     user = await UserService.login_with_phone(db, req.phone, req.code)
-    return ResponseModel(data=await UserService.build_login_response(db, user))
+    return ResponseModel(data=await UserService.build_login_response(db, user, scope))
 
 
-@router.post("/phone/bind", response_model=ResponseModel[UserResponse])
+@router.post("/phone/bind", response_model=ResponseModel[UserResponse], deprecated=True)
 async def phone_bind(
     req: BindPhoneRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -73,7 +79,7 @@ async def phone_bind(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="验证码错误或手机号已被绑定"
         )
-    return ResponseModel(data=await UserService.build_user_response(db, user))
+    return ResponseModel(data=await UserService.build_scoped_user_response(db, user, request.state.auth_scope))
 
 
 # ==================== 登录 ====================
@@ -92,7 +98,7 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    return ResponseModel(data=await UserService.build_login_response(db, user))
+    return ResponseModel(data=await UserService.build_login_response(db, user, "admin_web"))
 
 
 # ==================== 微信登录 ====================
@@ -102,9 +108,10 @@ async def get_wechat_auth_url(
     redirect_uri: str,
     appid: str,
     state: str = "",
-    scope: str = "snsapi_userinfo",
+    scope: Literal["snsapi_base", "snsapi_userinfo"] = "snsapi_base",
 ):
     """获取微信授权页面URL"""
+    validate_oauth_target(appid, redirect_uri)
     if not settings.get_wechat_config(appid):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -121,12 +128,13 @@ async def get_wechat_auth_url(
     return ResponseModel(data=WechatAuthUrl(auth_url=auth_url))
 
 
-@router.post("/wechat/login", response_model=ResponseModel[LoginResponse])
+@router.post("/wechat/login", response_model=ResponseModel[LoginResponse], deprecated=True)
 async def wechat_login(
     login_data: WechatLogin,
     db: AsyncSession = Depends(get_db),
 ):
     """微信授权登录"""
+    resolve_identity_scope("h5", login_data.appid)
     wx_config = settings.get_wechat_config(login_data.appid)
     if not wx_config or not wx_config.get("secret"):
         raise HTTPException(
@@ -205,6 +213,12 @@ async def refresh_token(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已禁用"
         )
+    scope = payload.get("app_scope")
+    if not isinstance(scope, str) or not scope:
+        raise HTTPException(401, "登录版本已更新，请重新登录")
+    validate_scope(scope, user)
+    if not getattr(user, "phone", None) and not (scope == "admin_web" and user.is_superuser):
+        raise HTTPException(401, "请重新完成手机号验证")
     if payload.get("token_version") != user.token_version:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="刷新令牌已失效"
@@ -223,16 +237,18 @@ async def refresh_token(
 
 @router.get("/me", response_model=ResponseModel[UserResponse])
 async def get_me(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取当前用户信息"""
-    return ResponseModel(data=await UserService.build_user_response(db, current_user))
+    return ResponseModel(data=await UserService.build_scoped_user_response(db, current_user, request.state.auth_scope))
 
 
 @router.put("/me", response_model=ResponseModel[UserResponse])
 async def update_me(
     body: UserUpdate,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -245,4 +261,4 @@ async def update_me(
         nickname=body.nickname,
         avatar=body.avatar,
     )
-    return ResponseModel(data=await UserService.build_user_response(db, user))
+    return ResponseModel(data=await UserService.build_scoped_user_response(db, user, request.state.auth_scope))

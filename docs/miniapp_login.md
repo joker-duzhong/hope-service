@@ -1,5 +1,7 @@
 # 微信小程序登录接入文档
 
+> 2026-09-09：下方为旧版接入记录，不再适用于新用户。请以 [两阶段身份登录](identity-login-api.md) 为准：新 `wx.login()` code 调用 `/auth/identity/miniapp`，`PHONE_REQUIRED` 时用临时票据验证手机号，之后才创建/关联用户并签发业务范围 Token。旧 `/auth/miniapp/login` 不再自动创建无手机号用户，旧 `/phone` 绑定流程废弃。发布时需配置 `MINIAPP_APP_SCOPES` 并更新小程序客户端；不能仅保存 OpenID 后直接换取登录态。
+
 ## 一、配置说明
 
 ### 1. WECHAT_APPS 配置格式

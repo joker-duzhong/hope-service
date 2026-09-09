@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-09-09 Optional Passport Allowlists
+
+- `PASSPORT_WECHAT_APP_IDS`、`PASSPORT_CALLBACK_ORIGINS` 未配置或为 `[]` 时放行对应的 AppID、回调源检查；非空时继续执行白名单限制。
+- 保留 `WECHAT_APPS` 配置要求、公众号/小程序渠道隔离、小程序业务映射、HTTP 环境限制和固定回调路径等校验；显式拒绝缺少主机名的回调 URL。
+- 增加空白名单放行、非空白名单拦截、渠道冲突和回调地址边界回归测试，并同步部署文档。
+- 验证：身份登录与旧登录回归共 137 项通过；使用模拟依赖及不可用的本地数据库端口，未连接业务数据库或发送真实微信请求。
+- 文件：`core/users/identity_service.py`、`tests/test_identity_login.py`、`docs/identity-login-api.md`、`CHANGELOG.md`。
+
+## 2026-09-09 Local HTTP OAuth Callback
+
+- 仅 ENVIRONMENT 为 development/dev/local 时允许白名单内 HTTP 回调，源地址、端口、固定回调路径和 URL 凭据/fragment 校验保持不变。
+- production/prod、预发布、空值及未知环境仍要求 HTTPS；DEBUG 或客户端 env=local 不能放开正式后端限制。不修改真实公众号或环境配置。
+- 新增 16 项环境/回调边界用例，与身份、扫码、刷新回归合计 123 项通过；配套前端 6 组隔离浏览器场景通过。未操作真实业务数据库或发送微信请求。
+- 文件：`core/users/identity_service.py`、`tests/test_identity_login.py`、`docs/identity-login-api.md`、`CHANGELOG.md`。
+- 最终扩大回归：身份、旧登录、扫码、刷新及 OpenID 契约共 174 项通过；配套前端类型检查及生产构建通过。
+
+## 2026-09-09 Unified Identity Login
+
+- 新增公众号/小程序两阶段身份 API：微信 code 只建立临时验证票据；手机号证明完成前不创建正式用户、不签发 Token。新身份可关联同手机号已有用户，历史正式账号归属冲突不自动合并。
+- 用户及身份通过 PostgreSQL 事务锁、行锁和唯一约束关联；Redis 票据及 code 防重。补齐票据过期、并发唯一冲突、签发失败和结果丢失后的重新验证路径。
+- Access/Refresh Token 与刷新会话绑定 app_scope；业务路由拒绝跨应用凭据，扫码确认只接收 Passport Token，PC 兑换范围取可信事务。返回当前范围有效角色并隐藏跨应用 OpenID；同应用多微信身份不任选付款身份。
+- 公众号登录和小程序 AppID 渠道分开登记，增加 HTTPS 回调源白名单；小程序手机号由后端按票据 AppID 兑换，不信任客户端提交的 OpenID/手机号作为证明。
+- 废弃旧无手机号 Token 登录/绑定流程。旧公众号事件扫码创建、查询、兑换入口返回 410，SCAN/subscribe 不再直接创建用户或变更登录态，消除绕过两阶段验证的旧路径。
+- 发布存在破坏性变化：无 app_scope 的旧 Token 拒绝；PC 手机号直登必须传 app_key，小程序须迁移新接口并配置映射。业务资料仍由各应用既有初始化机制管理，不新增用户副本、不授予角色、不自动搬迁历史资产。
+- 验证：245 项测试通过（含已有 Teacher Logbook 43 项）；5 项真实 PostgreSQL 15 测试覆盖同手机号八路并发、同身份并发、不同手机竞争、已有用户角色保留及历史冲突回滚。其余认证、短信、Redis CAS、异常和 HTTP 契约使用隔离替身。未连接现有业务库、未发送真实微信/SMS 请求；不执行生产迁移。现有 Pydantic/Starlette 弃用警告未作无关修复。
+- 配套 H5 类型检查、生产构建和 9 组模拟浏览器流程通过；真机微信、线上域名、SMS、各业务前端迁移仍需部署方联调。
+
+### Files
+
+- 新增：`core/auth_scope.py`、`core/users/identity_schemas.py`、`core/users/identity_service.py`、`core/users/identity_router.py`。
+- 修改：`core/config.py`、`core/dependencies.py`、`core/security.py`、`core/users/dependencies.py`、`core/users/schemas.py`、`core/users/services.py`。
+- 修改：`core/users/router.py`、`core/users/miniapp_router.py`、`core/users/scan_router.py`、`core/users/scan_service.py`、`core/wechat/router.py`、`core/wechat/services.py`、`main.py`。
+- 测试：新增 `tests/test_identity_login.py`、`tests/test_identity_postgres.py`；修改 `tests/test_auth_flows.py`、`tests/test_scan_login.py`、`tests/test_security.py`，`.gitignore` 放行新增测试。
+- 配置与文档：`.env.example`、`docs/identity-login-api.md`（新增）、`docs/scan-login-api.md`、`docs/miniapp_login.md`、`CHANGELOG.md`。
+
 ## 2026-09-09
 
 - Full Teacher Logbook migration support; no common, core, shared authentication or database modules modified.

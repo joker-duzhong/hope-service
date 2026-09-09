@@ -1,6 +1,6 @@
 # 通用扫码登录接口
 
-后端仅负责临时登录事务、手机授权确认和一次性凭据兑换，不生成二维码图片、不配置 H5 地址、不处理跳转。本流程不依赖公众号扫码/关注事件；手机可以通过已有手机号、公众号或小程序登录获取用户凭据。
+后端负责临时登录事务、手机授权确认和一次性凭据兑换，不生成二维码图片。本流程不依赖公众号扫码/关注事件；手机通过授权中心的手机号或公众号两阶段登录获取 Passport 凭据。小程序业务 Token 不能直接确认扫码。身份流程和配置见 [identity-login-api.md](identity-login-api.md)。
 
 ## 基本约定
 
@@ -60,7 +60,7 @@ H5 从 URL 取得 transaction_id，调用 info 获取真实应用名称和状态
 
 ## 3. 手机登录、绑定并确认
 
-手机调用现有登录接口获得自身 access_token；用户信息 needs_phone_binding=true 时，先调用现有手机号绑定接口。已有手机号属于另一账号时仍遵循原来的冲突规则，不自动合并。
+手机使用 `/auth/identity/h5` 验证微信 code；`PHONE_REQUIRED` 时通过临时票据验证手机，成功后才签发 `app_scope=passport` 的 Token。新的未归属身份可关联到同手机号已有用户；两个已有账号不自动合并。短信回退使用不传 app_key 的 `/auth/phone/login`。
 
 H5 明确展示“确认在另一设备登录某应用”，应用名使用 info 返回的 name，不信任 URL 中的文字。用户主动确认后调用 confirm，并携带自己的 Bearer Token。
 
@@ -86,11 +86,11 @@ PC 调用 GET /sessions/{transaction_id}，必须携带：
 
 兑换请求仍携带 X-Scan-Token。不需要手机端 Token，也不要把手机 Token 复制给 PC。
 
-成功 data 与手机号/微信登录一致：access_token、refresh_token、token_type、user；user 含 phone、needs_phone_binding。PC 使用这些新凭据建立自己的登录状态，并自行跳转。
+成功 data 包含 access_token、refresh_token、token_type、app_scope、user；app_scope 来自该会话 app_key，user 含 phone、needs_phone_binding 和当前应用有效角色。PC 使用这些新凭据建立自己的登录状态，并自行跳转。
 
 - 后端重新检查应用、账号状态、手机号、后台权限和 token_version。
 - Redis 原子地把 CONFIRMED 改为 CONSUMED，并清除兑换码；并发兑换最多一个成功。
-- 新 Token 仍为平台级身份凭据，不是 app_key 授予的业务权限；业务接口继续执行现有角色和资源归属校验。
+- 新 Token 仅适用于会话指定业务；A Token 访问 B 路由被拒绝。app_key 不自动授予角色；业务接口继续执行角色和资源归属校验。
 - 如果已消费后签发失败，或成功响应在网络中丢失，必须重新扫码。不回滚到 CONFIRMED，不提供幂等兑换宽限窗口。
 
 ## 状态及错误处理

@@ -53,6 +53,7 @@ class RoleInfo(BaseModel):
     id: UUID
     name: str
     code: str
+    scope: str | None = None
 
     class Config:
         from_attributes = True
@@ -111,6 +112,7 @@ class Token(BaseModel):
 
 class LoginResponse(Token):
     user: UserResponse
+    app_scope: str = "passport"
 
 
 class RefreshRequest(BaseModel):
@@ -131,7 +133,9 @@ class SendSmsRequest(BaseModel):
 
 class PhoneLoginRequest(SendSmsRequest):
     code: str = Field(..., pattern=r"^[0-9]{4}$", description="四位短信验证码")
+    app_key: str | None = Field(None, min_length=1, max_length=64, description="PC 目标应用；授权中心不填写")
 
 
-class BindPhoneRequest(PhoneLoginRequest):
+class BindPhoneRequest(SendSmsRequest):
     """验证码验证后首次绑定手机号，不支持换绑或合并。"""
+    code: str = Field(..., pattern=r"^[0-9]{4}$", description="四位短信验证码")

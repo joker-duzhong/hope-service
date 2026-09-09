@@ -1,13 +1,9 @@
 from typing import Optional
-import secrets
 
 from fastapi import APIRouter, Depends, Request, Response, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db
 from core.response import ResponseModel
 from core.config import settings
-from core.security import create_token_pair
 from core.wechat.services import WeChatService
 from core.wechat.crypto import WeChatCrypto
 from core.wechat.schemas import (
@@ -16,13 +12,14 @@ from core.wechat.schemas import (
     WechatJssdkConfigResponse,
     WechatOpenidResponse,
 )
-from core.redis_client import redis_client
 from core.users.schemas import Token
-from core.users.services import UserService
 import xml.etree.ElementTree as ET
-import json
 
 router = APIRouter()
+
+
+async def legacy_scan_unavailable() -> None:
+    raise HTTPException(410, "旧公众号事件扫码登录已停用，请使用授权中心 /auth/scan 流程")
 
 
 def get_crypto(appid: str) -> WeChatCrypto:
@@ -37,25 +34,9 @@ def get_crypto(appid: str) -> WeChatCrypto:
     )
 
 
-@router.get("/auth/wechat/qrcode", summary="获取微信登录二维码")
+@router.get("/auth/wechat/qrcode", summary="获取微信登录二维码", deprecated=True, dependencies=[Depends(legacy_scan_unavailable)])
 async def get_qrcode(appid: str, response: Response):
-    try:
-        browser_token = secrets.token_urlsafe(32)
-        result = await WeChatService.create_qrcode(appid, browser_token)
-        response.set_cookie(
-            key="wechat_login",
-            value=browser_token,
-            max_age=300,
-            httponly=True,
-            secure=not settings.DEBUG,
-            samesite="lax",
-            path=f"{settings.API_V1_PREFIX}/auth/wechat",
-        )
-        return ResponseModel(data=result)
-    except HTTPException:
-        raise
-    except Exception as e:
-        return ResponseModel(code=400, message=str(e))
+    await legacy_scan_unavailable()
 
 
 @router.get("/wechat/callback/{appid}", summary="微信 Webhook 回调验证")
@@ -193,38 +174,14 @@ async def get_jssdk_config(
     return ResponseModel(data=WechatJssdkConfigResponse(**result))
 
 
-@router.get("/auth/wechat/status", summary="查询微信扫码状态")
+@router.get("/auth/wechat/status", summary="查询微信扫码状态", deprecated=True, dependencies=[Depends(legacy_scan_unavailable)])
 async def get_scan_status(scene_id: str, request: Request):
-    try:
-        data = await redis_client.get(f"wechat_scan:{scene_id}")
-        if not data:
-            return ResponseModel(data={"status": "EXPIRED"})
-
-        parsed = json.loads(data)
-        browser_token = request.cookies.get("wechat_login")
-        if not browser_token or not secrets.compare_digest(parsed.get("browser_token", ""), browser_token):
-            raise HTTPException(status_code=403, detail="扫码登录会话不匹配")
-        return ResponseModel(data={"status": parsed.get("status", "WAITING")})
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise
-        return ResponseModel(code=400, message=str(e))
+    await legacy_scan_unavailable()
 
 
-@router.post("/auth/wechat/exchange", response_model=ResponseModel[Token], summary="兑换微信扫码登录令牌")
+@router.post("/auth/wechat/exchange", response_model=ResponseModel[Token], summary="兑换微信扫码登录令牌", deprecated=True, dependencies=[Depends(legacy_scan_unavailable)])
 async def exchange_scan_login(
     body: WechatQRExchangeRequest,
     request: Request,
-    db: AsyncSession = Depends(get_db),
 ):
-    browser_token = request.cookies.get("wechat_login")
-    if not browser_token:
-        raise HTTPException(status_code=403, detail="扫码登录会话不匹配")
-
-    user_id = await WeChatService.consume_scan_login(body.scene_id, browser_token)
-    user = await UserService.get_by_id(db, user_id)
-    if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="用户不存在或已禁用")
-
-    access_token, refresh_token = await create_token_pair(user.id, user.token_version)
-    return ResponseModel(data=Token(access_token=access_token, refresh_token=refresh_token))
+    await legacy_scan_unavailable()

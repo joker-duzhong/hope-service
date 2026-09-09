@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
@@ -14,6 +14,7 @@ from core.users.scan_schemas import (
     ScanPollResponse, ScanStateResponse,
 )
 from core.users.schemas import LoginResponse
+from core.auth_scope import PASSPORT_SCOPE
 
 
 async def scan_request_guard(request: Request, response: Response) -> None:
@@ -21,6 +22,12 @@ async def scan_request_guard(request: Request, response: Response) -> None:
     response.headers["Pragma"] = "no-cache"
     client_ip = request.client.host if request.client else "unknown"
     await scan_service.rate_limit("request", client_ip, scan_service.REQUEST_LIMIT_PER_MINUTE)
+
+
+async def passport_guard(request: Request, user: User = Depends(get_current_user)) -> User:
+    if request.state.auth_scope != PASSPORT_SCOPE:
+        raise HTTPException(403, "请在授权中心登录后确认本次请求")
+    return user
 
 
 router = APIRouter(
@@ -59,13 +66,13 @@ async def mark_scanned(transaction_id: UUID):
 
 
 @router.post("/sessions/{transaction_id}/confirm", response_model=ResponseModel[ScanStateResponse], summary="手机端确认扫码登录")
-async def confirm_scan(transaction_id: UUID, user: User = Depends(get_current_user)):
+async def confirm_scan(transaction_id: UUID, user: User = Depends(passport_guard)):
     """以当前登录用户授权，必须先绑定手机号；不能传 user_id 指定他人。"""
     return ResponseModel(data=await scan_service.transition(transaction_id, "confirm", user))
 
 
 @router.post("/sessions/{transaction_id}/cancel", response_model=ResponseModel[ScanStateResponse], summary="手机端拒绝扫码登录")
-async def cancel_scan(transaction_id: UUID, user: User = Depends(get_current_user)):
+async def cancel_scan(transaction_id: UUID, user: User = Depends(passport_guard)):
     return ResponseModel(data=await scan_service.transition(transaction_id, "cancel", user))
 
 

@@ -42,7 +42,7 @@ async def test_rotation_replaces_session_and_rejects_immediate_replay(sessions):
     pair = await security.rotate_refresh_token(old_token, user_id, 2)
     assert pair is not None
     assert await sessions.get(session_key(old_token)) is None
-    assert json.loads(await sessions.get(session_key(pair[1]))) == {"sub": str(user_id), "token_version": 2}
+    assert json.loads(await sessions.get(session_key(pair[1]))) == {"sub": str(user_id), "token_version": 2, "app_scope": "passport"}
     assert await sessions.ttl(session_key(pair[1])) > 0
     assert await security.rotate_refresh_token(old_token, user_id, 2) is None
 
@@ -56,7 +56,7 @@ async def test_concurrent_rotation_creates_one_session(sessions):
 
 
 async def test_database_failure_does_not_consume_old_session(sessions, monkeypatch):
-    user = SimpleNamespace(id=uuid4(), token_version=0, is_active=True)
+    user = SimpleNamespace(id=uuid4(), token_version=0, is_active=True, phone="13800138000", is_superuser=False)
     _, old_token = await security.create_token_pair(user.id)
     lookup = AsyncMock(side_effect=RuntimeError("simulated database failure"))
     monkeypatch.setattr(UserService, "get_by_id", lookup)

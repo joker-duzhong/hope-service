@@ -93,3 +93,5 @@ tests/*
 !tests/test_security.py
 !tests/test_exceptions.py
 !tests/test_storage_soft_delete.py
+!tests/test_identity_login.py
+!tests/test_identity_postgres.py

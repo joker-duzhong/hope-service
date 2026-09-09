@@ -2,15 +2,14 @@
 基础全局依赖 (Dependencies)
 如请求头解析等通用组件，与具体业务解耦
 """
-from contextvars import ContextVar
 from typing import AsyncGenerator, Callable
 from fastapi import HTTPException, Depends, status
 
 from core.apps_config import REGISTERED_APPS
+from core.auth_scope import current_app_key as _current_app_key
 from core.users.models import User
 from core.users.dependencies import get_current_user
 
-_current_app_key: ContextVar[str | None] = ContextVar("current_app_key", default=None)
 
 def bind_app_key(app_key: str) -> Callable[[], AsyncGenerator[None, None]]:
     """Create a router dependency that fixes the trusted application scope."""
@@ -73,7 +72,7 @@ def require_app_roles(*role_codes: str) -> Callable:
             return current_user
             
         # 根据请求头传过来的 current_app(scope)，检查用户在这个 scope 下的角色 code
-        user_scope_codes = {(r.scope, r.code) for r in current_user.roles}
+        user_scope_codes = {(role.scope, role.code) for role in current_user.roles if role.is_active and not role.is_deleted}
         
         matched = any(
             (current_app, code) in user_scope_codes for code in role_codes

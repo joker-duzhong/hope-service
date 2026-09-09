@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fakeredis.aioredis import FakeRedis
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
@@ -132,18 +132,14 @@ async def test_phone_unique_conflict_reuses_winner_and_checks_status(database, s
     database.rollback.assert_awaited_once()
 
 
-async def test_wechat_creates_user_and_scoped_identity_together(database):
-    user = await UserService.wechat_login(database, "test-openid", "test-appid")
-    identity = database.add.call_args_list[1].args[0]
-    assert isinstance(identity, UserIdentity)
-    assert (identity.provider_app_id, identity.subject) == ("test-appid", "test-openid")
-    assert identity.user_id == user.id
-    assert user.phone is None
-    assert user.hashed_password is None
+async def test_legacy_wechat_never_creates_unverified_user(database):
+    with pytest.raises(BadRequestException):
+        await UserService.wechat_login(database, "test-openid", "test-appid")
+    database.add.assert_not_called()
 
 
 async def test_wechat_existing_identity_reuses_account(database, monkeypatch):
-    user = make_user()
+    user = make_user(phone="13800138000")
     database.execute.return_value = result_for(SimpleNamespace(user_id=user.id, is_deleted=False))
     monkeypatch.setattr(UserService, "get_by_id", AsyncMock(return_value=user))
     assert await UserService.wechat_login(database, "test-openid", "test-appid") is user
@@ -167,15 +163,14 @@ async def test_wechat_disabled_user_cannot_login(database, monkeypatch, state):
     database.add.assert_not_called()
 
 
-async def test_wechat_concurrent_identity_conflict_rolls_back_losing_user(database, monkeypatch):
+async def test_legacy_wechat_rejects_existing_phoneless_user(database, monkeypatch):
     user = make_user()
-    database.execute.side_effect = [
-        result_for(None), result_for(SimpleNamespace(user_id=user.id, is_deleted=False)),
-    ]
-    database.commit.side_effect = IntegrityError(None, None, Exception("identity conflict"))
+    database.execute.return_value = result_for(SimpleNamespace(user_id=user.id, is_deleted=False))
     monkeypatch.setattr(UserService, "get_by_id", AsyncMock(return_value=user))
-    assert await UserService.wechat_login(database, "test-openid", "test-appid") is user
-    database.rollback.assert_awaited_once()
+    with pytest.raises(BadRequestException):
+        await UserService.wechat_login(database, "test-openid", "test-appid")
+    database.add.assert_not_called()
+    database.commit.assert_not_awaited()
 
 
 async def test_deleted_user_is_filtered_from_authenticated_lookup(database):
@@ -359,13 +354,16 @@ async def test_register_routes_are_removed(api):
         assert endpoint not in app.openapi()["paths"]
         assert (await client.post(endpoint, json={})).status_code == 404
     properties = app.openapi()["components"]["schemas"]["PhoneLoginRequest"]["properties"]
-    assert set(properties) == {"phone", "code"}
+    assert set(properties) == {"phone", "code", "app_key"}
 
 
 async def test_profile_reflects_phone_binding_state(api, database):
     app, client = api
     user = make_user()
-    app.dependency_overrides[get_current_user] = lambda: user
+    async def authenticated(request: Request):
+        request.state.auth_scope = "passport"
+        return user
+    app.dependency_overrides[get_current_user] = authenticated
     response = await client.get("/api/v1/auth/me")
     assert response.json()["data"]["needs_phone_binding"] is True
     database.execute.return_value = result_for(user)
@@ -386,20 +384,30 @@ def wechat_http(monkeypatch):
 
 
 @pytest.mark.parametrize("channel", ["miniapp", "h5"])
-async def test_wechat_login_returns_binding_prompt(database, tokens, monkeypatch, wechat_http, channel):
+async def test_legacy_wechat_never_issues_phoneless_token(database, tokens, monkeypatch, wechat_http, channel):
+    from core.apps_config import REGISTERED_APPS
+    scope = next(key for key in REGISTERED_APPS if key != "admin_web")
+    monkeypatch.setattr(router.settings, "PASSPORT_WECHAT_APP_IDS", ["test-appid"] if channel == "h5" else [])
+    monkeypatch.setattr(router.settings, "MINIAPP_APP_SCOPES", {"test-appid": scope} if channel == "miniapp" else {})
     monkeypatch.setattr(UserService, "wechat_login", AsyncMock(return_value=make_user()))
-    if channel == "miniapp":
-        response = await miniapp_router.miniapp_login(MiniappLoginRequest(appid="test-appid", code="test-code"), database)
-    else:
-        response = await router.wechat_login(WechatLogin(appid="test-appid", code="test-code"), database)
-    assert response.data.user.needs_phone_binding is True
-    assert response.data.access_token == "test-access"
+    with pytest.raises(BadRequestException):
+        if channel == "miniapp":
+            await miniapp_router.miniapp_login(MiniappLoginRequest(appid="test-appid", code="test-code"), database)
+        else:
+            await router.wechat_login(WechatLogin(appid="test-appid", code="test-code"), database)
+    tokens.assert_not_awaited()
 
 
 async def test_miniapp_phone_uses_shared_binding_rules(database, monkeypatch, wechat_http):
+    from core.apps_config import REGISTERED_APPS
+    scope = next(key for key in REGISTERED_APPS if key != "admin_web")
+    monkeypatch.setattr(router.settings, "MINIAPP_APP_SCOPES", {"test-appid": scope})
+    monkeypatch.setattr(router.settings, "PASSPORT_WECHAT_APP_IDS", [])
+    request = Request({"type": "http"})
+    request.state.auth_scope = scope
     user = make_user()
     wechat_http.post.return_value = Mock(json=Mock(return_value={"errcode": 0, "phone_info": {"phoneNumber": "13800138000"}}))
     binder = AsyncMock(return_value=user)
     monkeypatch.setattr(UserService, "bind_verified_phone", binder)
-    await miniapp_router.miniapp_get_phone(MiniappPhoneRequest(appid="test-appid", code="test-code"), user, database)
+    await miniapp_router.miniapp_get_phone(MiniappPhoneRequest(appid="test-appid", code="test-code"), request, user, database)
     binder.assert_awaited_once_with(database, user, "13800138000")

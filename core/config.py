@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     # 微信公众号配置（多公众号映射）
     WECHAT_APPS: str = ""  # 格式: appid1:secret1:token1:aeskey1,appid2:secret2:token2:aeskey2
 
+    PASSPORT_WECHAT_APP_IDS: List[str] = []
+    PASSPORT_CALLBACK_ORIGINS: List[str] = []
+    MINIAPP_APP_SCOPES: dict[str, str] = {}
+
     def get_wechat_config(self, appid: str) -> Optional[dict]:
         """根据 appid 获取对应的 secret、token 和 encoding_aes_key"""
         if not self.WECHAT_APPS:
