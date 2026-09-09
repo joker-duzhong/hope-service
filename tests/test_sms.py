@@ -306,14 +306,47 @@ async def test_normal_send_does_not_return_code(sms_api, configured_sms, extra):
     assert len(provider.send_requests) == 1
 
 
-async def test_test_sms_shares_cooldown_and_daily_limit(configured_sms):
+async def test_test_sms_does_not_use_real_sms_quota(configured_sms):
     redis, provider = configured_sms
-    for attempt in range(sms.PHONE_DAILY_SEND_LIMIT):
+    for attempt in range(sms.PHONE_DAILY_SEND_LIMIT + 1):
         assert await sms.generate_test_sms_code("13800138000") is not None
-        assert await sms.generate_test_sms_code("+8613800138000") is None
-        assert await sms.send_sms_code("13800138000") is False
-        await redis.delete("sms:cooldown:13800138000")
-    assert await sms.generate_test_sms_code("13800138000") is None
+    assert await redis.get("sms:cooldown:13800138000") is None
+    assert await redis.get("sms:daily:13800138000") is None
+    assert provider.send_requests == []
+    assert await sms.send_sms_code("13800138000") is True
+    assert await redis.get("sms:daily:13800138000") == "1"
+
+
+@pytest.mark.parametrize("blocked_by", ["cooldown", "daily", "both"])
+async def test_test_sms_ignores_existing_send_limits(sms_api, configured_sms, blocked_by):
+    redis, provider = configured_sms
+    limits = {}
+    if blocked_by in {"cooldown", "both"}:
+        limits["sms:cooldown:13800138000"] = "1"
+    if blocked_by in {"daily", "both"}:
+        limits["sms:daily:13800138000"] = str(sms.PHONE_DAILY_SEND_LIMIT)
+    for key, value in limits.items():
+        await redis.setex(key, 600, value)
+    response = await sms_api.post("/api/v1/auth/sms/send", json={"phone": "+8613800138000", "test": "hope"})
+    assert response.status_code == 200
+    assert await sms.verify_sms_code("13800138000", response.json()["data"]["code"]) is True
+    for key, value in limits.items():
+        assert await redis.get(key) == value
+        assert 0 < await redis.ttl(key) <= 600
+    assert await sms.send_sms_code("13800138000") is False
+    assert provider.send_requests == []
+
+
+async def test_regenerating_test_sms_replaces_previous_code(configured_sms, monkeypatch):
+    redis, provider = configured_sms
+    codes = iter([123, 456])
+    monkeypatch.setattr(sms.secrets, "randbelow", lambda maximum: next(codes))
+    first = await sms.generate_test_sms_code("13800138000")
+    second = await sms.generate_test_sms_code("13800138000")
+    assert first == "0123"
+    assert second == "0456"
+    assert await sms.verify_sms_code("13800138000", first) is False
+    assert await sms.verify_sms_code("13800138000", second) is True
     assert provider.send_requests == []
 
 
@@ -332,18 +365,16 @@ async def test_test_sms_keeps_expiry_and_attempt_limit(configured_sms, invalidat
     assert provider.send_requests == []
 
 
-@pytest.mark.parametrize("failure", ["cooldown", "redis_write"])
-async def test_test_sms_failure_does_not_return_code(sms_api, configured_sms, monkeypatch, failure):
+async def test_test_sms_failure_does_not_return_code(sms_api, configured_sms, monkeypatch):
     redis, provider = configured_sms
-    if failure == "cooldown":
-        await redis.setex("sms:cooldown:13800138000", 60, "1")
-    else:
-        async def fail(*args):
-            raise RedisConnectionError()
 
-        monkeypatch.setattr(redis, "setex", fail)
+    async def fail(*args):
+        raise RedisConnectionError()
+
+    monkeypatch.setattr(redis, "setex", fail)
     response = await sms_api.post("/api/v1/auth/sms/send", json={"phone": "13800138000", "test": "hope"})
     assert response.status_code == 503
+    assert response.json()["detail"] == "测试验证码生成或保存失败，请稍后重试或检查 Redis 服务"
     assert "data" not in response.json()
     assert await redis.get("sms:session:13800138000") is None
     assert provider.send_requests == []

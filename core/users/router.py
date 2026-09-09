@@ -47,7 +47,7 @@ async def send_sms(req: SendSmsCodeRequest):
         if code is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="测试验证码生成失败，请稍后重试或检查验证码频率限制",
+                detail="测试验证码生成或保存失败，请稍后重试或检查 Redis 服务",
             )
         return ResponseModel(message="测试验证码已生成", data=SmsCodeResponse(code=code))
     success = await send_sms_code(req.phone)

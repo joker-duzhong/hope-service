@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-09 SMS Test Flow Without Send Limits
+
+- `test: "hope"` 生成验证码时跳过发送冷却及每日配额检查，不占用或清除真实短信的限流记录；真实发送仍保留 60 秒冷却和 24 小时 5 次上限。
+- 保留测试验证码摘要存储、5 分钟有效期、校验尝试上限及一次性消费；重新生成覆盖原验证码会话。
+- 测试模式失败提示改为验证码生成或保存失败，提示检查 Redis；新增已有配额耗尽时放行、不影响真实配额及重新生成验证码的回归测试，同步接口文档。
+- 验证：短信与旧登录回归共 86 项通过，`git diff --check` 通过；使用模拟依赖及 `--noconftest`，未发送真实短信、未连接业务数据库、未部署线上。
+- 文件：`core/sms.py`、`core/users/router.py`、`tests/test_sms.py`、`docs/identity-login-api.md`、`CHANGELOG.md`。
+
 ## 2026-09-09 SMS Test Flow
 
 - 短信发送接口新增 `test` 参数，精确传入 `hope` 时跳过短信供应商调用，并在 `data.code` 返回四位测试验证码；按测试阶段要求，所有环境均可使用。

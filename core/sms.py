@@ -78,24 +78,25 @@ async def _issue_sms_code(phone: str, *, test_mode: bool) -> str | None:
 
     try:
         phone = normalize_phone(phone)
-        allowed = await redis_client.eval(
-            """
-            if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
-            local count = tonumber(redis.call('GET', KEYS[2]) or '0')
-            if count >= tonumber(ARGV[2]) then return 0 end
-            redis.call('SET', KEYS[1], '1', 'EX', ARGV[1])
-            count = redis.call('INCR', KEYS[2])
-            if count == 1 then redis.call('EXPIRE', KEYS[2], 86400) end
-            return 1
-            """,
-            2,
-            f"sms:cooldown:{phone}",
-            f"sms:daily:{phone}",
-            PHONE_COOLDOWN_SECONDS,
-            PHONE_DAILY_SEND_LIMIT,
-        )
-        if not allowed:
-            return None
+        if not test_mode:
+            allowed = await redis_client.eval(
+                """
+                if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
+                local count = tonumber(redis.call('GET', KEYS[2]) or '0')
+                if count >= tonumber(ARGV[2]) then return 0 end
+                redis.call('SET', KEYS[1], '1', 'EX', ARGV[1])
+                count = redis.call('INCR', KEYS[2])
+                if count == 1 then redis.call('EXPIRE', KEYS[2], 86400) end
+                return 1
+                """,
+                2,
+                f"sms:cooldown:{phone}",
+                f"sms:daily:{phone}",
+                PHONE_COOLDOWN_SECONDS,
+                PHONE_DAILY_SEND_LIMIT,
+            )
+            if not allowed:
+                return None
 
         code = f"{secrets.randbelow(10000):04d}"
         if not test_mode:
