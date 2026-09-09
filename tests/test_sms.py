@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 from fakeredis.aioredis import FakeRedis
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 from redis.exceptions import ConnectionError as RedisConnectionError
 
@@ -264,3 +266,91 @@ async def test_legacy_session_cannot_bypass_new_attempt_limits(configured_sms):
     redis, client = configured_sms
     await redis.setex("sms:session:13800138000", 300, json.dumps({"code": "old-digest"}))
     assert await sms.verify_sms_code("13800138000", "0123") is False
+
+
+@pytest.fixture
+async def sms_api(configured_sms):
+    from core.users.router import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
+        yield client
+
+
+@pytest.mark.parametrize("environment", ["local", "production"])
+async def test_test_sms_returns_usable_code_without_provider_configuration(sms_api, configured_sms, monkeypatch, environment):
+    redis, provider = configured_sms
+    monkeypatch.setattr(sms.settings, "ENVIRONMENT", environment)
+    monkeypatch.setattr(sms.settings, "ALIYUN_SMS_SIGN_NAME", "")
+    monkeypatch.setattr(sms.settings, "ALIYUN_SMS_TEMPLATE_CODE", "")
+    monkeypatch.setattr(sms.secrets, "randbelow", lambda maximum: 123)
+    response = await sms_api.post("/api/v1/auth/sms/send", json={"phone": "+8613800138000", "test": "hope"})
+    assert response.status_code == 200
+    assert response.json() == {"code": 200, "message": "测试验证码已生成", "data": {"code": "0123"}}
+    assert provider.send_requests == []
+    session = json.loads(await redis.get("sms:session:13800138000"))
+    assert session["code"] != "0123"
+    assert len(session["code"]) == 64
+    assert 0 < await redis.ttl("sms:session:13800138000") <= sms.CODE_TTL_SECONDS
+    assert await sms.verify_sms_code("13800138000", "0123") is True
+    assert await sms.verify_sms_code("13800138000", "0123") is False
+
+
+@pytest.mark.parametrize("extra", [{}, {"test": None}, {"test": ""}, {"test": "HOPE"}, {"test": "hope "}])
+async def test_normal_send_does_not_return_code(sms_api, configured_sms, extra):
+    _, provider = configured_sms
+    response = await sms_api.post("/api/v1/auth/sms/send", json={"phone": "13800138000", **extra})
+    assert response.status_code == 200
+    assert response.json() == {"code": 200, "message": "发送成功", "data": None}
+    assert len(provider.send_requests) == 1
+
+
+async def test_test_sms_shares_cooldown_and_daily_limit(configured_sms):
+    redis, provider = configured_sms
+    for attempt in range(sms.PHONE_DAILY_SEND_LIMIT):
+        assert await sms.generate_test_sms_code("13800138000") is not None
+        assert await sms.generate_test_sms_code("+8613800138000") is None
+        assert await sms.send_sms_code("13800138000") is False
+        await redis.delete("sms:cooldown:13800138000")
+    assert await sms.generate_test_sms_code("13800138000") is None
+    assert provider.send_requests == []
+
+
+@pytest.mark.parametrize("invalidate", ["expired", "attempts"])
+async def test_test_sms_keeps_expiry_and_attempt_limit(configured_sms, invalidate):
+    redis, provider = configured_sms
+    code = await sms.generate_test_sms_code("13800138000")
+    assert code is not None
+    if invalidate == "expired":
+        await redis.expire("sms:session:13800138000", 0)
+    else:
+        wrong_code = "0000" if code != "0000" else "0001"
+        for attempt in range(sms.CODE_VERIFY_ATTEMPT_LIMIT):
+            assert await sms.verify_sms_code("13800138000", wrong_code) is False
+    assert await sms.verify_sms_code("13800138000", code) is False
+    assert provider.send_requests == []
+
+
+@pytest.mark.parametrize("failure", ["cooldown", "redis_write"])
+async def test_test_sms_failure_does_not_return_code(sms_api, configured_sms, monkeypatch, failure):
+    redis, provider = configured_sms
+    if failure == "cooldown":
+        await redis.setex("sms:cooldown:13800138000", 60, "1")
+    else:
+        async def fail(*args):
+            raise RedisConnectionError()
+
+        monkeypatch.setattr(redis, "setex", fail)
+    response = await sms_api.post("/api/v1/auth/sms/send", json={"phone": "13800138000", "test": "hope"})
+    assert response.status_code == 503
+    assert "data" not in response.json()
+    assert await redis.get("sms:session:13800138000") is None
+    assert provider.send_requests == []
+
+
+async def test_test_sms_rejects_invalid_phone(sms_api, configured_sms):
+    _, provider = configured_sms
+    response = await sms_api.post("/api/v1/auth/sms/send", json={"phone": "123", "test": "hope"})
+    assert response.status_code == 422
+    assert provider.send_requests == []

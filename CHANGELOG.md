@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-09 SMS Test Flow
+
+- 短信发送接口新增 `test` 参数，精确传入 `hope` 时跳过短信供应商调用，并在 `data.code` 返回四位测试验证码；按测试阶段要求，所有环境均可使用。
+- 测试模式复用验证码摘要存储、有效期、发送配额及一次性校验；Redis 写入失败或触发频率限制时不返回验证码，普通短信流程不返回验证码。
+- 新增发送专用请求及响应模型，避免测试参数扩散至其他手机号接口；修正普通发送成功响应的 `message` 字段。
+- 补充短信与 HTTP 契约测试、测试入口使用说明及正式业务开放前移除要求。
+- 验证：短信、旧登录及身份登录共 215 项测试通过（含 production 环境测试入口）；`git diff --check` 通过。使用模拟 Redis/短信供应商及 `--noconftest`，未发送真实短信、未连接业务数据库、未部署线上。
+- 文件：`core/sms.py`、`core/users/schemas.py`、`core/users/router.py`、`tests/test_sms.py`、`docs/identity-login-api.md`、`CHANGELOG.md`。
+
 ## 2026-09-09 Passport Subdirectory Deployment
 
 - 微信 OAuth 回调新增精确允许 `/passport/wechat/callback`，保留旧 `/wechat/callback` 兼容；API 路由和认证流程不变。

@@ -23,13 +23,14 @@ from core.users.schemas import (
     UsernameLogin,
     WechatAuthUrl,
     WechatLogin,
-    SendSmsRequest,
+    SendSmsCodeRequest,
+    SmsCodeResponse,
     PhoneLoginRequest,
     LoginResponse,
     BindPhoneRequest,
 )
 from core.users.services import UserService
-from core.sms import send_sms_code
+from core.sms import generate_test_sms_code, send_sms_code
 from core.auth_scope import PASSPORT_SCOPE, validate_scope
 from core.users.identity_service import resolve_identity_scope, validate_oauth_target
 
@@ -38,16 +39,24 @@ router = APIRouter(prefix="/auth", tags=["用户授权"])
 
 # ==================== 短信 ====================
 
-@router.post("/sms/send", response_model=ResponseModel)
-async def send_sms(req: SendSmsRequest):
+@router.post("/sms/send", response_model=ResponseModel[SmsCodeResponse])
+async def send_sms(req: SendSmsCodeRequest):
     """发送短信验证码"""
+    if req.test == "hope":
+        code = await generate_test_sms_code(req.phone)
+        if code is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="测试验证码生成失败，请稍后重试或检查验证码频率限制",
+            )
+        return ResponseModel(message="测试验证码已生成", data=SmsCodeResponse(code=code))
     success = await send_sms_code(req.phone)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="短信服务调用失败，请检查服务端日志中的阿里云错误信息",
         )
-    return ResponseModel(msg="发送成功")
+    return ResponseModel(message="发送成功")
 
 @router.post("/phone/login", response_model=ResponseModel[LoginResponse])
 async def phone_login(

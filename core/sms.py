@@ -62,10 +62,19 @@ def _runtime_options() -> RuntimeOptions:
 
 async def send_sms_code(phone: str) -> bool:
     """发送四位短信验证码，并保存本地一次性验证会话。"""
+    return await _issue_sms_code(phone, test_mode=False) is not None
+
+
+async def generate_test_sms_code(phone: str) -> str | None:
+    """保存可用于现有验证流程的测试验证码，不发送短信。"""
+    return await _issue_sms_code(phone, test_mode=True)
+
+
+async def _issue_sms_code(phone: str, *, test_mode: bool) -> str | None:
     template_code = _get_template_code()
-    if not template_code or not settings.ALIYUN_SMS_SIGN_NAME:
+    if not test_mode and (not template_code or not settings.ALIYUN_SMS_SIGN_NAME):
         logger.warning("SMS configuration is unavailable")
-        return False
+        return None
 
     try:
         phone = normalize_phone(phone)
@@ -86,28 +95,29 @@ async def send_sms_code(phone: str) -> bool:
             PHONE_DAILY_SEND_LIMIT,
         )
         if not allowed:
-            return False
+            return None
 
         code = f"{secrets.randbelow(10000):04d}"
-        request = dypnsapi_models.SendSmsVerifyCodeRequest(
-            sign_name=settings.ALIYUN_SMS_SIGN_NAME,
-            template_code=template_code,
-            phone_number=phone,
-            template_param=json.dumps({"code": code, "min": "5"}),
-            country_code="86",
-            code_length=4,
-            code_type=1,
-            valid_time=CODE_TTL_SECONDS,
-            interval=PHONE_COOLDOWN_SECONDS,
-            duplicate_policy=1,
-        )
-        response = await _create_client().send_sms_verify_code_with_options_async(
-            request, _runtime_options()
-        )
-        body = response.body
-        if not body or body.code != "OK" or body.success is not True:
-            logger.warning("Dypnsapi rejected SMS send request")
-            return False
+        if not test_mode:
+            request = dypnsapi_models.SendSmsVerifyCodeRequest(
+                sign_name=settings.ALIYUN_SMS_SIGN_NAME,
+                template_code=template_code,
+                phone_number=phone,
+                template_param=json.dumps({"code": code, "min": "5"}),
+                country_code="86",
+                code_length=4,
+                code_type=1,
+                valid_time=CODE_TTL_SECONDS,
+                interval=PHONE_COOLDOWN_SECONDS,
+                duplicate_policy=1,
+            )
+            response = await _create_client().send_sms_verify_code_with_options_async(
+                request, _runtime_options()
+            )
+            body = response.body
+            if not body or body.code != "OK" or body.success is not True:
+                logger.warning("Dypnsapi rejected SMS send request")
+                return None
 
         await redis_client.setex(
             f"sms:session:{phone}",
@@ -119,10 +129,10 @@ async def send_sms_code(phone: str) -> bool:
                 ).hexdigest(),
             }),
         )
-        return True
+        return code
     except Exception as error:
         logger.warning("SMS send failed: %s", _provider_error_details(error))
-        return False
+        return None
 
 
 async def _consume_session(cache_key: str, session_data: str) -> bool:

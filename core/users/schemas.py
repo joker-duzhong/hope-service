@@ -131,6 +131,14 @@ class SendSmsRequest(BaseModel):
         return normalize_phone(value)
 
 
+class SendSmsCodeRequest(SendSmsRequest):
+    test: str | None = Field(None, description="精确传入 hope 时跳过短信发送并返回测试验证码，所有环境可用")
+
+
+class SmsCodeResponse(BaseModel):
+    code: str = Field(..., pattern=r"^[0-9]{4}$", description="测试流程的四位验证码")
+
+
 class PhoneLoginRequest(SendSmsRequest):
     code: str = Field(..., pattern=r"^[0-9]{4}$", description="四位短信验证码")
     app_key: str | None = Field(None, min_length=1, max_length=64, description="PC 目标应用；授权中心不填写")
