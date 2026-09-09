@@ -3,12 +3,13 @@ import csv
 import io
 import json
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Any, Optional, Type
 
 from fastapi import HTTPException
-from sqlalchemy import Date as SADate, DateTime as SADateTime, Numeric, and_, delete, func, or_, select, tuple_, update
+from pydantic import ValidationError
+from sqlalchemy import Date as SADate, DateTime as SADateTime, Time as SATime, Numeric, and_, delete, func, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -96,6 +97,15 @@ class ClassService:
 
 class StudentService:
     @staticmethod
+    async def export_rows(db: AsyncSession, class_id: uuid.UUID, user_id: uuid.UUID) -> list[models.Student]:
+        await ClassService.require(db, class_id, user_id)
+        result = await db.scalars(select(models.Student).where(
+            models.Student.class_id == class_id, models.Student.user_id == user_id,
+            models.Student.is_deleted.is_(False),
+        ).order_by(models.Student.created_at, models.Student.id))
+        return list(result.all())
+
+    @staticmethod
     async def list(db: AsyncSession, class_id: uuid.UUID, user_id: uuid.UUID, page: int, page_size: int,
                    keyword: Optional[str] = None, gender: Optional[str] = None) -> tuple[list[models.Student], int]:
         await ClassService.require(db, class_id, user_id)
@@ -105,7 +115,7 @@ class StudentService:
         if gender:
             filters.append(models.Student.gender == gender)
         total = await db.scalar(select(func.count()).select_from(models.Student).where(*filters)) or 0
-        result = await db.scalars(select(models.Student).where(*filters).order_by(models.Student.created_at.desc()).offset((page - 1) * page_size).limit(page_size))
+        result = await db.scalars(select(models.Student).where(*filters).order_by(models.Student.created_at.desc(), models.Student.id).offset((page - 1) * page_size).limit(page_size))
         return list(result.all()), total
 
     @staticmethod
@@ -207,21 +217,26 @@ class CrudService:
         model = RESOURCE_MODELS[resource]
         clauses = [model.class_id == class_id, model.user_id == user_id, model.is_deleted.is_(False)]
         for key, value in filters.items():
-            if value is None or not hasattr(model, key):
+            if value is None:
                 continue
             if key == "date_from" and hasattr(model, "date"):
                 clauses.append(model.date >= value)
             elif key == "date_to" and hasattr(model, "date"):
                 clauses.append(model.date <= value)
             elif key == "keyword":
-                text_columns = [getattr(model, name) for name in ("title", "name", "note") if hasattr(model, name)]
+                text_columns = [getattr(model, name) for name in ("title", "name", "note", "subject", "course", "teacher", "role", "duty", "area", "type", "reason", "url") if hasattr(model, name)]
+                if hasattr(model, "student_id"):
+                    students = select(models.Student.id).where(models.Student.class_id == class_id,
+                        models.Student.user_id == user_id, models.Student.is_deleted.is_(False), models.Student.name.ilike(f"%{value}%"))
+                    clauses.append(or_(model.student_id.in_(students), *(column.ilike(f"%{value}%") for column in text_columns)))
+                    continue
                 if text_columns:
                     clauses.append(or_(*(column.ilike(f"%{value}%") for column in text_columns)))
-            else:
+            elif hasattr(model, key):
                 clauses.append(getattr(model, key) == value)
         total = await db.scalar(select(func.count()).select_from(model).where(*clauses)) or 0
         order = getattr(model, "date", model.created_at).desc()
-        result = await db.scalars(select(model).where(*clauses).order_by(order).offset((page - 1) * page_size).limit(page_size))
+        result = await db.scalars(select(model).where(*clauses).order_by(order, model.id).offset((page - 1) * page_size).limit(page_size))
         return list(result.all()), total
 
     @staticmethod
@@ -262,7 +277,10 @@ class CrudService:
         create_schema = schemas.RESOURCE_SCHEMAS[resource]
         complete = {name: getattr(item, name) for name in create_schema.model_fields}
         complete.update(data)
-        create_schema.model_validate(complete)
+        try:
+            create_schema.model_validate(complete)
+        except ValidationError as exc:
+            raise HTTPException(422, "字段不符合记录要求，请核对后重试") from exc
         if resource == "links" and "url" in data:
             data["url"] = str(data["url"])
         await CrudService._validate_relations(db, type(item), class_id, user_id, data)
@@ -275,6 +293,12 @@ class CrudService:
     @staticmethod
     async def remove(db: AsyncSession, resource: str, class_id: uuid.UUID, user_id: uuid.UUID, item_id: uuid.UUID) -> None:
         item = await CrudService.get(db, resource, class_id, user_id, item_id)
+        if resource == "committee-roles":
+            members = await db.scalar(select(func.count()).select_from(models.CommitteeMember).where(
+                models.CommitteeMember.class_id == class_id, models.CommitteeMember.role_id == item_id,
+                models.CommitteeMember.is_deleted.is_(False)))
+            if members:
+                raise _conflict("职位仍有关联班委，请先修改班委记录")
         item.is_deleted = True
         await db.commit()
 
@@ -292,8 +316,7 @@ class SeatService:
     @staticmethod
     async def board(db: AsyncSession, class_id: uuid.UUID, user_id: uuid.UUID, lock: bool = False) -> models.SeatBoard:
         await ClassService.require(db, class_id, user_id)
-        stmt = select(models.SeatBoard).where(models.SeatBoard.class_id == class_id, models.SeatBoard.user_id == user_id,
-            models.SeatBoard.is_deleted.is_(False))
+        stmt = select(models.SeatBoard).where(models.SeatBoard.class_id == class_id, models.SeatBoard.user_id == user_id)
         if lock:
             stmt = stmt.with_for_update()
         board = await db.scalar(stmt)
@@ -301,6 +324,10 @@ class SeatService:
             board = models.SeatBoard(class_id=class_id, user_id=user_id, rows=1, column_groups=[1], version=1)
             db.add(board)
             await db.flush()
+        elif board.is_deleted:
+            board.is_deleted = False
+            board.rows, board.column_groups = 1, [1]
+            board.version += 1
         return board
 
     @staticmethod
@@ -353,13 +380,18 @@ class SeatService:
         if target and target.student_id != student_id and not payload.swap:
             raise _conflict("目标座位已有学生")
         old_position = (source.row, source.column) if source else None
+        if source:
+            source.is_deleted = True
+        if target and target.student_id != student_id:
+            target.is_deleted = True
+        await db.flush()
         if target and target.student_id != student_id:
             if old_position:
                 target.row, target.column = old_position
-            else:
-                target.is_deleted = True
+                target.is_deleted = False
         if source:
             source.row, source.column = payload.row, payload.column
+            source.is_deleted = False
         else:
             db.add(models.SeatAssignment(class_id=class_id, user_id=user_id, student_id=student_id,
                 row=payload.row, column=payload.column))
@@ -452,9 +484,20 @@ class SummaryService:
                 model.user_id == user_id, model.is_deleted.is_(False), *extra)) or 0
         genders = dict((await db.execute(select(models.Student.gender, func.count()).where(models.Student.class_id == class_id,
             models.Student.user_id == user_id, models.Student.is_deleted.is_(False)).group_by(models.Student.gender))).all())
+        async def recent(model, *conditions, order):
+            rows = await db.scalars(select(model).where(
+                model.class_id == class_id, model.user_id == user_id,
+                model.is_deleted.is_(False), *conditions,
+            ).order_by(order, model.id).limit(5))
+            return list(rows.all())
+
+        alerts = await recent(models.Alert, models.Alert.level == "高", models.Alert.status != "已关闭", order=models.Alert.updated_at.desc())
+        todos = await recent(models.Todo, models.Todo.status == "待完成", order=models.Todo.due.asc().nullslast())
+        exams = await recent(models.Exam, order=models.Exam.date.desc())
+        work = await recent(models.WorkRecord, order=models.WorkRecord.date.desc())
         return {"studentSummary": {"total": sum(genders.values()), "male": genders.get("男", 0), "female": genders.get("女", 0)},
             "leaveToday": await count(models.LeaveRequest, models.LeaveRequest.date == target),
-            "unsubmittedHomework": await db.scalar(select(func.coalesce(func.sum(models.HomeworkRecord.unsubmitted), 0)).where(models.HomeworkRecord.class_id == class_id, models.HomeworkRecord.date == target, models.HomeworkRecord.is_deleted.is_(False))),
+            "unsubmittedHomework": await db.scalar(select(func.coalesce(func.sum(models.HomeworkRecord.unsubmitted), 0)).where(models.HomeworkRecord.class_id == class_id, models.HomeworkRecord.user_id == user_id, models.HomeworkRecord.date == target, models.HomeworkRecord.is_deleted.is_(False))),
             "violationCount": await count(models.Violation), "workRecordsThisMonth": await count(
                 models.WorkRecord,
                 func.extract("year", models.WorkRecord.date) == target.year,
@@ -468,7 +511,8 @@ class SummaryService:
                 "notReturned": await count(models.Alert, models.Alert.type == "未返校", models.Alert.status != "已关闭"),
                 "pending": await count(models.Alert, models.Alert.status != "已关闭"),
             },
-            "highRiskStudents": [], "upcomingTodos": [], "latestExam": None, "recentWorkRecords": []}
+            "highRiskStudents": alerts, "upcomingTodos": todos,
+            "latestExam": exams[0] if exams else None, "recentWorkRecords": work}
 
 
 class PreferenceService:
@@ -494,7 +538,7 @@ BACKUP_MODELS = [models.Student, models.SeatBoard, models.SeatAssignment, *RESOU
 
 
 def _json_value(value: Any) -> Any:
-    if isinstance(value, (uuid.UUID, date, datetime, Decimal)):
+    if isinstance(value, (uuid.UUID, date, datetime, time, Decimal)):
         return str(value)
     return value
 
@@ -520,25 +564,79 @@ class BackupService:
 
     @staticmethod
     def validate(payload: dict) -> dict:
-        if payload.get("schemaVersion") != 1 or not isinstance(payload.get("resources"), dict):
+        if not isinstance(payload, dict) or payload.get("schemaVersion") != 1 or not isinstance(payload.get("resources"), dict):
             raise HTTPException(status_code=400, detail="备份版本或结构不受支持")
         known = {model.__tablename__ for model in BACKUP_MODELS}
         unknown = set(payload["resources"]) - known
         if unknown:
             raise HTTPException(status_code=400, detail=f"备份包含未知资源: {sorted(unknown)}")
+        record_schemas = {RESOURCE_MODELS[key]: schema for key, schema in schemas.RESOURCE_SCHEMAS.items()}
+        record_schemas.update({models.Student: schemas.StudentCreate, models.SeatBoard: schemas.LayoutUpdate,
+            models.SeatAssignment: schemas.SeatItem})
+        for model in BACKUP_MODELS:
+            rows = payload["resources"].get(model.__tablename__, [])
+            if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+                raise HTTPException(400, "备份资源必须是记录数组")
+            identifiers = set()
+            allowed = {column.name for column in model.__table__.columns} - {"user_id", "class_id", "is_deleted"}
+            for number, row in enumerate(rows, 1):
+                try:
+                    identifier = uuid.UUID(row["id"])
+                    if identifier in identifiers or set(row) - allowed:
+                        raise ValueError("duplicate or unknown fields")
+                    identifiers.add(identifier)
+                    record_schemas[model].model_validate(row)
+                    for field in ("created_at", "updated_at"):
+                        if field in row:
+                            datetime.fromisoformat(row[field])
+                    if model is models.SeatBoard and (type(row.get("version")) is not int or row["version"] < 1):
+                        raise ValueError("version")
+                except (ValueError, TypeError, KeyError, AttributeError) as exc:
+                    raise HTTPException(400, f"{model.__tablename__} 第 {number} 条记录无效") from exc
         students = {row.get("id") for row in payload["resources"].get(models.Student.__tablename__, [])}
         for model in STUDENT_MODELS + (models.SeatAssignment,):
             for row in payload["resources"].get(model.__tablename__, []):
                 if row.get("student_id") not in students:
                     raise HTTPException(status_code=400, detail=f"{model.__tablename__} 包含无效学生引用")
+        roles = payload["resources"].get(models.CommitteeRole.__tablename__, [])
+        if len({row["role"] for row in roles}) != len(roles):
+            raise HTTPException(400, "备份职位名称重复")
+        role_ids = {row["id"] for row in roles}
+        if any(row["role_id"] not in role_ids for row in payload["resources"].get(models.CommitteeMember.__tablename__, [])):
+            raise HTTPException(400, "备份包含无效职位引用")
+        boards = payload["resources"].get(models.SeatBoard.__tablename__, [])
+        seats = payload["resources"].get(models.SeatAssignment.__tablename__, [])
+        if len(boards) > 1 or (seats and not boards):
+            raise HTTPException(400, "备份座位板数量无效")
+        if boards:
+            layout = boards[0]
+            try:
+                schemas.SeatBatch(assignments=seats)
+                if any(not 1 <= row["row"] <= layout["rows"] or not 1 <= row["column"] <= sum(layout["column_groups"]) for row in seats):
+                    raise ValueError("bounds")
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(400, "备份座位重复或超出布局") from exc
         return {"valid": True, "resourceCounts": {name: len(rows) for name, rows in payload["resources"].items()}}
 
     @staticmethod
     async def restore(db: AsyncSession, class_id: uuid.UUID, user_id: uuid.UUID, payload: dict, mode: str) -> dict:
         await ClassService.require(db, class_id, user_id)
         summary = BackupService.validate(payload)
-        if payload.get("class", {}).get("id") != str(class_id):
+        if not isinstance(payload.get("class"), dict) or payload["class"].get("id") != str(class_id):
             raise HTTPException(status_code=409, detail="备份仅允许恢复到原班级")
+        if mode not in {"replace", "merge"}:
+            raise HTTPException(400, "恢复模式无效")
+        try:
+            return await BackupService._restore(db, class_id, user_id, payload, mode, summary)
+        except IntegrityError as exc:
+            await db.rollback()
+            raise _conflict("备份与当前职位或座位冲突，未恢复任何数据") from exc
+        except Exception:
+            await db.rollback()
+            raise
+
+    @staticmethod
+    async def _restore(db: AsyncSession, class_id: uuid.UUID, user_id: uuid.UUID, payload: dict, mode: str, summary: dict) -> dict:
         if mode == "replace":
             for model in BACKUP_MODELS:
                 await db.execute(update(model).where(model.class_id == class_id, model.user_id == user_id,
@@ -560,9 +658,13 @@ class BackupService:
                         data[column.name] = date.fromisoformat(data[column.name])
                     elif isinstance(column.type, SADateTime):
                         data[column.name] = datetime.fromisoformat(data[column.name])
+                    elif isinstance(column.type, SATime):
+                        data[column.name] = time.fromisoformat(data[column.name])
                     elif isinstance(column.type, Numeric):
                         data[column.name] = Decimal(data[column.name])
                 data.update(class_id=class_id, user_id=user_id, is_deleted=False)
+                if model is models.SeatBoard and existing:
+                    data["version"] = max(existing.version, data["version"]) + 1
                 await db.merge(model(**data))
         db.add(models.AuditLog(class_id=class_id, user_id=user_id, action="backup_restore",
                                detail={"mode": mode, **summary}))

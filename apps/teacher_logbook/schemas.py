@@ -286,3 +286,63 @@ RESOURCE_UPDATE_SCHEMAS = {
     resource: optional_schema(f"{schema.__name__}Update", schema)
     for resource, schema in RESOURCE_SCHEMAS.items()
 }
+
+RESOURCE_READ_SCHEMAS = {
+    resource: create_model(
+        "".join(part.title() for part in resource.split("-")) + "Read",
+        __base__=(RecordRead, schema),
+    )
+    for resource, schema in RESOURCE_SCHEMAS.items()
+}
+
+
+class StudentSummary(SchemaBase):
+    total: int
+    male: int
+    female: int
+
+
+class AlertSummary(SchemaBase):
+    emotion: int
+    special_health: int
+    dropout_risk: int
+    not_returned: int
+    pending: int
+
+
+class DashboardRead(SchemaBase):
+    student_summary: StudentSummary
+    leave_today: int
+    unsubmitted_homework: int
+    violation_count: int
+    work_records_this_month: int
+    pending_todo_count: int
+    alert_summary: AlertSummary
+    high_risk_students: list[RESOURCE_READ_SCHEMAS["alerts"]]
+    upcoming_todos: list[RESOURCE_READ_SCHEMAS["todos"]]
+    latest_exam: Optional[RESOURCE_READ_SCHEMAS["exams"]] = None
+    recent_work_records: list[RESOURCE_READ_SCHEMAS["work-records"]]
+
+
+class SeatLayout(SchemaBase):
+    rows: int
+    column_groups: list[int]
+    columns: int
+
+
+class SeatBoardResponse(SchemaBase):
+    layout: SeatLayout
+    assignments: list[SeatItem]
+    version: int
+    updated_at: datetime
+
+
+class SeatLayoutResponse(SchemaBase):
+    layout: SeatLayout
+    removed_student_ids: list[uuid.UUID]
+    version: int
+
+
+class BackupValidation(SchemaBase):
+    valid: bool
+    resource_counts: dict[str, int]

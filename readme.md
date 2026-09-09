@@ -95,7 +95,7 @@ uvicorn main:app --reload --port 8000
 
 ```powershell
 $env:PYTHONUTF8=1
-wt -p "Windows PowerShell" -d . uvicorn main:app --reload --port 8000 `; split-pane -p "Windows PowerShell" -d . celery -A worker.celery_app worker --loglevel=info `; split-pane -p "Windows PowerShell" -d . celery -A worker.celery_app beat --loglevel=info
+wt -p "Windows PowerShell" -d . uvicorn main:app --host 0.0.0.0 --reload --port 8000 `; split-pane -p "Windows PowerShell" -d . celery -A worker.celery_app worker --loglevel=info `; split-pane -p "Windows PowerShell" -d . celery -A worker.celery_app beat --loglevel=info
 ```
 
 这会在一个终端中启动所有服务：

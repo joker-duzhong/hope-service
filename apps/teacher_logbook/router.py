@@ -36,6 +36,7 @@ async def create_class(payload: schemas.ClassCreate, db: AsyncSession = Depends(
 
 
 @router.patch("/classes/{class_id}", response_model=ResponseModel[schemas.ClassRead])
+@router.post("/classes/{class_id}", response_model=ResponseModel[schemas.ClassRead])
 async def update_class(class_id: uuid.UUID, payload: schemas.ClassUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     return ResponseModel(data=await services.ClassService.update(db, class_id, user.id, payload))
 
@@ -61,7 +62,7 @@ async def create_student(class_id: uuid.UUID, payload: schemas.StudentCreate, db
 
 @router.get("/classes/{class_id}/students/export")
 async def export_students(class_id: uuid.UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
-    items, _ = await services.StudentService.list(db, class_id, user.id, 1, 100, None, None)
+    items = await services.StudentService.export_rows(db, class_id, user.id)
     output = io.StringIO(); writer = csv.writer(output); writer.writerow(["name", "gender", "contact"])
     writer.writerows((item.name, item.gender, item.contact or "") for item in items)
     content = "\ufeff" + output.getvalue()
@@ -82,6 +83,7 @@ async def get_student(class_id: uuid.UUID, student_id: uuid.UUID, db: AsyncSessi
 
 
 @router.patch("/classes/{class_id}/students/{student_id}", response_model=ResponseModel[schemas.StudentRead])
+@router.post("/classes/{class_id}/students/{student_id}", response_model=ResponseModel[schemas.StudentRead])
 async def update_student(class_id: uuid.UUID, student_id: uuid.UUID, payload: schemas.StudentUpdate,
                          db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     return ResponseModel(data=await services.StudentService.update(db, class_id, user.id, student_id, payload))
@@ -93,13 +95,13 @@ async def delete_student(class_id: uuid.UUID, student_id: uuid.UUID, db: AsyncSe
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/classes/{class_id}/seat-board")
+@router.get("/classes/{class_id}/seat-board", response_model=ResponseModel[schemas.SeatBoardResponse])
 async def get_seat_board(class_id: uuid.UUID, response: Response, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     data, etag = await services.SeatService.get(db, class_id, user.id); response.headers["ETag"] = etag
     return ResponseModel(data=data)
 
 
-@router.put("/classes/{class_id}/seat-board/layout")
+@router.put("/classes/{class_id}/seat-board/layout", response_model=ResponseModel[schemas.SeatLayoutResponse])
 async def update_seat_layout(class_id: uuid.UUID, payload: schemas.LayoutUpdate, if_match: Optional[str] = Header(None, alias="If-Match"),
                              db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     return ResponseModel(data=await services.SeatService.layout(db, class_id, user.id, payload, if_match))
@@ -131,20 +133,20 @@ async def batch_seats(class_id: uuid.UUID, payload: schemas.SeatBatch,
     return ResponseModel(data=await services.SeatService.batch(db, class_id, user.id, payload, if_match))
 
 
-@router.get("/classes/{class_id}/dashboard")
+@router.get("/classes/{class_id}/dashboard", response_model=ResponseModel[schemas.DashboardRead])
 async def dashboard(class_id: uuid.UUID, target_date: date = Query(default_factory=date.today, alias="date"),
                     db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     return ResponseModel(data=await services.SummaryService.dashboard(db, class_id, user.id, target_date))
 
 
-@router.get("/classes/{class_id}/finance-summary")
+@router.get("/classes/{class_id}/finance-summary", response_model=ResponseModel[schemas.FinanceSummary])
 async def finance_summary(class_id: uuid.UUID, date_from: Optional[date] = Query(None, alias="dateFrom"),
                           date_to: Optional[date] = Query(None, alias="dateTo"), db: AsyncSession = Depends(get_db),
                           user: User = Depends(get_current_user)):
     return ResponseModel(data=await services.SummaryService.finance(db, class_id, user.id, date_from, date_to))
 
 
-@router.get("/classes/{class_id}/training-summary")
+@router.get("/classes/{class_id}/training-summary", response_model=ResponseModel[schemas.TrainingSummary])
 async def training_summary(class_id: uuid.UUID, date_from: Optional[date] = Query(None, alias="dateFrom"),
                            date_to: Optional[date] = Query(None, alias="dateTo"), db: AsyncSession = Depends(get_db),
                            user: User = Depends(get_current_user)):
@@ -152,6 +154,7 @@ async def training_summary(class_id: uuid.UUID, date_from: Optional[date] = Quer
 
 
 @router.patch("/classes/{class_id}/alerts/{item_id}/status")
+@router.post("/classes/{class_id}/alerts/{item_id}/status")
 async def update_alert_status(class_id: uuid.UUID, item_id: uuid.UUID, payload: schemas.StatusUpdate,
                               db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     validated = schemas.RESOURCE_UPDATE_SCHEMAS["alerts"].model_validate(payload.model_dump(exclude_none=True))
@@ -159,6 +162,7 @@ async def update_alert_status(class_id: uuid.UUID, item_id: uuid.UUID, payload: 
 
 
 @router.patch("/classes/{class_id}/todos/{item_id}/status")
+@router.post("/classes/{class_id}/todos/{item_id}/status")
 async def update_todo_status(class_id: uuid.UUID, item_id: uuid.UUID, payload: schemas.StatusUpdate,
                              db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     validated = schemas.RESOURCE_UPDATE_SCHEMAS["todos"].model_validate({"status": payload.status})
@@ -171,6 +175,7 @@ async def get_ui_preference(db: AsyncSession = Depends(get_db), user: User = Dep
 
 
 @router.patch("/users/me/preferences/ui", response_model=ResponseModel[schemas.UiPreferenceRead])
+@router.post("/users/me/preferences/ui", response_model=ResponseModel[schemas.UiPreferenceRead])
 async def update_ui_preference(payload: schemas.UiPreferenceUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     return ResponseModel(data=await services.PreferenceService.update(db, user.id, payload.skin))
 
@@ -195,14 +200,14 @@ async def export_backup(class_id: uuid.UUID, db: AsyncSession = Depends(get_db),
         headers={"Content-Disposition": 'attachment; filename="teacher-logbook-backup.json"'})
 
 
-@router.post("/classes/{class_id}/backup/validate")
+@router.post("/classes/{class_id}/backup/validate", response_model=ResponseModel[schemas.BackupValidation])
 async def validate_backup(class_id: uuid.UUID, file: UploadFile = File(...), db: AsyncSession = Depends(get_db),
                           user: User = Depends(get_current_user)):
     await services.ClassService.require(db, class_id, user.id)
     return ResponseModel(data=services.BackupService.validate(await read_json_upload(file)))
 
 
-@router.post("/classes/{class_id}/backup/restore")
+@router.post("/classes/{class_id}/backup/restore", response_model=ResponseModel[schemas.BackupValidation])
 async def restore_backup(class_id: uuid.UUID, file: UploadFile = File(...), mode: str = Form(..., pattern="^(replace|merge)$"),
                          confirmation: str = Form(..., pattern="^RESTORE_CLASS_DATA$"), db: AsyncSession = Depends(get_db),
                          user: User = Depends(get_current_user)):
@@ -215,6 +220,16 @@ async def clear_class_data(class_id: uuid.UUID, payload: schemas.ClearDataReques
                            user: User = Depends(get_current_user)):
     await services.BackupService.clear(db, class_id, user.id)
     return ResponseModel(data=True)
+
+
+@router.post("/classes/{class_id}/legacy-import", response_model=ResponseModel[schemas.BackupValidation])
+async def import_legacy_data(class_id: uuid.UUID, file: UploadFile = File(...), dry_run: bool = Form(True, alias="dryRun"),
+                             confirmation: str = Form(""), db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    from apps.teacher_logbook.migration import import_legacy
+    if not dry_run and confirmation != "IMPORT_LEGACY_DATA":
+        from fastapi import HTTPException
+        raise HTTPException(422, "请明确确认迁移旧版数据")
+    return ResponseModel(data=await import_legacy(db, class_id, user.id, await read_json_upload(file), dry_run))
 
 
 def register_crud_routes() -> None:
@@ -257,10 +272,12 @@ def register_crud_routes() -> None:
             resource, create_schema, update_schema
         )
 
-        router.add_api_route(f"/classes/{{class_id}}/{resource}", list_endpoint, methods=["GET"], name=f"list_{resource}")
-        router.add_api_route(f"/classes/{{class_id}}/{resource}", create_endpoint, methods=["POST"], status_code=201, name=f"create_{resource}")
-        router.add_api_route(f"/classes/{{class_id}}/{resource}/{{item_id}}", get_endpoint, methods=["GET"], name=f"get_{resource}")
-        router.add_api_route(f"/classes/{{class_id}}/{resource}/{{item_id}}", patch_endpoint, methods=["PATCH"], name=f"update_{resource}")
+        read_schema = schemas.RESOURCE_READ_SCHEMAS[resource]
+        router.add_api_route(f"/classes/{{class_id}}/{resource}", list_endpoint, methods=["GET"], name=f"list_{resource}", response_model=PaginatedResponse[read_schema])
+        router.add_api_route(f"/classes/{{class_id}}/{resource}", create_endpoint, methods=["POST"], status_code=201, name=f"create_{resource}", response_model=ResponseModel[read_schema])
+        router.add_api_route(f"/classes/{{class_id}}/{resource}/{{item_id}}", get_endpoint, methods=["GET"], name=f"get_{resource}", response_model=ResponseModel[read_schema])
+        router.add_api_route(f"/classes/{{class_id}}/{resource}/{{item_id}}", patch_endpoint, methods=["PATCH"], name=f"update_{resource}", response_model=ResponseModel[read_schema])
+        router.add_api_route(f"/classes/{{class_id}}/{resource}/{{item_id}}", patch_endpoint, methods=["POST"], name=f"update_compatible_{resource}", response_model=ResponseModel[read_schema])
         router.add_api_route(f"/classes/{{class_id}}/{resource}/{{item_id}}", delete_endpoint, methods=["DELETE"], status_code=204, name=f"delete_{resource}")
 
 
