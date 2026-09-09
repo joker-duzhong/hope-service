@@ -288,6 +288,8 @@ async def test_empty_public_allowlist_keeps_app_configuration_checks(store, monk
 @pytest.mark.parametrize("callback", [
     "http://192.168.31.93:5173/wechat/callback?env=local",
     "https://other.example.test:8443/wechat/callback",
+    "http://192.168.31.93:5173/passport/wechat/callback?env=local",
+    "https://other.example.test:8443/passport/wechat/callback",
 ])
 async def test_empty_allowlists_allow_configured_public_app_and_any_origin(store, monkeypatch, callback):
     monkeypatch.setattr(service.settings, "PASSPORT_WECHAT_APP_IDS", [])
@@ -322,23 +324,58 @@ async def test_oauth_redirect_allowlist(store, uri):
 
 
 @pytest.mark.parametrize("origins", [[], ["http://192.168.1.10:5173", "https://passport.example.test"]])
+@pytest.mark.parametrize("path", ["/wechat/callback", "/passport/wechat/callback"])
 @pytest.mark.parametrize("environment,allowed", [
     ("development", True), ("dev", True), ("local", True), (" Development ", True),
     ("production", False), ("prod", False), (" Production ", False),
     ("staging", False), ("unknown", False), ("", False),
 ])
-async def test_http_callback_only_in_explicit_development_environment(store, monkeypatch, environment, allowed, origins):
+async def test_http_callback_only_in_explicit_development_environment(store, monkeypatch, environment, allowed, origins, path):
     monkeypatch.setattr(service.settings, "ENVIRONMENT", environment)
     monkeypatch.setattr(service.settings, "DEBUG", True)
     monkeypatch.setattr(service.settings, "PASSPORT_CALLBACK_ORIGINS", origins)
-    callback = "http://192.168.1.10:5173/wechat/callback?env=local"
+    callback = f"http://192.168.1.10:5173{path}?env=local"
     if allowed:
         service.validate_oauth_target("public-id", callback)
     else:
         with pytest.raises(HTTPException) as error:
             service.validate_oauth_target("public-id", callback)
         assert error.value.status_code == 400
-    service.validate_oauth_target("public-id", "https://passport.example.test/wechat/callback")
+    service.validate_oauth_target("public-id", f"https://passport.example.test{path}")
+
+
+@pytest.mark.parametrize("path", ["/wechat/callback", "/passport/wechat/callback"])
+async def test_passport_deployment_callbacks_allowlisted(store, monkeypatch, path):
+    monkeypatch.setattr(service.settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(service.settings, "PASSPORT_CALLBACK_ORIGINS", ["https://tool.lxyy.fun"])
+    service.validate_oauth_target("public-id", f"https://tool.lxyy.fun{path}")
+    service.validate_oauth_target("public-id", f"https://tool.lxyy.fun{path}?env=local")
+
+
+@pytest.mark.parametrize("callback", [
+    "https://tool.lxyy.fun/other/wechat/callback",
+    "https://tool.lxyy.fun/passport/wechat/callback/extra",
+    "https://tool.lxyy.fun/passport/wechat/callback/",
+    "https://tool.lxyy.fun/passport//wechat/callback",
+    "https://tool.lxyy.fun/passport/../wechat/callback",
+    "https://tool.lxyy.fun/passport/%77echat/callback",
+    "https://tool.lxyy.fun/passport/wechat/callback;extra",
+    "https://tool.lxyy.fun/passport/wechat/callback;",
+    "https://tool.lxyy.fun/wechat/callback;extra",
+    "https://tool.lxyy.fun/passport/wechat/callback#fragment",
+    "https://user@tool.lxyy.fun/passport/wechat/callback",
+    "https://:password@tool.lxyy.fun/passport/wechat/callback",
+    "https://other.example.test/passport/wechat/callback",
+    "https://tool.lxyy.fun:8443/passport/wechat/callback",
+    "http://tool.lxyy.fun/passport/wechat/callback?env=local",
+    "/passport/wechat/callback",
+])
+async def test_passport_deployment_rejects_other_paths_and_origins(store, monkeypatch, callback):
+    monkeypatch.setattr(service.settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(service.settings, "PASSPORT_CALLBACK_ORIGINS", ["https://tool.lxyy.fun"])
+    with pytest.raises(HTTPException) as error:
+        service.validate_oauth_target("public-id", callback)
+    assert error.value.status_code == 400
 
 
 @pytest.mark.parametrize("callback", [

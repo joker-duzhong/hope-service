@@ -1,7 +1,7 @@
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import HTTPException
@@ -58,12 +58,12 @@ def resolve_identity_scope(channel: str, appid: str) -> str:
 
 def validate_oauth_target(appid: str, redirect_uri: str) -> None:
     resolve_identity_scope("h5", appid)
-    target = urlparse(redirect_uri)
+    target = urlsplit(redirect_uri)
     origin = f"{target.scheme}://{target.netloc}"
     allow_http = settings.ENVIRONMENT.strip().lower() in {"development", "dev", "local"}
     allowed_scheme = target.scheme == "https" or (allow_http and target.scheme == "http")
     if not allowed_scheme or not target.hostname or target.username or target.password or target.fragment or \
-        target.path != "/wechat/callback" or \
+        target.path not in {"/wechat/callback", "/passport/wechat/callback"} or \
         (settings.PASSPORT_CALLBACK_ORIGINS and origin not in settings.PASSPORT_CALLBACK_ORIGINS):
         raise HTTPException(400, "微信回调地址无效、未登记或协议不允许；HTTP 仅限开发环境")
 

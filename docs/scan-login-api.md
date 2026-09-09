@@ -49,6 +49,8 @@ PC 选取一个 app_key 后发起 POST /api/v1/auth/scan/sessions，例如：
 
 前端把 transaction_id 拼入自己配置的 H5 地址并生成二维码。每个二维码分别保留自己的 poll_token；同一 PC 可以有多个独立事务，不能共享或串用凭证。页面刷新丢失 poll_token 时创建新二维码。
 
+当前正式二维码地址为 `https://tool.lxyy.fun/passport/scan?transaction_id=<后端返回的UUID>`。业务端需将原根路径入口更新为 `/passport/scan`；API 前缀仍是 `/api/v1/auth/scan`，不能加 `/passport/`。`<后端返回的UUID>` 是占位说明，必须替换为新创建且未过期的事务 ID，不能直接作为二维码使用。
+
 ## 2. 手机通知已扫码
 
 H5 从 URL 取得 transaction_id，调用 info 获取真实应用名称和状态，随后调用 scanned。

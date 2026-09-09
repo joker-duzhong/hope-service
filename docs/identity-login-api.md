@@ -18,12 +18,14 @@
 | 变量 | 类型 | 含义 |
 | --- | --- | --- |
 | `PASSPORT_WECHAT_APP_IDS` | JSON 字符串数组 | 授权中心公众号 AppID 白名单；为空时允许 `WECHAT_APPS` 中已配置且未登记为小程序的 AppID，非空时仅允许列表内 AppID |
-| `PASSPORT_CALLBACK_ORIGINS` | JSON 字符串数组 | 完整源地址（含端口，无尾部斜线）；为空时允许任意源，非空时仅允许列表内源。路径始终须为 `/wechat/callback`，正式环境必须 HTTPS，明确开发环境允许 HTTP |
+| `PASSPORT_CALLBACK_ORIGINS` | JSON 字符串数组 | 完整源地址（含端口，无尾部斜线）；为空时允许任意源，非空时仅允许列表内源。路径仅允许 `/passport/wechat/callback` 和兼容旧版的 `/wechat/callback`，正式环境必须 HTTPS，明确开发环境允许 HTTP |
 | `MINIAPP_APP_SCOPES` | JSON 对象 | 小程序 AppID 到 `core/apps_config.py` 已启用业务 key 的单值映射 |
 
 同一个 AppID 不能同时登记为公众号和小程序。小程序登录的目标业务完全由后端映射决定，不接受客户端 `app_key`。`AppConfig.wechat_appids` 不是本次登录范围配置的替代来源，支付和通知的 AppID 校验也不能据此视为已完成。
 
-配置非空白名单时，前端各环境的 `VITE_*_WECHAT_APP_ID` 要对应公众号白名单，`VITE_*_PASSPORT_URL` 要对应回调源。公众号平台也须登记相同网页授权域名。生产/本地分别配置 API、数据库和 Redis，禁止共享认证密钥与登录状态空间。
+配置非空白名单时，前端各环境的 `VITE_*_WECHAT_APP_ID` 要对应公众号白名单，`VITE_*_PASSPORT_URL` 的源地址要对应回调源。前端部署基址可以包含 `/passport/`，但服务端回调源白名单和 CORS 只填写源地址，不填写目录。公众号平台也须登记相同网页授权域名。生产/本地分别配置 API、数据库和 Redis，禁止共享认证密钥与登录状态空间。
+
+当前授权中心部署基址为 `https://tool.lxyy.fun/passport/`，网页回调为 `https://tool.lxyy.fun/passport/wechat/callback`。非空 `PASSPORT_CALLBACK_ORIGINS` 应包含 `https://tool.lxyy.fun`，公众号网页授权域名为 `tool.lxyy.fun`。后端保留旧回调路径用于兼容先后发布的前端，不放开任意路径、路径参数（`;...`）或路径后缀。先发布后端，再发布新版前端并更新业务端二维码地址；未修改真实环境配置。
 
 仅服务端 `ENVIRONMENT` 为 `development`、`dev` 或 `local`（忽略大小写及首尾空格）时允许 HTTP 回调；回调白名单非空时还须匹配源地址。`production`、`prod`、预发布及未知值仍要求 HTTPS；`DEBUG=true` 或 URL 的 `env=local` 均不能放开正式后端限制。即使白名单为空，协议、有效主机名、固定回调路径、URL 用户名密码和 fragment 校验仍然有效。空回调白名单允许外部站点作为回调源，正式环境建议显式配置白名单。
 
@@ -31,7 +33,7 @@
 
 ## H5 流程
 
-1. PC 创建扫码会话，保存 `poll_token`，仅把 `transaction_id` 放入授权中心 `/scan` URL。可附加 `app_key` 选择主题，但授权目标取后端会话。
+1. PC 创建扫码会话，保存 `poll_token`，仅把 `transaction_id` 放入授权中心 `/passport/scan` URL。可附加 `app_key` 选择主题，但授权目标取后端会话。
 2. H5 查询扫码状态、通知已扫码。微信内且配置 AppID 时，每个事务自动尝试一次 `snsapi_base`；已有有效 Passport 登录态则直接进入确认页。
 3. `GET /auth/wechat/url?appid=...&redirect_uri=...&state=...&scope=snsapi_base` 返回微信 URL；前端保存随机 state 和原事务上下文，在回调校验并消耗。后端验证回调白名单。
 4. `POST /auth/identity/h5`：`{appid, code, transaction_id?}`，不需要 Bearer Token。若携带已结束事务，先拒绝，不消耗微信 code。

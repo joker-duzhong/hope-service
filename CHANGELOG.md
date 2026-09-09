@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-09 Passport Subdirectory Deployment
+
+- 微信 OAuth 回调新增精确允许 `/passport/wechat/callback`，保留旧 `/wechat/callback` 兼容；API 路由和认证流程不变。
+- 保留源地址白名单、开发环境 HTTP 限制和 URL 凭据/片段校验；拒绝路径参数、其他目录、重复分隔符、路径后缀及未登记源地址。空白名单的既有行为不变。
+- 增加新旧路径、生产/本地环境及错误路径回归测试；文档明确 `https://tool.lxyy.fun/passport/` 的页面入口与仅含源地址的后端配置，补充业务端二维码迁移说明。未修改真实环境配置或数据库。
+- 验证：身份、旧登录、扫码、凭据及 OpenID 回归共 239 项通过，使用 `--noconftest`、模拟依赖及不可用的本地数据库端口，未连接业务数据库或请求真实微信。配套前端构建、16 组浏览器场景及 16 项配置边界检查通过；两个仓库 `git diff --check` 通过。现有 Pydantic/Starlette 弃用警告未作无关修改。
+- 文件：`core/users/identity_service.py`、`tests/test_identity_login.py`、`docs/identity-login-api.md`、`docs/scan-login-api.md`、`CHANGELOG.md`。
+
 ## 2026-09-09 Optional Passport Allowlists
 
 - `PASSPORT_WECHAT_APP_IDS`、`PASSPORT_CALLBACK_ORIGINS` 未配置或为 `[]` 时放行对应的 AppID、回调源检查；非空时继续执行白名单限制。
