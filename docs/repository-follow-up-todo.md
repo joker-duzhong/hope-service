@@ -41,7 +41,7 @@
 - 先补齐生产环境变量：ENVIRONMENT=production、DEBUG=false、至少 32 字节 SECRET_KEY、Redis、阿里云短信、真实  WECHAT_APPS、支付私钥/平台证书、OSS、CORS 白名单。
 - 在预发布库执行 alembic upgrade head，验证 core_users.token_version 与 core_user_identities。
 - 完成历史微信 (AppID, OpenID) -> UserIdentity 对账和回填；无法确认 AppID 的记录不要猜测。
-- 用预发布环境验证：密码登录、微信登录、短信、刷新令牌、AuraKey 下单、支付回调、资源读取，以及三个仍启用业务的前端。
+- 用预发布环境验证：扫码登录、微信身份及手机号验证、短信、刷新令牌、AuraKey 下单、支付回调、资源读取，以及三个仍启用业务的前端。旧密码登录应返回 410。
 - 先发布数据库迁移，再发布 API 和 Celery Worker/Beat；发布窗口明确通知用户需重新登录。
 - 发布后重点监控 401/403/404、短信发送失败、Redis 错误、支付 failed 订单与新建微信账户数量。
 

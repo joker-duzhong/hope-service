@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-09-15 Remove Temporary Review Artifacts
+
+- 删除已完成应用的 `artifacts/` 临时审阅目录，包括补丁、代码副本与隔离构建文件；先解除两个依赖目录联接，真实 AuraKey 项目依赖保持完整。
+- 移除修订文件清单中的留档链接。已确认三个仓库的源码和构建脚本不依赖该目录，目录删除及依赖目录保留检查通过。
+- 文件：删除 `artifacts/`；修改 `docs/aurakey-revision-files.md`、`CHANGELOG.md`。
+
+## 2026-09-15 AuraKey Unified Identity Clients
+
+- 管理员仅保留扫码与手机验证码登录；旧 `POST /api/v1/auth/login` 返回 410，不查询账号或签发凭据，移除密码登录请求模型。新登录继续要求已验证手机号和相应权限，不放宽跨业务校验。
+- 新增 `GET /api/v1/aurakey/admin/session`，统一校验业务范围、账号状态、Token 版本及当前有效管理角色，返回无缓存的标准用户资料。支持前端在扫码、短信登录后确认管理权限。
+- AuraKey 业务资料弃用旧用户表 OpenID，返回 `null`；头像资源 ID 批量解析为可显示 URL，覆盖用户资料、公开图库和管理图库，失效头像资源返回空值。管理图库的 OpenID 搜索改用当前 AuraKey 小程序映射内的有效微信身份。
+- 更新两阶段身份接入、管理会话、头像和支付参数文档；支付客户端只提交 `product_id`，不再依赖或传入 OpenID。
+- 小程序、Web、管理后台及 `www` 配套修改均已写入实际仓库；管理后台默认扫码，保留手机验证码入口并彻底移除密码表单及调用。扫码与短信登录完成后均由后端校验管理权限。详见 `docs/aurakey-client-migration.md` 和 `docs/aurakey-revision-files.md`。
+- 验证：身份、扫码、会话范围、刷新、用户资料与生图回归共 356 项通过（`.venv/Scripts/python.exe -m pytest aurakey_identity_test.py tests/test_auth_flows.py tests/test_identity_login.py tests/test_scan_login.py tests/test_security.py tests/user_profile_test.py aurakey_asset_log_schema_test.py image_generation_test.py -q --noconftest`），包括密码入口固定 410、扫码及短信登录后普通用户拒绝访问管理会话。使用模拟微信/短信、Redis 和数据库，未操作真实账户或部署服务。
+- 配套仓库验证：小程序 17 项、Web 25 项、管理端 28 项、`www` 9 项模拟测试通过，类型检查及四个项目构建通过；Web 与管理端修改文件 ESLint 通过。浏览器工具不可用，尚未进行微信真机或生产环境联调。
+- 本次文件：`core/users/schemas.py`、`core/users/router.py`、`apps/aurakey/admin_router.py`、`apps/aurakey/router.py`、`apps/aurakey/schemas.py`、`apps/aurakey/services.py`、`tests/test_auth_flows.py`、`aurakey_identity_test.py`、`docs/identity-login-api.md`、`docs/aurakey-client-migration.md`、`docs/aurakey-revision-files.md`、`docs/repository-follow-up-todo.md`、`apps/aurakey/api.md`、`CHANGELOG.md`。
+
+## 2026-09-14 AuraKey OneAPI Image Generation
+
+- AuraKey `/task/generate` 与 `/task/generate-stream` 统一使用现有 Celery 后台任务；无参考图发送 JSON，有参考图通过 multipart 的 `image` 文件字段上传，两种请求均调用 `/v1/images/generations`。
+- 按在问接口约定固定 `n=1`、`response_format=b64_json`，保留响应 usage；解码生成图片后存入资源系统，存储完成后才标记任务成功。图片接口错误不再输出上游原始响应体。
+- 两个入口均通过 `reference_images_ids` 接收最多一张参考图（原 stream 上限为九张）；读取原图文件而非构造聊天消息，缺失、无效或读取失败时明确失败，避免忽略参考图继续生成。
+- 复用现有模型权限、扣费、查询、发布及失败退款逻辑；任务入队失败也及时标记失败并退款，保留已有远程任务的状态查询兼容，同步接口字段和示例。
+- 验证：`.venv/Scripts/python.exe -m pytest aurakey_asset_log_schema_test.py image_generation_test.py -q --noconftest`，78 项通过；请求、资源存储、任务队列和退款使用模拟依赖，未调用真实收费图片接口。系统默认 Python 缺少短信 SDK，改用项目现有 `.venv` 验证。
+- 文件：`core/llm/engine.py`、`apps/aurakey/tasks.py`、`apps/aurakey/services.py`、`apps/aurakey/schemas.py`、`apps/aurakey/router.py`、`apps/aurakey/api.md`、`aurakey_asset_log_schema_test.py`、`image_generation_test.py`、`CHANGELOG.md`。
+
 ## 2026-09-10 Identity Link Database Diagnostics
 
 - 账号关联数据库异常新增 `Identity link database failure` 日志，记录操作阶段、重试次数、SQLAlchemy/驱动异常类型、经格式校验的 SQLSTATE 及本模块出错代码位置。

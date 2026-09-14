@@ -8,6 +8,12 @@
 > Authorization: Bearer <access_token>
 > ```
 
+登录凭据必须属于 `hope_aurakey`；小程序、Web 和业务管理后台接入规则见 [两阶段身份登录](../../docs/identity-login-api.md)。管理后台仅支持扫码和手机验证码登录，登录完成后通过 `GET /admin/session` 校验管理权限。旧密码登录 `POST /api/v1/auth/login` 已停用并返回 410。
+
+### 管理会话校验
+
+**GET** `/admin/session`：要求 `hope_aurakey` Token，且用户具有当前业务有效的 `aurakey_admin` 角色或为超级管理员。成功返回 `code/message/data` 包装的标准用户资料（`id`、`phone`、`nickname`、资源对象 `avatar`、`roles`、`is_superuser`），并设置 `Cache-Control: no-store`。普通账号扫码后访问本接口返回 403，不能进入管理页；`admin_web` 或 `passport` 凭据不能跨范围使用。
+
 ---
 
 ## 通用响应结构
@@ -286,6 +292,8 @@
 
 > **需要登录**。调用后立即返回任务 ID，前端凭此轮询状态。算力实时扣除。
 
+任务由 Celery worker 在后台生成，需要运行对应 worker。`/task/generate` 与 `/task/generate-stream` 使用同一后台生成流程，均支持一张参考图；后者额外支持生成后公开到画廊。
+
 **POST** `/task/generate`
 
 **Request Body**
@@ -303,6 +311,11 @@
 | prompt | string | ✅ | 生图提示词，建议英文，效果更好 |
 | model_name | string | ✅ | 模型 ID，来自 `/task/options` |
 | aspect_ratio | string | ✅ | 宽高比，来自 `/task/options` |
+| reference_images_ids | string (UUID)[] | 否 | 已上传的参考图资源 ID，默认 `[]`，最多 1 张；参考图文件最大 20 MB |
+
+参考图先通过现有资源上传接口上传，再将资源 ID 放入 `reference_images_ids`。超过一张返回参数校验错误；参考图不存在或类型不是图片时返回 400，不扣除算力。
+
+后端统一请求 `POST /v1/images/generations`：无参考图时发送 JSON，有参考图时按 multipart/form-data 上传 `image` 文件。两种请求均包含 `model`、`prompt`、`n=1` 和 `response_format=b64_json`。宽高比拼入提示词；返回的 Base64 图片解码后存入资源系统。
 
 **响应示例**
 
@@ -331,6 +344,33 @@
 | code | message | 处理建议 |
 |---|---|---|
 | 400 | 算力不足 | 跳转充值页面 |
+| 400 | 参考图资源不存在 / 参考图资源必须是图片类型 | 重新上传图片 |
+| 422 | 请求参数校验失败 | 检查参考图数量及 UUID 格式 |
+
+上游生成、参考图读取、结果存储或任务入队失败时，任务会标记为 `failed` 并退回本次扣除的算力。入队失败仍返回任务 ID，`frozen_points=0`，`balance_after` 为退款后的余额；通过状态接口读取失败原因。
+
+### 2.2.1 提交后台生图任务（支持公开）
+
+**POST** `/task/generate-stream`
+
+该路径沿用历史名称，当前返回任务 ID，由前端轮询状态。
+
+请求支持 2.2 的全部字段，以及下列可选字段；响应结构与 2.2 相同。
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| is_public | boolean | 否 | 默认 `false`；为 `true` 时，生成成功后自动公开到画廊 |
+| category_id | string (UUID) | 否 | 公开到画廊时使用的分类 ID |
+
+```json
+{
+  "prompt": "基于参考图生成头像，保持人物外观",
+  "model_name": "gpt-image-2",
+  "aspect_ratio": "1:1",
+  "reference_images_ids": ["550e8400-e29b-41d4-a716-446655440003"],
+  "is_public": false
+}
+```
 
 ---
 
@@ -356,7 +396,9 @@
     "task_id": "550e8400-e29b-41d4-a716-446655440002",
     "status": "processing",
     "progress": 45,
-    "image_url": null,
+    "resource": null,
+    "reference_images_ids": [],
+    "reference_images": [],
     "failed_reason": null
   }
 }
@@ -372,7 +414,21 @@
     "task_id": "550e8400-e29b-41d4-a716-446655440002",
     "status": "success",
     "progress": 100,
-    "image_url": "https://cdn.example.com/img/generated_abc.jpg",
+    "resource": {
+      "id": "550e8400-e29b-41d4-a716-446655440004",
+      "name": "aurakey-550e8400-e29b-41d4-a716-446655440002.png",
+      "url": "https://cdn.example.com/img/generated_abc.png",
+      "thumb_url": null,
+      "size": 102400,
+      "type": "image/png",
+      "scope": "hope_aurakey",
+      "hash": "5d41402abc4b2a76b9719d911017c592",
+      "owner": "550e8400-e29b-41d4-a716-446655440001",
+      "created_at": "2026-09-14T12:00:00+08:00",
+      "updated_at": "2026-09-14T12:00:00+08:00"
+    },
+    "reference_images_ids": [],
+    "reference_images": [],
     "failed_reason": null
   }
 }
@@ -387,9 +443,11 @@
   "data": {
     "task_id": "550e8400-e29b-41d4-a716-446655440002",
     "status": "failed",
-    "progress": 20,
-    "image_url": null,
-    "failed_reason": "内容违规，请修改 Prompt 后重试"
+    "progress": 100,
+    "resource": null,
+    "reference_images_ids": [],
+    "reference_images": [],
+    "failed_reason": "上游图片生成超过 600 秒未返回，请稍后重试"
   }
 }
 ```
@@ -401,7 +459,9 @@
 | task_id | string (UUID) | 任务 ID |
 | status | string | 状态枚举（见下表） |
 | progress | int | 进度百分比 0-100，成功时为 100 |
-| image_url | string \| null | 生成的图片地址，**仅 `success` 时有值** |
+| resource | object \| null | 生成的图片资源；成功后从 `resource.url` 获取图片地址 |
+| reference_images_ids | string (UUID)[] | 参考图资源 ID 列表 |
+| reference_images | object[] | 仍可访问的参考图资源结构列表 |
 | failed_reason | string \| null | 失败原因，**仅 `failed` 时有值**，可直接 toast 给用户 |
 
 **status 枚举**
@@ -433,7 +493,7 @@
   "message": "success",
   "data": {
     "user_id": "550e8400-e29b-41d4-a716-446655440001",
-    "openid": "oxxxxxxxxxxxxxxxxxxxxxx",
+    "openid": null,
     "nickname": "阿杰",
     "avatar": "https://cdn.example.com/avatar/aj.jpg",
     "phone": "138****8888",
@@ -450,7 +510,7 @@
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | user_id | string (UUID) | 用户 ID |
-| openid | string \| null | 微信 openid，非微信用户可能为 `null` |
+| openid | null | 已废弃，固定为 `null`；不用于客户端身份或支付判断 |
 | nickname | string | 昵称 |
 | avatar | string | 头像 URL |
 | phone | string | 手机号（脱敏） |
@@ -597,15 +657,15 @@
 
 ```json
 {
-  "product_id": "550e8400-e29b-41d4-a716-446655440020",
-  "openid": "oxxxxxxxxxxxxxxxxxxxxxx"
+  "product_id": "550e8400-e29b-41d4-a716-446655440020"
 }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | product_id | string (UUID) | ✅ | 商品 ID |
-| openid | string | ✅ | 微信小程序用户 openid（通过 `wx.login` 获取） |
+
+服务端根据当前统一用户及支付小程序 AppID 查询已验证微信身份，客户端无需传入 OpenID，也不能以资料中 OpenID 为空阻止下单。没有对应微信身份或存在多个身份无法唯一确定时返回明确错误。
 
 **响应示例**
 
@@ -979,9 +1039,8 @@
 1. 调用 GET /store/products → 渲染商品列表
 
 2. 用户选择商品，点击购买
-   → 调用 wx.login() 获取 code
-   → 换取 openid（通过已有登录接口）
-   → 调用 POST /order/create
+   → 未登录时先完成两阶段登录与手机号验证
+   → 调用 POST /order/create，仅提交 product_id
    → 获取 order_no 和 pay_params
 
 3. 调用 wx.requestPayment(pay_params)

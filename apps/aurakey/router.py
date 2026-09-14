@@ -134,8 +134,8 @@ async def generate_task(
 @router.post(
     "/task/generate-stream",
     response_model=ResponseModel[TaskGenerateResponse],
-    summary="提交流式生图任务",
-    description="登录用户提交流式生图任务，后端后台接收上游流式结果并更新任务状态。",
+    summary="提交后台生图任务",
+    description="登录用户提交生图任务，后端后台调用图片生成接口、保存结果并更新任务状态；支持一张参考图和生成后公开到画廊。",
 )
 async def generate_stream_task(
     req: TaskStreamGenerateRequest,
@@ -190,11 +190,12 @@ async def get_user_profile(
     db: AsyncSession = Depends(get_db)
 ):
     entitlement = await AurakeyService.get_user_entitlement(db, current_user.id)
+    avatar_map = await AurakeyService._get_user_avatar_map(db, [current_user])
     res = {
         "user_id": current_user.id,
-        "openid": current_user.openid,
+        "openid": None,
         "nickname": current_user.nickname,
-        "avatar": current_user.avatar,
+        "avatar": avatar_map.get(current_user.id),
         "phone": current_user.phone,
         "balance": entitlement["remaining_points"],
         "is_vip": entitlement["is_vip"],

@@ -84,8 +84,17 @@ PC 手机号登录请求改为 `POST /auth/phone/login`：`{phone, code, app_key
 - H5 公共公众号登录签发 `app_scope=passport`，仅该范围可以确认或取消扫码请求。
 - PC 扫码兑换签发会话内目标 `app_key` 范围的 Token；小程序签发其后端映射范围的 Token；PC 手机号登录签发已校验目标范围。
 - Access/Refresh Token 和 Redis refresh 会话都保存范围，刷新不能改变范围。A 的 Token 访问 B 路由返回 403；伪造 Header `app` 不会改变路由范围。
-- 应用角色仍需单独授权，普通用户首次登录不会变成会员或管理员。后台密码登录仅超级管理员，签发 `admin_web` Token。
+- 应用角色仍需单独授权，普通用户首次登录不会变成会员或管理员。管理员统一使用扫码或手机验证码登录；旧 `POST /auth/login` 返回 410，不再接收密码、查询账号或签发凭据。平台后台可通过手机验证码或扫码申请 `admin_web` 范围，仍仅允许超级管理员；AuraKey 管理后台使用 `hope_aurakey`，不能跨范围使用 Token。
 - 公共 `/auth/me` 返回当前凭据范围内的基础用户信息。各业务仍须执行资源归属检查；本次不宣称审计并修复了所有支付、存储等公共接口的业务权限。
+
+### AuraKey 三端接入
+
+- 小程序使用 `/auth/identity/miniapp`，服务端 `MINIAPP_APP_SCOPES` 将 AppID 映射到 `hope_aurakey`。`PHONE_REQUIRED` 阶段只持有临时票据，不访问业务资料或资产；用户同意协议并完成微信手机号或短信证明后保存正式会话。
+- Web 与 AuraKey 管理后台使用 `/auth/phone/login` 时传 `app_key:"hope_aurakey"`；扫码创建会话也传同一 app_key。PC 在 Passport 手机端确认后兑换自己的 Token，二维码中仅包含 transaction_id，不包含 poll_token。
+- 管理后台仅保留扫码、手机验证码两种入口，登录后调用 `GET /api/v1/aurakey/admin/session`，服务端要求 `hope_aurakey` 范围及有效 `aurakey_admin` 角色或超级管理员身份。扫码成功不代表自动获得管理权限。
+- 会话校验返回标准 `UserResponse` 和 `Cache-Control: no-store`。仍服务艺术家、分类、风格等内容的 `www` 可通过部署端显式配置的身份 API 校验管理请求，不复制身份数据库或共用旧 Express JWT。
+- `/aurakey/user/profile` 保留 `user_id`、头像 URL、余额、会员字段；`openid` 已废弃并返回 null。`/auth/me` 和登录响应的 `user.avatar` 为资源对象，读取其 `url`。支付创建只传 `product_id`，由服务端查找已验证微信身份。
+- Refresh Token 为一次性轮换，多项并发请求共用一次刷新；旧凭据或账号切换后清理客户端用户数据，临时票据不可作为 Bearer Token。管理员需要已验证手机号；历史无手机号账号应完成受控的身份验证与绑定，不恢复密码入口，也不自动合并旧账号或授予管理权限。
 
 ## 冲突、并发与恢复
 

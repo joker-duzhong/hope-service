@@ -20,7 +20,6 @@ from core.users.schemas import (
     Token,
     UserResponse,
     UserUpdate,
-    UsernameLogin,
     WechatAuthUrl,
     WechatLogin,
     SendSmsCodeRequest,
@@ -93,21 +92,13 @@ async def phone_bind(
 
 # ==================== 登录 ====================
 
-@router.post("/login", response_model=ResponseModel[LoginResponse])
-async def login(
-    login_data: UsernameLogin,
-    db: AsyncSession = Depends(get_db),
-):
-    """仅供现有超级管理员使用的密码登录；普通用户请使用短信登录。"""
-    user = await UserService.authenticate(db, login_data.username, login_data.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户名或密码错误",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    return ResponseModel(data=await UserService.build_login_response(db, user, "admin_web"))
+@router.post("/login", deprecated=True, status_code=status.HTTP_410_GONE)
+async def login():
+    """密码登录已停用，所有用户统一使用扫码或手机验证码登录。"""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="密码登录已停用，请使用扫码或手机验证码登录",
+    )
 
 
 # ==================== 微信登录 ====================

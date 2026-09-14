@@ -15,7 +15,7 @@ from worker.celery_app import celery_app
 from apps.aurakey.models import AurakeyTask, AurakeyUserAsset, AurakeyAssetLog
 from apps.aurakey.services import AurakeyService
 from core.config import settings
-from core.llm.engine import generate_image_generation
+from core.llm.engine import DATA_URL_IMAGE_RE, generate_image_generation
 from core.storage.services import StorageService
 from core.users.models import User
 
@@ -105,41 +105,48 @@ def _is_stale_stream_image_task(task: AurakeyTask, *, now_utc: datetime | None =
     return (now - created_at).total_seconds() >= stale_after
 
 
-async def _build_image_data_url(resource) -> str:
-    if resource.url.startswith("data:image/"):
-        return resource.url
-
-    file_bytes, mime_type, _ = await StorageService._download_remote_file(
-        remote_url=resource.url,
-        name=resource.name,
-        timeout=20.0,
-        max_bytes=20 * 1024 * 1024,
-    )
-    if not mime_type.startswith("image/"):
-        raise ValueError(f"参考图资源不是图片类型: {resource.id}")
-
-    encoded = base64.b64encode(file_bytes).decode("ascii")
-    return f"data:{mime_type};base64,{encoded}"
-
-
 def _build_stream_image_prompt(task: AurakeyTask) -> str:
     return task.prompt + ', 图片比例为:' + task.aspect_ratio
 
 
-async def _build_stream_image_user_content(db: AsyncSession, task: AurakeyTask):
-    prompt = _build_stream_image_prompt(task)
-    print('发送给模型:' + prompt)
-    content: list[dict] = [{"type": "text", "text": prompt}]
+async def _load_reference_image_file(
+    db: AsyncSession, task: AurakeyTask,
+) -> tuple[str, bytes, str] | None:
+    if not task.reference_image_ids:
+        return None
     reference_ids = _parse_reference_image_ids(task.reference_image_ids)
-    if not reference_ids:
-        return prompt
+    if len(reference_ids) != len(task.reference_image_ids):
+        raise ValueError("参考图资源 ID 无效")
+    if len(reference_ids) > 1:
+        raise ValueError("当前生图接口最多支持一张参考图")
 
-    resource_map = await StorageService.get_resources_by_ids(db, reference_ids)
-    for resource_id in reference_ids:
-        resource = resource_map.get(resource_id)
-        if resource:
-            content.append({"type": "image_url", "image_url": {"url": await _build_image_data_url(resource)}})
-    return content if len(content) > 1 else prompt
+    resource_map = await AurakeyService._validate_reference_images(db, reference_ids)
+    resource = resource_map[reference_ids[0]]
+    max_bytes = 20 * 1024 * 1024
+    if resource.url.startswith("data:"):
+        match = DATA_URL_IMAGE_RE.fullmatch(resource.url)
+        if not match:
+            raise ValueError("参考图数据格式无效")
+        mime_type, encoded = match.groups()
+        if len(encoded) > ((max_bytes + 2) // 3) * 4:
+            raise ValueError("参考图大小不能超过 20 MB")
+        try:
+            file_bytes = base64.b64decode(encoded, validate=True)
+        except ValueError:
+            raise ValueError("参考图 base64 数据无效") from None
+        file_name = resource.name
+    else:
+        file_bytes, mime_type, file_name = await StorageService._download_remote_file(
+            remote_url=resource.url,
+            name=resource.name,
+            timeout=20.0,
+            max_bytes=max_bytes,
+        )
+    if not file_bytes or len(file_bytes) > max_bytes:
+        raise ValueError("参考图不能为空且大小不能超过 20 MB")
+    if not mime_type.startswith("image/"):
+        raise ValueError("参考图资源必须是图片类型")
+    return file_name or "reference.png", file_bytes, mime_type
 
 
 async def _refund_task(db: AsyncSession, task: AurakeyTask, reason: str):
@@ -241,23 +248,23 @@ async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
 
         try:
             prompt = _build_stream_image_prompt(task)
-            print('发送给模型:' + prompt)
+            image = await _load_reference_image_file(db, task)
             timeout_seconds = _get_stream_image_timeout()
             result = await generate_image_generation(
                 prompt=prompt,
                 model=task.model_name or "gpt-image-2",
                 n=1,
-                response_format="url",
+                response_format="b64_json",
                 timeout=timeout_seconds,
+                image=image,
             )
+            resource = await _upload_image_generation_result(db, task, result)
             task.status = "success"
             task.progress = 100
-            resource = await _upload_image_generation_result(db, task, result)
             task.image_resource_id = resource.id
             task.image_url = None
             task.failed_reason = None
             task.remote_task_id = None
-            task.frozen_points = 0
             if is_public and not task.is_published:
                 user = await db.get(User, task.user_id)
                 await AurakeyService.publish_task_to_gallery(
@@ -266,6 +273,7 @@ async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
                     (user.nickname or user.username) if user else None,
                     user.avatar if user else None,
                 )
+            task.frozen_points = 0
             await db.commit()
         except httpx.ReadTimeout as exc:
             timeout_seconds = _get_stream_image_timeout()

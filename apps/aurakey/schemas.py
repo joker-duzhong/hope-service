@@ -67,12 +67,12 @@ class TaskGenerateRequest(BaseModel):
     prompt: str = Field(..., description="生图提示词")
     model_name: str = Field(..., description="模型 ID 或模型名称")
     aspect_ratio: str = Field(..., description="图片宽高比，如 1:1、16:9")
+    reference_images_ids: List[uuid.UUID] = Field(default_factory=list, max_length=1, description="参考图资源 ID 列表，最多 1 张")
 
 
 class TaskStreamGenerateRequest(TaskGenerateRequest):
     is_public: bool = Field(default=False, description="是否公开到画廊，true 时生成成功后自动发布")
     category_id: Optional[uuid.UUID] = Field(default=None, description="公开到画廊时使用的分类 ID")
-    reference_images_ids: List[uuid.UUID] = Field(default_factory=list, max_length=9, description="参考图资源 ID 列表，最多 9 张")
 
 
 class TaskGenerateResponse(BaseModel):
@@ -108,7 +108,7 @@ class TaskOptionsResponse(BaseModel):
 
 class UserProfileResponse(BaseModel):
     user_id: uuid.UUID
-    openid: Optional[str] = None
+    openid: Optional[str] = Field(default=None, deprecated=True, description="已废弃，固定返回 null；支付身份由服务端解析")
     nickname: Optional[str] = None
     avatar: Optional[str] = None
     phone: Optional[str] = None

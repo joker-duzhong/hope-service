@@ -316,6 +316,35 @@ async def test_phone_login_http_contract(api, sms_check, phone_lookup, existing)
     assert "hashed_password" not in data["user"]
 
 
+@pytest.mark.parametrize("app_key", [None, "admin_web", "hope_aurakey", "passport", "unknown-business"])
+async def test_password_login_is_gone_for_every_scope(api, monkeypatch, tokens, database, app_key):
+    authenticate = AsyncMock(return_value=make_user(is_superuser=True, phone="13800138000"))
+    monkeypatch.setattr(UserService, "authenticate", authenticate)
+    payload = {"username": "admin", "password": "test-password"}
+    if app_key is not None:
+        payload["app_key"] = app_key
+    response = await api[1].post("/api/v1/auth/login", json=payload)
+    assert response.status_code == 410
+    assert response.json()["code"] == 410
+    assert response.json()["data"] is None
+    assert "密码登录已停用" in response.json()["message"]
+    authenticate.assert_not_awaited()
+    database.execute.assert_not_awaited()
+    tokens.assert_not_awaited()
+
+
+async def test_retired_password_route_has_no_credential_schema(api, tokens):
+    response = await api[1].post("/api/v1/auth/login")
+    assert response.status_code == 410
+    schema = api[0].openapi()
+    route = schema["paths"]["/api/v1/auth/login"]["post"]
+    assert route["deprecated"] is True
+    assert "requestBody" not in route
+    assert "200" not in route["responses"]
+    assert "UsernameLogin" not in schema["components"]["schemas"]
+    tokens.assert_not_awaited()
+
+
 async def test_invalid_sms_does_not_issue_tokens(api, sms_check, tokens):
     sms_check.return_value = False
     _, client = api

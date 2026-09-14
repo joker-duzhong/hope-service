@@ -1,12 +1,14 @@
 import uuid
 import math
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from core.database import get_db
 from core.users.models import User
 from core.users.dependencies import require_roles
+from core.users.schemas import UserResponse
+from core.users.services import UserService
 from core.response import ResponseModel, PaginatedData, PaginatedResponse
 
 from apps.aurakey.schemas import (
@@ -28,6 +30,18 @@ from apps.aurakey.admin_services import AurakeyAdminService
 from apps.aurakey.services import AurakeyService
 
 router = APIRouter(prefix="/admin", tags=["AuraKey B端管理"])
+
+
+@router.get("/session", response_model=ResponseModel[UserResponse], summary="校验 AuraKey 管理会话")
+async def get_admin_session(
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles("aurakey_admin")),
+):
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return ResponseModel(data=await UserService.build_scoped_user_response(db, current_user, "hope_aurakey"))
+
 
 @router.get("/dashboard/stats", response_model=ResponseModel)
 async def get_dashboard_stats(

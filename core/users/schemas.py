@@ -84,12 +84,6 @@ class UserResponse(UserBase):
 
 # ==================== 登录模型 ====================
 
-class UsernameLogin(BaseModel):
-    """用户名密码登录"""
-    username: str
-    password: str
-
-
 class WechatLogin(BaseModel):
     """微信授权登录"""
     appid: str = Field(..., description="微信公众号 AppID")

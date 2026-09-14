@@ -23,9 +23,10 @@ from apps.aurakey.config import (
     get_default_aurakey_config,
 )
 from core.database import async_session_maker
-from core.llm.engine import generate_image, fetch_image_result
+from core.config import settings
+from core.llm.engine import fetch_image_result
 from core.storage.services import StorageService
-from core.users.models import User
+from core.users.models import User, UserIdentity
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,26 @@ class AurakeyService:
     GALLERY_APPROVED_STATUS = "approved"
     DEFAULT_TASK_DURATION_SECONDS = 120
     MAX_TASK_DURATION_SECONDS = 600
+
+    @staticmethod
+    async def _get_user_avatar_map(db: AsyncSession, users: List[User]) -> dict[uuid.UUID, Optional[str]]:
+        avatars: dict[uuid.UUID, Optional[str]] = {}
+        resource_ids: dict[uuid.UUID, uuid.UUID] = {}
+        for user in users:
+            if not user:
+                continue
+            avatars[user.id] = user.avatar or None
+            if user.avatar:
+                try:
+                    resource_ids[user.id] = uuid.UUID(user.avatar)
+                except (ValueError, TypeError):
+                    continue
+        if resource_ids:
+            resources = await StorageService.get_resources_by_ids(db, list(set(resource_ids.values())))
+            for user_id, resource_id in resource_ids.items():
+                resource = resources.get(resource_id)
+                avatars[user_id] = resource.url if resource else None
+        return avatars
 
     @staticmethod
     def _now_utc() -> datetime:
@@ -523,6 +544,7 @@ class AurakeyService:
         rows = (await db.execute(stmt)).all()
         tasks = [task for task, _user in rows]
         resource_map = await AurakeyService._get_task_resource_map(db, tasks)
+        avatar_map = await AurakeyService._get_user_avatar_map(db, [user for _task, user in rows])
         
         # 批量查询点赞状态，避免 N+1
         liked_ids: Set[uuid.UUID] = set()
@@ -542,7 +564,7 @@ class AurakeyService:
             if not resource:
                 continue
             nickname = ((user.nickname or user.username) if user else None) or "匿名用户"
-            avatar = (user.avatar if user else None) or ""
+            avatar = avatar_map.get(item.user_id) or ""
             res.append({
                 "id": item.id,
                 "resource": resource,
@@ -591,6 +613,14 @@ class AurakeyService:
         keyword = keyword.strip() if keyword else None
         if keyword:
             pattern = f"%{keyword}%"
+            appids = [appid for appid, scope in settings.MINIAPP_APP_SCOPES.items() if scope == "hope_aurakey"]
+            matching_identity = select(UserIdentity.id).where(
+                UserIdentity.user_id == User.id,
+                UserIdentity.provider == "wechat",
+                UserIdentity.provider_app_id.in_(appids),
+                UserIdentity.subject.ilike(pattern),
+                UserIdentity.is_deleted == False,
+            ).exists()
             conditions.append(
                 or_(
                     AurakeyTask.prompt.ilike(pattern),
@@ -598,7 +628,7 @@ class AurakeyService:
                     User.username.ilike(pattern),
                     User.nickname.ilike(pattern),
                     User.phone.ilike(pattern),
-                    User.openid.ilike(pattern),
+                    matching_identity,
                 )
             )
 
@@ -621,9 +651,10 @@ class AurakeyService:
         rows = (await db.execute(stmt)).all()
         tasks = [task for task, _user in rows]
         resource_map = await AurakeyService._get_task_resource_map(db, tasks)
+        avatar_map = await AurakeyService._get_user_avatar_map(db, [user for _task, user in rows])
 
         return total or 0, [
-            AurakeyService._task_to_admin_gallery_item(task, user, resource_map.get(task.image_resource_id))
+            AurakeyService._task_to_admin_gallery_item(task, user, resource_map.get(task.image_resource_id), avatar_map.get(task.user_id))
             for task, user in rows
             if resource_map.get(task.image_resource_id)
         ]
@@ -657,7 +688,8 @@ class AurakeyService:
             is_liked = bool(like)
             
         nickname = ((user.nickname or user.username) if user else None) or "匿名用户"
-        avatar = (user.avatar if user else None) or ""
+        avatar_map = await AurakeyService._get_user_avatar_map(db, [user] if user else [])
+        avatar = avatar_map.get(item.user_id) or ""
         resource = await AurakeyService._get_task_resource(db, item)
         if not resource:
             raise HTTPException(status_code=404, detail="作品资源不存在")
@@ -714,77 +746,11 @@ class AurakeyService:
 
     @staticmethod
     async def submit_generate_task(db: AsyncSession, request: TaskGenerateRequest, user_id: uuid.UUID) -> TaskGenerateResponse:
-        asset = await AurakeyService.get_or_create_user_asset(db, user_id)
-
-        # 查模型配置
-        model_opt = await db.scalar(select(AurakeyModelOption).where(AurakeyModelOption.model_id == request.model_name))
-
-        cost = model_opt.cost if model_opt else 10
-        is_vip_only = model_opt.is_vip_only if model_opt else False
-
-        if is_vip_only and not asset.is_vip:
-            raise HTTPException(status_code=403, detail="该模型仅限VIP可用")
-
-        deducted, allocation = await AurakeyService._spend_points(
+        return await AurakeyService.submit_stream_generate_task(
             db,
-            asset,
-            cost,
-            description=f"生成插画({request.model_name})",
+            TaskStreamGenerateRequest(**request.model_dump()),
+            user_id,
         )
-        log = AurakeyAssetLog(user_id=user_id, type=2, amount=-deducted, balance_after=asset.balance, description=f"生成插画({request.model_name})")
-
-        task = AurakeyTask(
-            user_id=user_id,
-            prompt=request.prompt,
-            model_name=request.model_name,
-            aspect_ratio=request.aspect_ratio,
-            frozen_points=deducted,
-            cost=deducted,
-            point_deductions=allocation,
-            status="pending"
-        )
-        
-        db.add(log)
-        db.add(task)
-        await db.commit()
-        await db.refresh(task)
-        await db.refresh(asset)
-        
-        # 将原先发进 celery_task 的异步操作，改写为在主进程直接非阻塞提交上游网络请求，然后迅速返回
-        # 这要求直接在这里走 engine 发起远程任务：
-        try:
-            task.status = "processing"
-            task.progress = 10
-            remote_task_id = await generate_image(
-                prompt=task.prompt,
-                model=task.model_name,
-                ratio=task.aspect_ratio
-            )
-            task.remote_task_id = remote_task_id
-            task.progress = 20
-            await db.commit()
-        except Exception as e:
-            # 提交直接失败了，此时拦截并退费
-            task.status = "failed"
-            task.failed_reason = str(e)
-            
-            refund_amount = await AurakeyService._restore_points(
-                db,
-                asset,
-                task.point_deductions or [],
-                task.frozen_points,
-                description="提交生图失败自动退回",
-            )
-            task.point_deductions = []
-            task.frozen_points = 0
-            log_refund = AurakeyAssetLog(
-                user_id=user_id, type=3, amount=refund_amount,
-                balance_after=asset.balance, description="提交生图失败自动退回"
-            )
-            db.add(log_refund)
-            await db.commit()
-
-        return TaskGenerateResponse(task_id=task.id, frozen_points=deducted, balance_after=asset.balance)
 
     @staticmethod
     async def submit_stream_generate_task(db: AsyncSession, request: TaskStreamGenerateRequest, user_id: uuid.UUID) -> TaskGenerateResponse:
@@ -803,7 +769,7 @@ class AurakeyService:
             db,
             asset,
             cost,
-            description=f"流式生成插画({request.model_name})",
+            description=f"生成插画({request.model_name})",
         )
         task = AurakeyTask(
             user_id=user_id,
@@ -823,7 +789,7 @@ class AurakeyService:
             type=2,
             amount=-deducted,
             balance_after=asset.balance,
-            description=f"流式生成插画({request.model_name})",
+            description=f"生成插画({request.model_name})",
         )
         db.add(task)
         db.add(log)
@@ -831,8 +797,13 @@ class AurakeyService:
         await db.refresh(task)
         await db.refresh(asset)
 
-        from apps.aurakey.tasks import run_stream_image_task
-        run_stream_image_task.delay(str(task.id), request.is_public)
+        from apps.aurakey.tasks import _refund_task, run_stream_image_task
+        try:
+            run_stream_image_task.delay(str(task.id), request.is_public)
+        except Exception:
+            logger.error("[AuraKey] 生图任务入队失败 task_id=%s", task.id)
+            await _refund_task(db, task, "生图任务提交失败，请稍后重试")
+            return TaskGenerateResponse(task_id=task.id, frozen_points=0, balance_after=asset.balance)
 
         return TaskGenerateResponse(task_id=task.id, frozen_points=deducted, balance_after=asset.balance)
 
@@ -950,14 +921,14 @@ class AurakeyService:
         }
 
     @staticmethod
-    def _task_to_admin_gallery_item(task: AurakeyTask, user: Optional[User], resource=None) -> dict[str, Any]:
+    def _task_to_admin_gallery_item(task: AurakeyTask, user: Optional[User], resource=None, avatar: Optional[str] = None) -> dict[str, Any]:
         return {
             "task_id": task.id,
             "user": {
                 "user_id": task.user_id,
                 "username": user.username if user else None,
                 "nickname": user.nickname if user else None,
-                "avatar": user.avatar if user else None,
+                "avatar": avatar,
             },
             "resource": resource,
             "prompt": task.prompt,

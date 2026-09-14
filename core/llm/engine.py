@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Literal, Optional
 import httpx
 from tenacity import (
     retry,
@@ -83,9 +83,11 @@ def _mime_type_from_output_format(output_format: Optional[str]) -> str:
 
 
 def parse_image_generation_result(result: dict[str, Any], *, output_format: Optional[str] = None) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        raise ValueError("图片生成响应必须是 JSON 对象")
     data = result.get("data")
     if not isinstance(data, list) or not data:
-        raise Exception(f"图片生成响应缺少 data[0]: {result}")
+        raise ValueError("图片生成响应缺少 data[0]")
 
     first_item = data[0] if isinstance(data[0], dict) else {}
     b64_json = first_item.get("b64_json")
@@ -106,6 +108,7 @@ def parse_image_generation_result(result: dict[str, Any], *, output_format: Opti
             "created": result.get("created"),
             "model": result.get("model"),
             "object": result.get("object"),
+            "usage": result.get("usage"),
         }
 
     if isinstance(image_url, str) and image_url:
@@ -118,9 +121,10 @@ def parse_image_generation_result(result: dict[str, Any], *, output_format: Opti
             "created": result.get("created"),
             "model": result.get("model"),
             "object": result.get("object"),
+            "usage": result.get("usage"),
         }
 
-    raise Exception(f"图片生成响应未包含 b64_json 或 url: {result}")
+    raise ValueError("图片生成响应未包含 b64_json 或 url")
 
 
 @retry(
@@ -313,23 +317,16 @@ async def generate_image_generation(
     prompt: str,
     provider: Optional[str] = None,
     model: Optional[str] = None,
-    size: Optional[str] = None,
-    quality: Optional[str] = None,
-    background: Optional[str] = None,
-    output_format: Optional[str] = None,
-    output_compression: Optional[int] = None,
-    n: Optional[int] = 1,
-    response_format: str = "b64_json",
+    n: Literal[1] = 1,
+    response_format: Literal["b64_json"] = "b64_json",
     timeout: Optional[float] = None,
-    extra_body: Optional[dict[str, Any]] = None,
-    **kwargs,
+    *,
+    image: Optional[tuple[str, bytes, str]] = None,
 ) -> dict[str, Any]:
-    """
-    使用 OpenAI Images Generations 兼容接口生成图片。
+    """调用 Images Generations；参考图按 (文件名, 字节, MIME 类型) 上传。"""
+    if n != 1 or response_format != "b64_json":
+        raise ValueError("图片生成仅支持 n=1、response_format=b64_json")
 
-    前端 AuraKey 的 generate-stream 入口保持不变；这里仅适配上游从
-    chat/completions SSE 改为 /images/generations JSON 的返回结构。
-    """
     provider = provider or settings.LLM_DEFAULT_PROVIDER
     config = settings.LLM_PROVIDERS.get(provider)
 
@@ -347,48 +344,36 @@ async def generate_image_generation(
     payload: dict[str, Any] = {
         "model": model or default_model,
         "prompt": prompt,
+        "n": n,
         "response_format": response_format,
     }
-    if n is not None:
-        payload["n"] = n
-    if size is not None:
-        payload["size"] = size
-    if quality is not None:
-        payload["quality"] = quality
-    if background is not None:
-        payload["background"] = background
-    if output_format is not None:
-        payload["output_format"] = output_format
-    if output_compression is not None:
-        payload["output_compression"] = output_compression
-    if extra_body:
-        payload.update(extra_body)
-    for key, value in kwargs.items():
-        if key not in {"model", "prompt"} and value is not None:
-            payload[key] = value
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Authorization": f"Bearer {api_key}"}
 
-    logger.info(f"[ImageGeneration] 提交图片生成 - 提供商: {provider}, 模型: {payload['model']}, URL: {generation_url}")
+    logger.info(f"[ImageGeneration] 提交图片生成 - 提供商: {provider}, 模型: {payload['model']}")
 
     async with httpx.AsyncClient(timeout=request_timeout) as client:
-        response = await client.post(generation_url, json=payload, headers=headers)
+        if image is None:
+            response = await client.post(generation_url, json=payload, headers=headers)
+        else:
+            response = await client.post(
+                generation_url,
+                data={key: str(value) for key, value in payload.items()},
+                files={"image": image},
+                headers=headers,
+            )
 
     if response.status_code != 200:
-        error_msg = f"Image generation API 返回错误 {response.status_code}: {response.text}"
+        error_msg = f"Image generation API 返回错误 HTTP {response.status_code}"
         logger.error(f"[ImageGeneration] {error_msg}")
-        raise Exception(error_msg)
+        raise RuntimeError(error_msg)
 
     try:
         result = response.json()
-    except Exception as exc:
-        logger.error(f"[ImageGeneration] JSON 解析失败: {exc}, 响应体: {response.text}")
-        raise
+    except ValueError:
+        raise ValueError("图片生成接口返回了无效的 JSON") from None
 
-    return parse_image_generation_result(result, output_format=payload.get("output_format"))
+    return parse_image_generation_result(result)
 
 
 async def generate_stream_image_chat(

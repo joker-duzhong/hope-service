@@ -3,8 +3,11 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
+from pydantic import ValidationError
 
 from apps.aurakey.router import get_invite_info
 from apps.aurakey import router as aurakey_router
@@ -15,6 +18,7 @@ from apps.aurakey.schemas import (
     AurakeySystemConfigResponse,
     InviteInfoResponse,
     ProductItem,
+    TaskGenerateRequest,
     TaskStreamGenerateRequest,
     UserEntitlementResponse,
     UserProfileResponse,
@@ -235,7 +239,7 @@ async def test_stale_stream_image_task_fails_and_refunds(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_stream_image_user_content_converts_reference_images_to_base64(monkeypatch):
+async def test_reference_image_loads_original_file_bytes(monkeypatch):
     resource_id = uuid.uuid4()
     task = SimpleNamespace(
         prompt="基于参考图生成头像",
@@ -246,6 +250,7 @@ async def test_stream_image_user_content_converts_reference_images_to_base64(mon
         id=resource_id,
         name="avatar.png",
         url="https://cdn.example.com/avatar.png",
+        type="image/png",
     )
 
     async def get_resources_by_ids(_db, requested_ids):
@@ -262,12 +267,229 @@ async def test_stream_image_user_content_converts_reference_images_to_base64(mon
     monkeypatch.setattr(aurakey_tasks.StorageService, "get_resources_by_ids", get_resources_by_ids)
     monkeypatch.setattr(aurakey_tasks.StorageService, "_download_remote_file", download_remote_file)
 
-    content = await aurakey_tasks._build_stream_image_user_content(None, task)
+    image = await aurakey_tasks._load_reference_image_file(None, task)
 
-    assert content == [
-        {"type": "text", "text": "基于参考图生成头像, 图片比例为:1:1"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5nLWJ5dGVz"}},
-    ]
+    assert image == ("avatar.png", b"png-bytes", "image/png")
+
+
+@pytest.mark.parametrize("request_type", [TaskGenerateRequest, TaskStreamGenerateRequest])
+def test_image_task_request_supports_only_one_reference(request_type):
+    payload = {"prompt": "参考图生成头像", "model_name": "gpt-image-2", "aspect_ratio": "1:1"}
+    assert request_type(**payload).reference_images_ids == []
+    resource_id = uuid.uuid4()
+    assert request_type(**payload, reference_images_ids=[resource_id]).reference_images_ids == [resource_id]
+    with pytest.raises(ValidationError):
+        request_type(**payload, reference_images_ids=[resource_id, uuid.uuid4()])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url, expected_error",
+    [
+        ("data:image/png;base64,cG5nLWJ5dGVz", None),
+        ("data:image/png;base64,???", "base64"),
+        ("data:image/png,raw-bytes", "格式无效"),
+    ],
+)
+async def test_reference_image_loads_or_rejects_data_url(monkeypatch, url, expected_error):
+    resource_id = uuid.uuid4()
+    resource = SimpleNamespace(id=resource_id, name="avatar.png", url=url, type="image/png")
+    monkeypatch.setattr(aurakey_tasks.StorageService, "get_resources_by_ids", AsyncMock(return_value={resource_id: resource}))
+    download = AsyncMock()
+    monkeypatch.setattr(aurakey_tasks.StorageService, "_download_remote_file", download)
+    task = SimpleNamespace(reference_image_ids=[str(resource_id)])
+
+    if expected_error:
+        with pytest.raises(ValueError, match=expected_error):
+            await aurakey_tasks._load_reference_image_file(None, task)
+    else:
+        assert await aurakey_tasks._load_reference_image_file(None, task) == ("avatar.png", b"png-bytes", "image/png")
+    download.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reference_ids", [["invalid-id"], [str(uuid.uuid4()), str(uuid.uuid4())]])
+async def test_reference_image_rejects_invalid_or_multiple_stored_ids(reference_ids):
+    with pytest.raises(ValueError):
+        await aurakey_tasks._load_reference_image_file(None, SimpleNamespace(reference_image_ids=reference_ids))
+
+
+@pytest.fixture
+def image_worker_context(monkeypatch):
+    task = SimpleNamespace(
+        id=uuid.uuid4(), user_id=uuid.uuid4(), is_deleted=False,
+        prompt="生成头像", aspect_ratio="1:1", model_name="gpt-image-2",
+        reference_image_ids=[], status="processing", progress=5,
+        image_resource_id=None, image_url=None, remote_task_id=None,
+        frozen_points=10, point_deductions=[], failed_reason=None,
+        is_published=False, publish_status="approved", published_at=None,
+    )
+    asset = SimpleNamespace(balance=90)
+    user = SimpleNamespace(nickname="昵称", username="user", avatar=None)
+    db = SimpleNamespace(
+        get=AsyncMock(side_effect=lambda model, _id: user if model is aurakey_tasks.User else task),
+        scalar=AsyncMock(return_value=asset), add=Mock(), commit=AsyncMock(),
+    )
+    session = AsyncMock()
+    session.__aenter__.return_value = db
+    monkeypatch.setattr(aurakey_tasks, "_get_session_maker", lambda: lambda: session)
+    monkeypatch.setattr(aurakey_tasks, "_get_stream_image_timeout", lambda: 600.0)
+    generate = AsyncMock(return_value={"b64_json": "cG5nLWJ5dGVz", "mime_type": "image/png"})
+    monkeypatch.setattr(aurakey_tasks, "generate_image_generation", generate)
+    resource = SimpleNamespace(id=uuid.uuid4())
+
+    async def upload(**kwargs):
+        # 存储函数内部会提交事务，此时任务还不能提前变为成功。
+        assert task.status == "processing"
+        assert kwargs["file_bytes"] == b"png-bytes"
+        return resource
+
+    upload_mock = AsyncMock(side_effect=upload)
+    monkeypatch.setattr(aurakey_tasks.StorageService, "upload_file_bytes", upload_mock)
+
+    async def restore(_db, target_asset, _allocation, fallback_amount, *, description):
+        target_asset.balance += fallback_amount
+        return fallback_amount
+
+    restore_mock = AsyncMock(side_effect=restore)
+    monkeypatch.setattr(AurakeyService, "_restore_points", restore_mock)
+    reference = SimpleNamespace(
+        id=uuid.uuid4(), name="reference.png", type="image/png", url="https://cdn.example.com/reference.png",
+    )
+    references = AsyncMock(return_value={reference.id: reference})
+    download = AsyncMock(return_value=(b"reference-bytes", "image/png", reference.name))
+    monkeypatch.setattr(aurakey_tasks.StorageService, "get_resources_by_ids", references)
+    monkeypatch.setattr(aurakey_tasks.StorageService, "_download_remote_file", download)
+    return SimpleNamespace(
+        db=db, task=task, asset=asset, resource=resource, generate=generate,
+        upload=upload_mock, restore=restore_mock, reference=reference, references=references, download=download,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_reference", [False, True])
+@pytest.mark.parametrize("is_public", [False, True])
+async def test_image_worker_saves_result_before_success(image_worker_context, with_reference, is_public):
+    ctx = image_worker_context
+    if with_reference:
+        ctx.task.reference_image_ids = [str(ctx.reference.id)]
+
+    await aurakey_tasks._run_stream_image_task_async(str(ctx.task.id), is_public)
+
+    ctx.generate.assert_awaited_once_with(
+        prompt="生成头像, 图片比例为:1:1", model="gpt-image-2", n=1,
+        response_format="b64_json", timeout=600.0,
+        image=("reference.png", b"reference-bytes", "image/png") if with_reference else None,
+    )
+    assert ctx.task.status == "success"
+    assert ctx.task.progress == 100
+    assert ctx.task.image_resource_id == ctx.resource.id
+    assert ctx.task.remote_task_id is None
+    assert ctx.task.frozen_points == 0
+    assert ctx.task.is_published is is_public
+    assert ctx.asset.balance == 90
+    ctx.upload.assert_awaited_once()
+    ctx.restore.assert_not_awaited()
+    if not with_reference:
+        ctx.download.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["upstream", "timeout", "invalid_base64", "upload", "missing_reference", "non_image", "download"])
+async def test_image_worker_failure_refunds_once(image_worker_context, failure):
+    ctx = image_worker_context
+    if failure == "upstream":
+        ctx.generate.side_effect = RuntimeError("上游图片生成失败")
+    elif failure == "timeout":
+        ctx.generate.side_effect = httpx.ReadTimeout("timeout")
+    elif failure == "invalid_base64":
+        ctx.generate.return_value = {"b64_json": "???", "mime_type": "image/png"}
+    elif failure == "upload":
+        ctx.upload.side_effect = ValueError("存储失败")
+    else:
+        ctx.task.reference_image_ids = [str(ctx.reference.id)]
+        if failure == "missing_reference":
+            ctx.references.return_value = {}
+        elif failure == "non_image":
+            ctx.download.return_value = (b"html", "text/html", "error.html")
+        else:
+            ctx.download.side_effect = httpx.ConnectError("下载失败")
+
+    await aurakey_tasks._run_stream_image_task_async(str(ctx.task.id))
+    await aurakey_tasks._run_stream_image_task_async(str(ctx.task.id))
+
+    assert ctx.task.status == "failed"
+    assert ctx.task.failed_reason
+    assert ctx.task.image_resource_id is None
+    assert ctx.task.frozen_points == 0
+    assert ctx.asset.balance == 100
+    ctx.restore.assert_awaited_once()
+    assert ctx.db.add.call_args.args[0].type == 3
+    if failure == "timeout":
+        assert "600 秒" in ctx.task.failed_reason
+    if failure in {"missing_reference", "non_image", "download"}:
+        ctx.generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_stream", [False, True])
+@pytest.mark.parametrize("queue_fails", [False, True])
+async def test_image_submission_queues_worker_or_refunds(monkeypatch, use_stream, queue_fails):
+    user_id, resource_id = uuid.uuid4(), uuid.uuid4()
+    asset = SimpleNamespace(balance=100, is_vip=False)
+    model = SimpleNamespace(cost=10, is_vip_only=False)
+    tasks = []
+
+    def add(item):
+        if isinstance(item, aurakey_tasks.AurakeyTask):
+            item.id = uuid.uuid4()
+            tasks.append(item)
+
+    db = SimpleNamespace(scalar=AsyncMock(side_effect=[model, asset]), add=Mock(side_effect=add), commit=AsyncMock(), refresh=AsyncMock())
+    monkeypatch.setattr(AurakeyService, "get_or_create_user_asset", AsyncMock(return_value=asset))
+    validate = AsyncMock(return_value={resource_id: SimpleNamespace(type="image/png")})
+    monkeypatch.setattr(AurakeyService, "_validate_reference_images", validate)
+
+    async def spend(_db, target_asset, cost, *, description):
+        target_asset.balance -= cost
+        return cost, []
+
+    async def restore(_db, target_asset, _allocation, fallback_amount, *, description):
+        target_asset.balance += fallback_amount
+        return fallback_amount
+
+    spend_mock = AsyncMock(side_effect=spend)
+    restore_mock = AsyncMock(side_effect=restore)
+    monkeypatch.setattr(AurakeyService, "_spend_points", spend_mock)
+    monkeypatch.setattr(AurakeyService, "_restore_points", restore_mock)
+    queue = Mock(side_effect=RuntimeError("broker unavailable") if queue_fails else None)
+    monkeypatch.setattr(aurakey_tasks.run_stream_image_task, "delay", queue)
+    request_type = TaskStreamGenerateRequest if use_stream else TaskGenerateRequest
+    request = request_type(
+        prompt="生成头像", model_name="gpt-image-2", aspect_ratio="1:1",
+        reference_images_ids=[resource_id], **({"is_public": True} if use_stream else {}),
+    )
+    submit = AurakeyService.submit_stream_generate_task if use_stream else AurakeyService.submit_generate_task
+
+    result = await submit(db, request, user_id)
+
+    task = tasks[0]
+    assert task.reference_image_ids == [str(resource_id)]
+    assert task.remote_task_id is None
+    assert result.task_id == task.id
+    validate.assert_awaited_once_with(db, [resource_id])
+    queue.assert_called_once_with(str(task.id), use_stream)
+    spend_mock.assert_awaited_once()
+    if queue_fails:
+        assert task.status == "failed"
+        assert task.frozen_points == result.frozen_points == 0
+        assert result.balance_after == 100
+        restore_mock.assert_awaited_once()
+    else:
+        assert task.status == "processing"
+        assert result.frozen_points == 10
+        assert result.balance_after == 90
+        restore_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
