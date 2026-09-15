@@ -43,11 +43,32 @@ IMAGE_ERROR_MESSAGE_CATEGORIES = (
 
 
 class ImageGenerationError(RuntimeError):
-    """上游 HTTP 错误；详细诊断仅供服务端使用，不进入任务失败文案。"""
+    """上游 HTTP 错误；失败文案仅附加经过脱敏的错误说明。"""
 
     def __init__(self, status_code: int, diagnostics: dict[str, Any]):
-        super().__init__(f"Image generation API 返回错误 HTTP {status_code}")
+        reason = f"Image generation API 返回错误 HTTP {status_code}"
+        if diagnostics.get("error_message"):
+            reason += f": {diagnostics['error_message']}"
+        super().__init__(reason)
         self.diagnostics = diagnostics
+
+
+def _safe_image_error_message(message: str, sensitive_values: tuple[str, ...]) -> str:
+    for secret in sorted(sensitive_values, key=len, reverse=True):
+        message = message.replace(secret, "[redacted]")
+    message = re.sub(r"(?i)data:[^\s,]*;base64,[A-Za-z0-9+/=\r\n]+", "[image data]", message)
+    message = re.sub(r"https?://[^\s<>\"']+", "[url]", message, flags=re.IGNORECASE)
+    message = re.sub(r"(?i)\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "[redacted]", message)
+    message = re.sub(r"\bsk-[A-Za-z0-9_-]+", "[redacted]", message, flags=re.IGNORECASE)
+    message = re.sub(
+        r"(?i)([\"']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|authorization|password|secret)[\"']?\s*[:=]\s*)"
+        r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+        r"\1[redacted]", message,
+    )
+    message = re.sub(r"[A-Za-z0-9+/=_-]{80,}", "[redacted data]", message)
+    message = re.sub(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u206f]", " ", message)
+    message = " ".join(message.split())
+    return message[:1000] + ("…" if len(message) > 1000 else "")
 
 
 def _safe_image_diagnostic_token(value: Any, sensitive_values: tuple[str, ...]) -> Optional[str]:
@@ -104,7 +125,7 @@ def _image_error_diagnostics(
             diagnostics[f"error_{name}"] = value
     message = fields.get("message") if not isinstance(error, str) else error
     if isinstance(message, str):
-        # 自由文本可能包含提示词、图片和供应商凭据，只输出固定分类。
+        diagnostics["error_message"] = _safe_image_error_message(message, sensitive_values)
         diagnostics["message_category"] = next(
             (category for category, pattern in IMAGE_ERROR_MESSAGE_CATEGORIES
              if re.search(pattern, message, re.IGNORECASE)),
@@ -411,7 +432,7 @@ async def generate_image_generation(
     image: Optional[tuple[str, bytes, str]] = None,
     diagnostic_sensitive_values: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    """调用 Images Generations；参考图按 (文件名, 字节, MIME 类型) 上传。"""
+    """无参考图调用 Generations；有参考图按文件上传到 Edits。"""
     if n != 1 or response_format != "b64_json":
         raise ValueError("图片生成仅支持 n=1、response_format=b64_json")
 
@@ -428,6 +449,13 @@ async def generate_image_generation(
 
     if not generation_url:
         raise ValueError(f"提供商 {provider} 缺少图片生成 URL 配置。")
+
+    request_url = httpx.URL(generation_url)
+    if image is not None:
+        path = request_url.path.rstrip("/")
+        if not path.endswith("/images/generations"):
+            raise ValueError("参考图请求需要从 /images/generations 地址确定 /images/edits 接口")
+        request_url = request_url.copy_with(path=path[:-len("generations")] + "edits")
 
     payload: dict[str, Any] = {
         "model": model or default_model,
@@ -458,10 +486,10 @@ async def generate_image_generation(
     started_at = monotonic()
     async with httpx.AsyncClient(timeout=request_timeout) as client:
         if image is None:
-            response = await client.post(generation_url, json=payload, headers=headers)
+            response = await client.post(request_url, json=payload, headers=headers)
         else:
             response = await client.post(
-                generation_url,
+                request_url,
                 data={key: str(value) for key, value in payload.items()},
                 files={"image": image},
                 headers=headers,

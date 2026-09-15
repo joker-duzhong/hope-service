@@ -315,7 +315,7 @@
 
 参考图先通过现有资源上传接口上传，再将资源 ID 放入 `reference_images_ids`。超过一张返回参数校验错误；参考图不存在或类型不是图片时返回 400，不扣除算力。
 
-后端统一请求 `POST /v1/images/generations`：无参考图时发送 JSON，有参考图时按 multipart/form-data 上传 `image` 文件。两种请求均包含 `model`、`prompt`、`n=1` 和 `response_format=b64_json`。宽高比拼入提示词；返回的 Base64 图片解码后存入资源系统。
+后端无参考图时向 `POST /v1/images/generations` 发送 JSON；有参考图时向 `POST /v1/images/edits` 按 multipart/form-data 上传 `image` 文件。编辑地址由现有生成地址的 `/images/generations` 路径派生，保留服务地址前缀和查询参数。两种请求均包含 `model`、`prompt`、`n=1` 和 `response_format=b64_json`。宽高比拼入提示词；返回的 Base64 图片解码后存入资源系统。
 
 **响应示例**
 

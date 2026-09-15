@@ -72,7 +72,17 @@ async def test_generation_without_reference_sends_documented_json_fields(mock_im
 
 
 @pytest.mark.asyncio
-async def test_generation_with_reference_sends_image_file_to_same_endpoint(mock_image_api):
+@pytest.mark.parametrize("url_config, expected_url", [
+    ({"base_url": "https://oneapi.example.com/v1"}, "https://oneapi.example.com/v1/images/edits"),
+    ({"base_url": "https://oneapi.example.com/v1/chat/completions"}, "https://oneapi.example.com/v1/images/edits"),
+    ({"image_chat_url": "https://oneapi.example.com/proxy/v1/chat/completions"}, "https://oneapi.example.com/proxy/v1/images/edits"),
+    ({"image_generation_url": "https://oneapi.example.com/custom/v1/images/generations/?route=test"}, "https://oneapi.example.com/custom/v1/images/edits?route=test"),
+    ({"image_generations_url": "https://oneapi.example.com/v1/images/generations"}, "https://oneapi.example.com/v1/images/edits"),
+])
+async def test_generation_with_reference_sends_image_file_to_edits(mock_image_api, monkeypatch, url_config, expected_url):
+    monkeypatch.setitem(engine.settings.LLM_PROVIDERS, "image-test", {
+        "api_key": "test-key-not-a-real-credential", **url_config,
+    })
     requests = mock_image_api(
         httpx.Response(200, json={"data": [{"b64_json": "cG5nLWJ5dGVz"}]})
     )
@@ -88,7 +98,7 @@ async def test_generation_with_reference_sends_image_file_to_same_endpoint(mock_
     assert len(requests) == 1
     request = requests[0]
     assert request.method == "POST"
-    assert str(request.url) == "https://oneapi.example.com/v1/images/generations"
+    assert str(request.url) == expected_url
     content_type = request.headers["content-type"]
     assert content_type.startswith("multipart/form-data; boundary=")
     message = BytesParser(policy=policy.default).parsebytes(
@@ -112,6 +122,15 @@ async def test_generation_with_reference_sends_image_file_to_same_endpoint(mock_
     assert fields["image"].get_content_type() == "image/png"
     assert fields["image"].get_payload(decode=True) == reference_bytes
     assert request.extensions["timeout"]["read"] == 42.0
+
+
+@pytest.mark.asyncio
+async def test_reference_request_rejects_nonstandard_endpoint_before_sending(mock_image_api, monkeypatch):
+    monkeypatch.setitem(engine.settings.LLM_PROVIDERS["image-test"], "image_generation_url", "https://oneapi.example.com/custom-api")
+    requests = mock_image_api(httpx.Response(200, json={"data": [{"b64_json": "cG5n"}]}))
+    with pytest.raises(ValueError, match="/images/edits"):
+        await engine.generate_image_generation(prompt="生成图片", image=("ref.png", b"png-bytes", "image/png"))
+    assert requests == []
 
 
 @pytest.mark.asyncio
@@ -153,7 +172,7 @@ async def test_generation_http_failure_is_not_retried_or_exposed(
 async def test_http_failure_retains_safe_diagnostics(mock_image_api, monkeypatch, status_code, with_reference):
     requests = mock_image_api(httpx.Response(status_code, json={"error": {
         "code": "channel_not_found", "type": "upstream_error", "param": "model",
-        "message": "No available channel for this model. Private upstream details.",
+        "message": "No available channel for this model.",
     }}, headers={"x-request-id": "req-upstream-123"}))
     clock = iter([10.0, 10.125])
     monkeypatch.setattr(engine, "monotonic", lambda: next(clock))
@@ -163,7 +182,7 @@ async def test_http_failure_retains_safe_diagnostics(mock_image_api, monkeypatch
         await engine.generate_image_generation(prompt="draw a cat", image=reference)
 
     assert len(requests) == 1
-    assert str(error.value) == f"Image generation API 返回错误 HTTP {status_code}"
+    assert str(error.value) == f"Image generation API 返回错误 HTTP {status_code}: No available channel for this model."
     diagnostics = error.value.diagnostics
     assert diagnostics["http_status"] == status_code
     assert diagnostics["provider"] == "image-test"
@@ -179,7 +198,7 @@ async def test_http_failure_retains_safe_diagnostics(mock_image_api, monkeypatch
     assert diagnostics["upstream_request_id"] == "req-upstream-123"
     assert diagnostics["elapsed_ms"] == 125
     assert diagnostics["response_content_type"] == "application/json"
-    assert "Private upstream details" not in json.dumps(diagnostics)
+    assert diagnostics["error_message"] == "No available channel for this model."
     assert not hasattr(error.value, "response")
 
 
@@ -193,7 +212,7 @@ async def test_http_diagnostics_redact_echoes_in_every_field_including_info_logs
     monkeypatch.setattr(engine.settings, "LLM_PROVIDERS", {api_key: {
         "base_url": "https://oneapi.example.com/v1", "api_key": api_key,
     }})
-    raw_message = "invalid request: private-message-marker data:image/png;base64,cHJpdmF0ZS1pbWFnZQ=="
+    raw_message = f"invalid request: {api_key} {original_prompt} {filename} data:image/png;base64,cHJpdmF0ZS1pbWFnZQ=="
     mock_image_api(httpx.Response(400, json={"error": {
         "code": "prefix-" + api_key + "-suffix",
         "type": "prefix-" + original_prompt + "-suffix",
@@ -211,25 +230,47 @@ async def test_http_diagnostics_redact_echoes_in_every_field_including_info_logs
         assert diagnostics[field] == "[redacted]"
     assert diagnostics["message_category"] == "invalid_request"
     captured = caplog.text + str(error.value) + repr(error.value) + json.dumps(diagnostics)
-    for private in (api_key, original_prompt, filename, "private-message-marker", "private-extra-header", "cHJpdmF0ZS1pbWFnZQ=="):
+    for private in (api_key, original_prompt, filename, "private-extra-header", "cHJpdmF0ZS1pbWFnZQ=="):
         assert private not in captured
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("body, category", [
-    ({"message": "余额不足：private-message-marker", "code": 503}, "quota_exceeded"),
-    ({"error": "Unsupported image format: private-message-marker"}, "invalid_image"),
-    ({"error": {"message": "Unsupported parameter response_format: private-message-marker"}}, "unsupported_parameter"),
-    ({"error": {"message": "private-message-marker"}}, "unclassified"),
+    ({"message": "余额不足，请充值后重试", "code": 503}, "quota_exceeded"),
+    ({"error": "Unsupported image format"}, "invalid_image"),
+    ({"error": {"message": "Unsupported parameter response_format"}}, "unsupported_parameter"),
+    ({"error": {"message": "invalid character '-' in numeric literal"}}, "unclassified"),
 ])
-async def test_http_error_message_is_classified_without_logging_free_text(mock_image_api, caplog, body, category):
+async def test_http_error_message_is_displayed_and_classified(mock_image_api, caplog, body, category):
     mock_image_api(httpx.Response(400, json=body))
     with caplog.at_level(logging.INFO), pytest.raises(engine.ImageGenerationError) as error:
         await engine.generate_image_generation(prompt="draw a cat")
     assert error.value.diagnostics["message_category"] == category
-    assert "private-message-marker" not in caplog.text + json.dumps(error.value.diagnostics)
+    fields = body.get("error", body)
+    expected_message = fields if isinstance(fields, str) else fields["message"]
+    assert error.value.diagnostics["error_message"] == expected_message
+    assert str(error.value).endswith(": " + expected_message)
     if "code" in body:
         assert error.value.diagnostics["error_code"] == "503"
+
+
+@pytest.mark.asyncio
+async def test_error_message_masks_credentials_and_limits_log_output(mock_image_api):
+    mock_image_api(httpx.Response(400, json={"error": {"message": (
+        "Invalid body\r\nAuthorization: Bearer synthetic-bearer-value; "
+        "api_key='synthetic-quoted-key'; password=synthetic-password; token=synthetic-short-token; sk-synthetic-key "
+        "https://example.test/?token=synthetic-url-token "
+        + "A" * 90 + " " + "详细错误。" * 300
+    )}}))
+    with pytest.raises(engine.ImageGenerationError) as error:
+        await engine.generate_image_generation(prompt="draw a cat")
+    message = error.value.diagnostics["error_message"]
+    assert message.startswith("Invalid body")
+    assert len(message) <= 1001
+    assert message.endswith("…")
+    assert "\r" not in message and "\n" not in message
+    for secret in ("synthetic-bearer-value", "synthetic-quoted-key", "synthetic-password", "synthetic-short-token", "sk-synthetic-key", "synthetic-url-token", "A" * 90):
+        assert secret not in message
 
 
 @pytest.mark.asyncio

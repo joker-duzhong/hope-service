@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-15 Route Reference Images to Edits
+
+- 修复参考图以 multipart 发往 `/images/generations` 时被上游以 `Request body must be a JSON object` 拒绝的问题：有参考图改用 `/images/edits`，无参考图仍以 JSON 请求 `/images/generations`。
+- 编辑地址由现有生成地址派生，保留主机、路径前缀及查询参数；无需新增配置。同步接口文档及请求契约测试。
+- 验证：两个生图测试文件共 111 项通过，覆盖五种既有 URL 配置、文件表单、无图 JSON、错误诊断及退款；`git diff --check` 通过。未调用真实收费接口或部署线上。
+- 文件：`core/llm/engine.py`、`image_generation_test.py`、`apps/aurakey/api.md`、`CHANGELOG.md`。
+
+## 2026-09-15 Display Image Upstream Error Message
+
+- 将上游 `error.message` 写入 `diagnostics.error_message` 并附加到任务 `failed_reason`，日志和现有小程序失败提示可直接显示具体原因；兼容顶层 message 和字符串 error。
+- 已知凭据、提示词、参考图文件名及常见令牌、图片数据和 URL 脱敏，清理控制字符并限制为 1000 字符加省略号；普通参数解析错误保留原文。
+- 验证：两个生图测试文件共 106 项通过，覆盖错误详情展示、脱敏、限长和任务失败退款；未调用真实上游或部署。
+- 文件：`core/llm/engine.py`、`image_generation_test.py`、`aurakey_asset_log_schema_test.py`、`CHANGELOG.md`。
+
 ## 2026-09-15 AuraKey Image Error Diagnostics
 
 - 上游 HTTP 错误增加安全诊断：错误码、类型、参数、请求 ID、响应格式及固定消息分类；关联任务 ID、模型、JSON/multipart、参考图类型/大小和请求耗时。

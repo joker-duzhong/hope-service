@@ -527,7 +527,8 @@ async def test_image_worker_redacts_original_prompt_from_real_engine_diagnostics
     assert diagnostics["upstream"]["error_code"] == "[redacted]"
     assert diagnostics["upstream"]["upstream_request_id"] == "[redacted]"
     assert diagnostics["upstream"]["message_category"] == "invalid_request"
-    assert ctx.task.failed_reason == "Image generation API 返回错误 HTTP 400"
+    assert diagnostics["upstream"]["error_message"] == "Invalid request: [redacted]"
+    assert ctx.task.failed_reason == "Image generation API 返回错误 HTTP 400: Invalid request: [redacted]"
     ctx.upload.assert_not_awaited()
     ctx.restore.assert_awaited_once()
     assert ctx.asset.balance == 100
