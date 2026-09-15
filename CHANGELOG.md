@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-15 AuraKey Image Error Diagnostics
+
+- 上游 HTTP 错误增加安全诊断：错误码、类型、参数、请求 ID、响应格式及固定消息分类；关联任务 ID、模型、JSON/multipart、参考图类型/大小和请求耗时。
+- 不记录上游自由文本、提示词、参考图文件名或凭据；任务失败文案保持通用 HTTP 信息，退款和单次请求行为保持原有逻辑。
+- 验证：`image_generation_test.py` 与 `aurakey_asset_log_schema_test.py` 共 105 项通过，覆盖 400/503、敏感内容回显、异常响应和退款一次；`git diff --check` 通过。未调用真实生图接口或部署线上。
+- 文件：`core/llm/engine.py`、`apps/aurakey/tasks.py`、`image_generation_test.py`、`aurakey_asset_log_schema_test.py`、`CHANGELOG.md`。
+
 ## 2026-09-15 Remove Temporary Review Artifacts
 
 - 删除已完成应用的 `artifacts/` 临时审阅目录，包括补丁、代码副本与隔离构建文件；先解除两个依赖目录联接，真实 AuraKey 项目依赖保持完整。

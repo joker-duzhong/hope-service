@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 import uuid
@@ -25,6 +26,7 @@ from apps.aurakey.schemas import (
 )
 from apps.aurakey.services import AurakeyService
 from apps.ai_gateway.schemas import ImageStreamChatRequest
+from core.llm import engine as llm_engine
 from core.llm.engine import (
     _image_generation_url_from_config,
     extract_image_result_from_content,
@@ -380,6 +382,7 @@ async def test_image_worker_saves_result_before_success(image_worker_context, wi
         prompt="生成头像, 图片比例为:1:1", model="gpt-image-2", n=1,
         response_format="b64_json", timeout=600.0,
         image=("reference.png", b"reference-bytes", "image/png") if with_reference else None,
+        diagnostic_sensitive_values=(ctx.task.prompt,),
     )
     assert ctx.task.status == "success"
     assert ctx.task.progress == 100
@@ -429,6 +432,105 @@ async def test_image_worker_failure_refunds_once(image_worker_context, failure):
         assert "600 秒" in ctx.task.failed_reason
     if failure in {"missing_reference", "non_image", "download"}:
         ctx.generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 503])
+async def test_image_worker_logs_upstream_diagnostics_and_refunds_safely(
+    image_worker_context, caplog, status_code,
+):
+    ctx = image_worker_context
+    diagnostics = {
+        "http_status": status_code,
+        "error_code": "upstream_unavailable" if status_code == 503 else "invalid_request",
+        "message_category": "服务暂时不可用" if status_code == 503 else "请求参数错误",
+        "upstream_request_id": "mock-upstream-request-id",
+        "request_format": "json",
+    }
+    error = aurakey_tasks.ImageGenerationError(status_code, diagnostics)
+    private_response = "private-upstream-response-marker"
+    error.__cause__ = ValueError(private_response)
+    ctx.generate.side_effect = error
+
+    await aurakey_tasks._run_stream_image_task_async(str(ctx.task.id))
+    await aurakey_tasks._run_stream_image_task_async(str(ctx.task.id))
+
+    records = [record for record in caplog.records if record.name == aurakey_tasks.logger.name]
+    assert len(records) == 1
+    record = records[0]
+    assert record.exc_info is None
+    logged_diagnostics = record.getMessage().split("diagnostics=", 1)[1]
+    assert json.loads(logged_diagnostics) == {
+        "task_id": str(ctx.task.id),
+        "upstream": diagnostics,
+    }
+    assert diagnostics["message_category"] in logged_diagnostics
+    assert private_response not in caplog.text
+    assert ctx.task.prompt not in caplog.text
+    assert ctx.task.failed_reason == f"Image generation API 返回错误 HTTP {status_code}"
+    assert diagnostics["upstream_request_id"] not in ctx.task.failed_reason
+    assert diagnostics["error_code"] not in ctx.task.failed_reason
+    assert ctx.task.status == "failed"
+    assert ctx.task.image_resource_id is None
+    assert ctx.task.frozen_points == 0
+    assert ctx.task.point_deductions == []
+    assert ctx.asset.balance == 100
+    ctx.generate.assert_awaited_once()
+    ctx.upload.assert_not_awaited()
+    ctx.restore.assert_awaited_once()
+    assert ctx.restore.call_args.kwargs["description"] == ctx.task.failed_reason
+    assert ctx.db.add.call_args.args[0].type == 3
+    assert ctx.db.add.call_args.args[0].description == ctx.task.failed_reason
+
+
+@pytest.mark.asyncio
+async def test_image_worker_redacts_original_prompt_from_real_engine_diagnostics(
+    image_worker_context, monkeypatch, caplog,
+):
+    ctx = image_worker_context
+    ctx.task.prompt = "private-scene-marker"
+    echoed_prompt = f"prefix-{ctx.task.prompt}-suffix"
+    monkeypatch.setattr(llm_engine.settings, "LLM_DEFAULT_PROVIDER", "image-test")
+    monkeypatch.setattr(llm_engine.settings, "LLM_PROVIDERS", {
+        "image-test": {
+            "base_url": "https://oneapi.example.com/v1",
+            "api_key": "test-key-not-a-real-credential",
+        },
+    })
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(
+            400,
+            json={"error": {"code": echoed_prompt, "message": f"Invalid request: {ctx.task.prompt}"}},
+            headers={"x-request-id": echoed_prompt},
+        )
+
+    async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handle)
+    monkeypatch.setattr(
+        llm_engine.httpx, "AsyncClient",
+        lambda **kwargs: async_client(transport=transport, **kwargs),
+    )
+    monkeypatch.setattr(aurakey_tasks, "generate_image_generation", llm_engine.generate_image_generation)
+    caplog.set_level("INFO")
+
+    await aurakey_tasks._run_stream_image_task_async(str(ctx.task.id))
+
+    assert len(requests) == 1
+    assert json.loads(requests[0].content)["prompt"] == f"{ctx.task.prompt}, 图片比例为:1:1"
+    assert ctx.task.prompt not in caplog.text
+    record = next(record for record in caplog.records if record.name == aurakey_tasks.logger.name)
+    diagnostics = json.loads(record.getMessage().split("diagnostics=", 1)[1])
+    assert diagnostics["task_id"] == str(ctx.task.id)
+    assert diagnostics["upstream"]["error_code"] == "[redacted]"
+    assert diagnostics["upstream"]["upstream_request_id"] == "[redacted]"
+    assert diagnostics["upstream"]["message_category"] == "invalid_request"
+    assert ctx.task.failed_reason == "Image generation API 返回错误 HTTP 400"
+    ctx.upload.assert_not_awaited()
+    ctx.restore.assert_awaited_once()
+    assert ctx.asset.balance == 100
 
 
 @pytest.mark.asyncio

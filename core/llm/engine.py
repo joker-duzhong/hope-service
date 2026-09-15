@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import re
+from time import monotonic
 from typing import Any, AsyncGenerator, Literal, Optional
 import httpx
 from tenacity import (
@@ -24,6 +25,92 @@ IMAGE_MARKDOWN_RE = re.compile(r"!\[[^\]]*]\((https?://[^)\s]+)\)")
 DOWNLOAD_MARKDOWN_RE = re.compile(r"\[[^\]]*(?:下载|download)[^\]]*]\((https?://[^)\s]+)\)", re.IGNORECASE)
 URL_RE = re.compile(r"https?://[^\s)]+")
 DATA_URL_IMAGE_RE = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", re.DOTALL)
+IMAGE_ERROR_BODY_LIMIT = 16 * 1024
+IMAGE_ERROR_MESSAGE_CATEGORIES = (
+    ("invalid_credentials", r"invalid.{0,20}(?:api.?key|token)|incorrect.{0,20}api.?key|unauthori[sz]ed|无效.{0,8}(?:令牌|密钥)|(?:令牌|密钥).{0,8}(?:无效|错误)"),
+    ("quota_exceeded", r"quota|insufficient.{0,16}(?:credit|balance)|余额不足|额度|配额"),
+    ("rate_limited", r"rate.?limit|too many requests|限流|请求.{0,8}频繁"),
+    ("channel_unavailable", r"no.{0,24}(?:channel|provider)|(?:channel|provider).{0,16}unavailable|无.{0,8}(?:渠道|通道)|(?:渠道|通道).{0,8}不可用"),
+    ("model_unavailable", r"model.{0,32}(?:not found|not exist|not available|unavailable|not support)|(?:unknown|unsupported).{0,16}model|模型.{0,12}(?:不存在|不可用|不支持)"),
+    ("invalid_image", r"(?:invalid|unsupported|corrupt).{0,24}image|image.{0,24}(?:invalid|unsupported|too large)|(?:图片|图像|参考图).{0,16}(?:格式|无效|大小|过大|损坏)"),
+    ("unsupported_parameter", r"(?:unsupported|unknown|unrecognized).{0,24}(?:parameter|argument|field)|不支持.{0,12}参数|未知参数"),
+    ("content_policy", r"content.?policy|safety.{0,16}(?:system|filter)|moderation|内容.{0,8}(?:安全|违规)|敏感内容"),
+    ("upstream_timeout", r"timed? out|timeout|超时"),
+    ("upstream_unavailable", r"(?:service|upstream).{0,24}unavailable|overload|bad gateway|服务.{0,12}(?:不可用|繁忙)"),
+    ("access_denied", r"access denied|forbidden|permission|权限|禁止访问|拒绝访问"),
+    ("invalid_request", r"invalid.{0,24}(?:request|parameter|argument)|参数.{0,8}(?:错误|无效)|请求格式"),
+)
+
+
+class ImageGenerationError(RuntimeError):
+    """上游 HTTP 错误；详细诊断仅供服务端使用，不进入任务失败文案。"""
+
+    def __init__(self, status_code: int, diagnostics: dict[str, Any]):
+        super().__init__(f"Image generation API 返回错误 HTTP {status_code}")
+        self.diagnostics = diagnostics
+
+
+def _safe_image_diagnostic_token(value: Any, sensitive_values: tuple[str, ...]) -> Optional[str]:
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) <= 1_000_000_000:
+        value = str(value)
+    if not isinstance(value, str) or not value:
+        return None
+    if any(secret in value or value in secret for secret in sensitive_values):
+        return "[redacted]"
+    if (
+        len(value) > 128
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/\[\]-]*", value)
+        or "://" in value
+        or re.search(r"(?i)(?:sk-|bearer|authorization|eyJ|iVBORw0KGgo|R0lGOD|UklGR)", value)
+    ):
+        return "[omitted]"
+    return value
+
+
+def _image_error_diagnostics(
+    response: httpx.Response, *, sensitive_values: tuple[str, ...],
+) -> dict[str, Any]:
+    content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    diagnostics: dict[str, Any] = {
+        "http_status": response.status_code,
+        "response_content_type": content_type if content_type in {
+            "application/json", "text/html", "text/plain",
+        } else "other",
+    }
+    for name in ("x-request-id", "request-id", "x-oneapi-request-id", "x-new-api-request-id"):
+        request_id = _safe_image_diagnostic_token(response.headers.get(name), sensitive_values)
+        if request_id:
+            diagnostics["upstream_request_id"] = request_id
+            break
+
+    if len(response.content) > IMAGE_ERROR_BODY_LIMIT:
+        diagnostics["error_body"] = "omitted_oversize"
+        return diagnostics
+    try:
+        body = response.json()
+    except (ValueError, UnicodeError, RecursionError):
+        diagnostics["error_body"] = "non_json"
+        return diagnostics
+    if not isinstance(body, dict):
+        diagnostics["error_body"] = "non_object_json"
+        return diagnostics
+
+    diagnostics["error_body"] = "json_object"
+    error = body.get("error")
+    fields = error if isinstance(error, dict) else body
+    for name in ("code", "type", "param"):
+        value = _safe_image_diagnostic_token(fields.get(name), sensitive_values)
+        if value is not None:
+            diagnostics[f"error_{name}"] = value
+    message = fields.get("message") if not isinstance(error, str) else error
+    if isinstance(message, str):
+        # 自由文本可能包含提示词、图片和供应商凭据，只输出固定分类。
+        diagnostics["message_category"] = next(
+            (category for category, pattern in IMAGE_ERROR_MESSAGE_CATEGORIES
+             if re.search(pattern, message, re.IGNORECASE)),
+            "unclassified",
+        )
+    return diagnostics
 
 
 def extract_image_result_from_content(content: str) -> dict[str, Optional[str]]:
@@ -322,6 +409,7 @@ async def generate_image_generation(
     timeout: Optional[float] = None,
     *,
     image: Optional[tuple[str, bytes, str]] = None,
+    diagnostic_sensitive_values: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """调用 Images Generations；参考图按 (文件名, 字节, MIME 类型) 上传。"""
     if n != 1 or response_format != "b64_json":
@@ -350,8 +438,24 @@ async def generate_image_generation(
 
     headers = {"Authorization": f"Bearer {api_key}"}
 
-    logger.info(f"[ImageGeneration] 提交图片生成 - 提供商: {provider}, 模型: {payload['model']}")
+    sensitive_values = tuple({
+        candidate
+        for value in (api_key, prompt, image[0] if image else None, *diagnostic_sensitive_values)
+        if isinstance(value, str)
+        for candidate in (value, value.strip())
+        if candidate
+    })
+    request_diagnostics = {
+        "provider": _safe_image_diagnostic_token(provider, sensitive_values),
+        "model": _safe_image_diagnostic_token(payload["model"], sensitive_values),
+        "request_format": "multipart" if image is not None else "json",
+        "has_reference_image": image is not None,
+        "reference_bytes": len(image[1]) if image is not None else 0,
+        "reference_mime": _safe_image_diagnostic_token(image[2], sensitive_values) if image else None,
+    }
+    logger.info("[ImageGeneration] 提交图片生成 request=%s", json.dumps(request_diagnostics, ensure_ascii=True, sort_keys=True))
 
+    started_at = monotonic()
     async with httpx.AsyncClient(timeout=request_timeout) as client:
         if image is None:
             response = await client.post(generation_url, json=payload, headers=headers)
@@ -364,9 +468,12 @@ async def generate_image_generation(
             )
 
     if response.status_code != 200:
-        error_msg = f"Image generation API 返回错误 HTTP {response.status_code}"
-        logger.error(f"[ImageGeneration] {error_msg}")
-        raise RuntimeError(error_msg)
+        diagnostics = {
+            **request_diagnostics,
+            **_image_error_diagnostics(response, sensitive_values=sensitive_values),
+            "elapsed_ms": max(0, round((monotonic() - started_at) * 1000)),
+        }
+        raise ImageGenerationError(response.status_code, diagnostics)
 
     try:
         result = response.json()

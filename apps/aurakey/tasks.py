@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -15,7 +16,7 @@ from worker.celery_app import celery_app
 from apps.aurakey.models import AurakeyTask, AurakeyUserAsset, AurakeyAssetLog
 from apps.aurakey.services import AurakeyService
 from core.config import settings
-from core.llm.engine import DATA_URL_IMAGE_RE, generate_image_generation
+from core.llm.engine import DATA_URL_IMAGE_RE, ImageGenerationError, generate_image_generation
 from core.storage.services import StorageService
 from core.users.models import User
 
@@ -257,6 +258,7 @@ async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
                 response_format="b64_json",
                 timeout=timeout_seconds,
                 image=image,
+                diagnostic_sensitive_values=(task.prompt,),
             )
             resource = await _upload_image_generation_result(db, task, result)
             task.status = "success"
@@ -275,6 +277,16 @@ async def _run_stream_image_task_async(task_id: str, is_public: bool = False):
                 )
             task.frozen_points = 0
             await db.commit()
+        except ImageGenerationError as exc:
+            logger.error(
+                "[AuraKey] 上游图片生成失败 diagnostics=%s",
+                json.dumps(
+                    {"task_id": str(task_uuid), "upstream": exc.diagnostics},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+            await _refund_task(db, task, str(exc))
         except httpx.ReadTimeout as exc:
             timeout_seconds = _get_stream_image_timeout()
             reason = f"上游图片生成超过 {timeout_seconds:g} 秒未返回，请稍后重试"

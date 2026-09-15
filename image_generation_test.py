@@ -1,6 +1,7 @@
 """OneAPI 图片生成请求与响应契约测试。"""
 
 import json
+import logging
 from email import policy
 from email.parser import BytesParser
 
@@ -130,7 +131,7 @@ async def test_generation_rejects_unsupported_options_before_request(mock_image_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status_code", [400, 429, 500])
+@pytest.mark.parametrize("status_code", [400, 429, 500, 503])
 async def test_generation_http_failure_is_not_retried_or_exposed(
     mock_image_api, caplog, status_code
 ):
@@ -144,6 +145,135 @@ async def test_generation_http_failure_is_not_retried_or_exposed(
     assert str(status_code) in str(error.value)
     assert response_body not in str(error.value)
     assert response_body not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 503])
+@pytest.mark.parametrize("with_reference", [False, True])
+async def test_http_failure_retains_safe_diagnostics(mock_image_api, monkeypatch, status_code, with_reference):
+    requests = mock_image_api(httpx.Response(status_code, json={"error": {
+        "code": "channel_not_found", "type": "upstream_error", "param": "model",
+        "message": "No available channel for this model. Private upstream details.",
+    }}, headers={"x-request-id": "req-upstream-123"}))
+    clock = iter([10.0, 10.125])
+    monkeypatch.setattr(engine, "monotonic", lambda: next(clock))
+    reference = ("private-reference.png", b"reference-bytes", "image/png") if with_reference else None
+
+    with pytest.raises(engine.ImageGenerationError) as error:
+        await engine.generate_image_generation(prompt="draw a cat", image=reference)
+
+    assert len(requests) == 1
+    assert str(error.value) == f"Image generation API 返回错误 HTTP {status_code}"
+    diagnostics = error.value.diagnostics
+    assert diagnostics["http_status"] == status_code
+    assert diagnostics["provider"] == "image-test"
+    assert diagnostics["model"] == "gpt-image-2"
+    assert diagnostics["request_format"] == ("multipart" if with_reference else "json")
+    assert diagnostics["has_reference_image"] is with_reference
+    assert diagnostics["reference_bytes"] == (15 if with_reference else 0)
+    assert diagnostics["reference_mime"] == ("image/png" if with_reference else None)
+    assert diagnostics["error_code"] == "channel_not_found"
+    assert diagnostics["error_type"] == "upstream_error"
+    assert diagnostics["error_param"] == "model"
+    assert diagnostics["message_category"] == "channel_unavailable"
+    assert diagnostics["upstream_request_id"] == "req-upstream-123"
+    assert diagnostics["elapsed_ms"] == 125
+    assert diagnostics["response_content_type"] == "application/json"
+    assert "Private upstream details" not in json.dumps(diagnostics)
+    assert not hasattr(error.value, "response")
+
+
+@pytest.mark.asyncio
+async def test_http_diagnostics_redact_echoes_in_every_field_including_info_logs(mock_image_api, monkeypatch, caplog):
+    api_key = "synthetic-private-key-for-redaction"
+    original_prompt = "private-scene-marker"
+    prompt = original_prompt + ", 图片比例为:1:1"
+    filename = "private-file-marker.png"
+    monkeypatch.setattr(engine.settings, "LLM_DEFAULT_PROVIDER", api_key)
+    monkeypatch.setattr(engine.settings, "LLM_PROVIDERS", {api_key: {
+        "base_url": "https://oneapi.example.com/v1", "api_key": api_key,
+    }})
+    raw_message = "invalid request: private-message-marker data:image/png;base64,cHJpdmF0ZS1pbWFnZQ=="
+    mock_image_api(httpx.Response(400, json={"error": {
+        "code": "prefix-" + api_key + "-suffix",
+        "type": "prefix-" + original_prompt + "-suffix",
+        "param": filename, "message": raw_message,
+    }}, headers={"x-request-id": api_key, "x-ignored-header": "private-extra-header"}))
+
+    with caplog.at_level(logging.INFO), pytest.raises(engine.ImageGenerationError) as error:
+        await engine.generate_image_generation(
+            prompt=prompt, model=api_key, image=(filename, b"private-image", "image/png"),
+            diagnostic_sensitive_values=(original_prompt,),
+        )
+
+    diagnostics = error.value.diagnostics
+    for field in ("provider", "model", "error_code", "error_type", "error_param", "upstream_request_id"):
+        assert diagnostics[field] == "[redacted]"
+    assert diagnostics["message_category"] == "invalid_request"
+    captured = caplog.text + str(error.value) + repr(error.value) + json.dumps(diagnostics)
+    for private in (api_key, original_prompt, filename, "private-message-marker", "private-extra-header", "cHJpdmF0ZS1pbWFnZQ=="):
+        assert private not in captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body, category", [
+    ({"message": "余额不足：private-message-marker", "code": 503}, "quota_exceeded"),
+    ({"error": "Unsupported image format: private-message-marker"}, "invalid_image"),
+    ({"error": {"message": "Unsupported parameter response_format: private-message-marker"}}, "unsupported_parameter"),
+    ({"error": {"message": "private-message-marker"}}, "unclassified"),
+])
+async def test_http_error_message_is_classified_without_logging_free_text(mock_image_api, caplog, body, category):
+    mock_image_api(httpx.Response(400, json=body))
+    with caplog.at_level(logging.INFO), pytest.raises(engine.ImageGenerationError) as error:
+        await engine.generate_image_generation(prompt="draw a cat")
+    assert error.value.diagnostics["message_category"] == category
+    assert "private-message-marker" not in caplog.text + json.dumps(error.value.diagnostics)
+    if "code" in body:
+        assert error.value.diagnostics["error_code"] == "503"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [True, ["private-marker"], {"value": "private-marker"}, 10**30])
+async def test_http_error_ignores_non_token_fields(mock_image_api, value):
+    mock_image_api(httpx.Response(400, json={"error": {"code": value, "type": value, "param": value, "message": value}}))
+    with pytest.raises(engine.ImageGenerationError) as error:
+        await engine.generate_image_generation(prompt="draw a cat")
+    assert not {"error_code", "error_type", "error_param", "message_category"} & error.value.diagnostics.keys()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [
+    "injected\nforged-log-line", "https://private.example.test/path?token=secret",
+    "a" * 129, "Bearer-private-credential", "sk-private-credential",
+])
+async def test_http_diagnostic_tokens_reject_injection_urls_and_credential_shapes(mock_image_api, caplog, value):
+    mock_image_api(httpx.Response(400, json={"error": {"code": value, "type": value, "param": value}}, headers={"x-request-id": value}))
+    with caplog.at_level(logging.INFO), pytest.raises(engine.ImageGenerationError) as error:
+        await engine.generate_image_generation(prompt="draw a cat")
+    for field in ("error_code", "error_type", "error_param", "upstream_request_id"):
+        assert error.value.diagnostics[field] == "[omitted]"
+    assert value not in caplog.text + json.dumps(error.value.diagnostics)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body, content_type, expected_formats", [
+    (b"<html>private-marker</html>", "text/html", {"non_json"}),
+    (b"{invalid-json-private-marker", "application/json", {"non_json"}),
+    (b'["private-marker"]', "application/json", {"non_object_json"}),
+    (b"[" * 2000 + b"0" + b"]" * 2000, "application/json", {"non_json", "non_object_json"}),
+    (b"private-marker" * 2000, "text/plain", {"omitted_oversize"}),
+], ids=["html", "invalid-json", "non-object", "deep-json", "oversize"])
+async def test_http_diagnostics_handle_non_json_and_large_errors(mock_image_api, caplog, body, content_type, expected_formats):
+    requests = mock_image_api(httpx.Response(503, content=body, headers={
+        "content-type": content_type, "x-request-id": "req-gateway-503",
+    }))
+    with caplog.at_level(logging.INFO), pytest.raises(engine.ImageGenerationError) as error:
+        await engine.generate_image_generation(prompt="draw a cat")
+    assert len(requests) == 1
+    assert error.value.diagnostics["error_body"] in expected_formats
+    assert error.value.diagnostics["upstream_request_id"] == "req-gateway-503"
+    assert error.value.diagnostics["response_content_type"] == content_type
+    assert "private-marker" not in caplog.text + json.dumps(error.value.diagnostics)
 
 
 @pytest.mark.asyncio
