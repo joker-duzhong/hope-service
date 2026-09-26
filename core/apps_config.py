@@ -55,7 +55,12 @@ REGISTERED_APPS: Dict[str, AppConfig] = {
         created_at="2026-08-27",
         router_modules=[RouterConfig(module="apps.teacher_logbook.router", prefix="/teacher-logbook", tags=["班主任工作台"])],
     ),
-
+    "hope_ledger_mate": AppConfig(
+        key="hope_ledger_mate",
+        name="Hope 账伴",
+        created_at="2026-08-27",
+        router_modules=[RouterConfig(module="apps.ledger_mate.router", prefix="/ledger-mate", tags=["账伴"])],
+    ),
 
     # 下面的应用暂时下线，后续可能会重新上线
     "hope_nest_talk": AppConfig(
@@ -94,13 +99,6 @@ REGISTERED_APPS: Dict[str, AppConfig] = {
         description="基于合意困难与渐隐式支架的生成式学习引擎",
         router_modules=[RouterConfig(module="apps.project_sisyphus.router", prefix="/sisyphus", tags=["西西弗斯认知引擎"])],
         task_modules=["apps.project_sisyphus.tasks"],
-        is_active=False  # 暂时下线，后续可能会重新上线
-    ),
-    "hope_ledger_mate": AppConfig(
-        key="hope_ledger_mate",
-        name="Hope 账伴",
-        created_at="2026-08-27",
-        router_modules=[RouterConfig(module="apps.ledger_mate.router", prefix="/ledger-mate", tags=["账伴"])],
         is_active=False  # 暂时下线，后续可能会重新上线
     ),
     "hope_ai_gateway": AppConfig(

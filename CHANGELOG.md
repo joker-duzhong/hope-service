@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-09-26 Ledger Mate AI Failure Diagnostics
+
+- 账伴 AI 消息发送失败时区分配置、超时、连接失败、上游 HTTP 错误、无效 JSON、异常响应结构和空回复；通过现有 `code/message/data` 响应展示具体原因，上游错误说明先脱敏再展示。
+- 非流式聊天调用使用独立的 `ChatGenerationError`，日志记录固定错误类别、上游状态及安全诊断；账伴日志关联会话 UUID。移除完整配置、请求地址、原始上游响应和模型回复的直接输出；已知凭据、消息及 JSON 转义回显均脱敏，未知异常仅记录类型。
+- 保留原有三次模型调用重试、事务回滚与消息幂等逻辑；新增测试验证失败后消息、账单、操作日志和关联无记录，同一消息编号可恢复重试。
+- 验证：`.venv/Scripts/python.exe -B -m pytest -p no:cacheprovider llm_chat_test.py -q --noconftest`，31 项通过；独立执行 `python -B -m pytest -p no:cacheprovider apps/ledger_mate/tests -q`，39 项通过。覆盖原始 system 消息回显脱敏及非法代理配置；使用模拟 HTTP 与内存数据库，未调用真实模型或部署。
+- 文件：`core/llm/errors.py`、`core/llm/engine.py`、`apps/ledger_mate/services.py`、`llm_chat_test.py`、`apps/ledger_mate/tests/test_ai_chat.py`、`apps/ledger_mate/tests/test_http_contract.py`、`apps/ledger_mate/CHANGELOG.md`、`CHANGELOG.md`。
+
+## 2026-09-26 Ledger Mate Chat Message Contract
+
+- 账伴 AI 请求按 OneAPI Chat Completions 文档发送独立的 `system` 和 `user` 消息；用户原文不再只嵌入 system 上下文，避免兼容网关转换时缺少实际输入。
+- 补充 HTTP 契约回归，验证用户输入位于 `user.content`；未改变 Chat Completions 地址、模型、流式开关及 JSON 输出参数。
+
+## 2026-09-26 Ledger Mate JSON Mode Compatibility
+
+- 账伴 user 消息补充明确的 JSON 输出要求，兼容 OneAPI 对 `response_format=json_object` 检查输入消息关键字的行为；通用 `core/llm` 服务保持不变。
+
+## 2026-09-27 Ledger Mate Record Date Ordering
+
+- 账单列表改按记账日期 `occurred_date` 倒序，再按发生时间、创建时间和 ID 稳定排序；无需数据库迁移。
+- 更新日期编辑和列表排序回归测试，验证补录旧日期不会排在新日期之前，编辑日期后顺序会同步变化。
+
 ## 2026-09-15 Route Reference Images to Edits
 
 - 修复参考图以 multipart 发往 `/images/generations` 时被上游以 `Request body must be a JSON object` 拒绝的问题：有参考图改用 `/images/edits`，无参考图仍以 JSON 请求 `/images/generations`。

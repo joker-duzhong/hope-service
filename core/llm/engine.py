@@ -16,6 +16,7 @@ from tenacity import (
 )
 
 from core.config import settings
+from core.llm.errors import ChatErrorKind, ChatGenerationError
 from core.llm.prompts import get_base_messages
 
 logger = logging.getLogger(__name__)
@@ -245,28 +246,49 @@ async def generate_chat(
     messages: list[dict],
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    *,
+    diagnostic_sensitive_values: tuple[str, ...] = (),
     **kwargs,
 ) -> str:
     """
     非流式对话生成
     """
+    started_at = monotonic()
+
+    def failure(kind: ChatErrorKind, diagnostics: Optional[dict[str, Any]] = None) -> ChatGenerationError:
+        error = ChatGenerationError(kind, {
+            **(diagnostics or {}),
+            "elapsed_ms": max(0, round((monotonic() - started_at) * 1000)),
+        })
+        logger.warning("[LLM] 对话失败 diagnostics=%s", json.dumps(error.diagnostics, ensure_ascii=True, sort_keys=True))
+        return error
+
     provider = provider or settings.LLM_DEFAULT_PROVIDER
     config = settings.LLM_PROVIDERS.get(provider)
 
-    if not config:
-        raise ValueError(f"未配置 LLM 提供商: {provider},{settings}")
+    if not isinstance(config, dict) or not config:
+        raise failure("configuration", {"field": "LLM_PROVIDERS"})
 
     api_key = config.get("api_key")
     base_url = config.get("base_url")
     default_model = config.get("default_model", "gpt-3.5-turbo")
     timeout = config.get("timeout", 60.0)
+    for field, value in (("api_key", api_key), ("base_url", base_url), ("model", model or default_model)):
+        if not isinstance(value, str) or not value.strip():
+            raise failure("configuration", {"field": field})
+    try:
+        url = httpx.URL(base_url)
+        if url.scheme not in {"http", "https"} or not url.host:
+            raise ValueError("invalid endpoint")
+    except (httpx.InvalidURL, ValueError):
+        raise failure("configuration", {"field": "base_url"}) from None
 
     # 注入基础合规 Prompt
-    full_messages = get_base_messages() + messages
+    source_messages = get_base_messages() + messages
 
     # 合并连续的 system 消息为一条（部分 LLM API 不支持多条 system 消息）
     merged = []
-    for msg in full_messages:
+    for msg in source_messages:
         if msg["role"] == "system" and merged and merged[-1]["role"] == "system":
             merged[-1]["content"] += "\n\n" + msg["content"]
         else:
@@ -291,52 +313,80 @@ async def generate_chat(
         "Content-Type": "application/json",
     }
 
-    logger.info(f"[LLM] 调用 {provider} API - 模型: {payload['model']}, URL: {base_url}")
+    sensitive_values: set[str] = set()
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(base_url, json=payload, headers=headers)
+    def collect_sensitive(value: Any) -> None:
+        if isinstance(value, str):
+            for candidate in (value, value.strip()):
+                if candidate:
+                    sensitive_values.update((candidate, json.dumps(candidate, ensure_ascii=True)[1:-1], json.dumps(candidate, ensure_ascii=False)[1:-1]))
+        elif isinstance(value, dict):
+            for item in value.values():
+                collect_sensitive(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                collect_sensitive(item)
+
+    # 上游可能在错误中回显完整请求，也可能只回显原文或 JSON 转义后的用户输入。
+    collect_sensitive((api_key, base_url, provider, payload["model"], diagnostic_sensitive_values))
+    for message in source_messages + full_messages:
+        collect_sensitive(message.get("content"))
+    logger.info("[LLM] 提交对话请求")
+
+    try:
+        client = httpx.AsyncClient(timeout=timeout)
+    except (httpx.InvalidURL, TypeError, ValueError):
+        raise failure("configuration", {"field": "http_client"}) from None
+    try:
+        async with client:
+            response = await client.post(base_url, json=payload, headers=headers)
+    except httpx.TimeoutException:
+        raise failure("timeout") from None
+    except httpx.InvalidURL:
+        raise failure("configuration", {"field": "base_url"}) from None
+    except httpx.RequestError:
+        raise failure("connection") from None
 
     logger.info(f"[LLM] 响应状态码: {response.status_code}")
 
     if response.status_code != 200:
-        error_msg = f"LLM API 返回错误 {response.status_code}: {response.text}"
-        logger.error(f"[LLM] {error_msg}")
-        raise Exception(error_msg)
+        raise failure("http", _image_error_diagnostics(response, sensitive_values=tuple(sensitive_values)))
 
-    # 手动解析 JSON，捕获更详细的错误信息
     try:
         result = response.json()
-    except Exception as e:
-        logger.error(f"[LLM] JSON 解析失败: {str(e)}, 响应体: {response.text}")
-        raise
-
-    logger.debug(f"[LLM] 解析后的响应: {result}")
+    except (ValueError, UnicodeError, RecursionError):
+        raise failure("invalid_json", {"http_status": response.status_code}) from None
 
     # 解析响应
-    if "choices" in result and len(result["choices"]) > 0:
-        content = result["choices"][0]["message"]["content"]
-        if not content:
-            raise Exception(f"LLM 返回空内容, 完整响应: {result}")
-        logger.info(f"[LLM] 成功获取回复，长度: {len(content)}")
+    choices = result.get("choices") if isinstance(result, dict) else None
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise failure("invalid_response", {"field": "choices"})
+    message = choices[0].get("message")
+    if not isinstance(message, dict) or "content" not in message:
+        raise failure("invalid_response", {"field": "message.content"})
+    content = message["content"]
+    if content is None:
+        raise failure("empty_response")
+    if not isinstance(content, str):
+        raise failure("invalid_response", {"field": "message.content"})
 
-        # 处理 markdown 代码块包装的 JSON（兼容两种情况）
-        if "```" in content:
-            # 提取 markdown 代码块中的 JSON
-            parts = content.split("```")
-            # 取中间部分（第 1 或 2 个元素，取决于是否以 ``` 开头）
-            for part in parts:
-                part = part.strip()
-                if part.startswith("json"):
-                    content = part[4:].strip()  # 去掉 "json" 前缀
-                    break
-                elif part.startswith("{"):
-                    # 这是 JSON 内容
-                    content = part
-                    break
+    # 处理 markdown 代码块包装的 JSON（兼容两种情况）
+    if "```" in content:
+        parts = content.split("```")
+        for part in parts:
+            part = part.strip()
+            if part.startswith("json"):
+                content = part[4:].strip()
+                break
+            elif part.startswith("{"):
+                content = part
+                break
 
-        return content.strip()
-    else:
-        raise Exception(f"LLM 响应格式错误: {result}")
+    content = content.strip()
+    if not content:
+        raise failure("empty_response")
+    logger.info("[LLM] 成功获取回复，长度: %s", len(content))
+    return content
 
 
 async def generate_stream_chat(

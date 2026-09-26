@@ -1,13 +1,15 @@
 """账伴 HTTP 路由，仅负责鉴权、参数与响应封装。"""
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.ledger_mate.schemas import AiChatResponse, AiConfirmRequest, AiMessageCreate, AiMessageOut, AiSessionCreate, AiSessionOut, CategoryCreate, CategoryOut, PaymentMethodCreate, PaymentMethodOut, RecordCreate, RecordOut, RecordUpdate, StatisticsOut
 from apps.ledger_mate.services import LedgerMateService
+from apps.ledger_mate.dates import resolve_range
+from apps.ledger_mate.schemas import DateOnly
 from core.database import get_db
 from core.response import PaginatedData, PaginatedResponse, ResponseModel
 from core.users.dependencies import get_current_user
@@ -47,7 +49,11 @@ async def create_record(data: RecordCreate, current_user: User = Depends(get_cur
 
 
 @router.get("/records", response_model=PaginatedResponse[RecordOut])
-async def list_records(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), start_at: Optional[datetime] = None, end_at: Optional[datetime] = None, record_type: Optional[str] = Query(None, pattern="^(income|expense)$"), category_id: Optional[uuid.UUID] = None, keyword: Optional[str] = Query(None, max_length=100), current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def list_records(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), start_at: Optional[datetime] = None, end_at: Optional[datetime] = None, record_type: Optional[str] = Query(None, pattern="^(income|expense)$"), category_id: Optional[uuid.UUID] = None, keyword: Optional[str] = Query(None, max_length=100), start_date: Optional[DateOnly] = None, end_date: Optional[DateOnly] = None, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    try:
+        start_at, end_at = resolve_range(start_at, end_at, start_date, end_date)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     records, total = await LedgerMateService.list_records(db, current_user.id, page, page_size, start_at, end_at, record_type, category_id, keyword)
     return PaginatedResponse(data=PaginatedData(items=[RecordOut.model_validate(item) for item in records], total=total, page=page, page_size=page_size, total_pages=(total + page_size - 1) // page_size if total else 0))
 
@@ -69,21 +75,19 @@ async def delete_record(record_id: uuid.UUID, current_user: User = Depends(get_c
 
 
 @router.get("/statistics", response_model=ResponseModel[StatisticsOut])
-async def statistics(start_at: datetime, end_at: datetime, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    if end_at <= start_at:
-        from fastapi import HTTPException
-        raise HTTPException(400, "结束时间必须晚于开始时间")
+async def statistics(start_at: Optional[datetime] = None, end_at: Optional[datetime] = None, start_date: Optional[DateOnly] = None, end_date: Optional[DateOnly] = None, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    try:
+        start_at, end_at = resolve_range(start_at, end_at, start_date, end_date, required=True)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     data = await LedgerMateService.statistics(db, current_user.id, start_at, end_at)
-    return ResponseModel(data=StatisticsOut(start_at=start_at, end_at=end_at, **data))
+    return ResponseModel(data=StatisticsOut(start_at=start_at, end_at=end_at, start_date=start_at.date(), end_date=end_at.date(), **data))
 
 
 @router.post("/ai/confirm", response_model=ResponseModel[list[RecordOut]])
 async def confirm_ai_drafts(data: AiConfirmRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    records = []
-    for index, draft in enumerate(data.drafts):
-        record = await LedgerMateService.create_record(db, current_user.id, RecordCreate(**draft.model_dump(), idempotency_key=f"{data.idempotency_key}:{index}"), source="ai")
-        records.append(RecordOut.model_validate(record))
-    return ResponseModel(data=records, message="AI 账单已确认入账")
+    records = await LedgerMateService.confirm_ai_drafts(db, current_user.id, data)
+    return ResponseModel(data=[RecordOut.model_validate(record) for record in records], message="AI 账单已确认入账")
 
 
 @router.post("/ai/sessions", response_model=ResponseModel[AiSessionOut])
@@ -105,4 +109,4 @@ async def list_ai_messages(session_id: uuid.UUID, limit: int = Query(100, ge=1, 
 @router.post("/ai/sessions/{session_id}/messages", response_model=ResponseModel[AiChatResponse])
 async def chat_ai(session_id: uuid.UUID, data: AiMessageCreate, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     session, user_message, assistant_message, records = await LedgerMateService.chat_with_ai(db, current_user.id, session_id, data)
-    return ResponseModel(data=AiChatResponse(session=AiSessionOut.model_validate(session), user_message=await _ai_message_out(db, current_user.id, user_message), assistant_message=AiMessageOut(id=assistant_message.id, role="assistant", content=assistant_message.content, payload=assistant_message.payload, records=[RecordOut.model_validate(record) for record in records], created_at=assistant_message.created_at)), message="AI 已解析并入账" if records else "AI 需要补充信息")
+    return ResponseModel(data=AiChatResponse(session=AiSessionOut.model_validate(session), user_message=await _ai_message_out(db, current_user.id, user_message), assistant_message=AiMessageOut(id=assistant_message.id, role="assistant", content=assistant_message.content, payload=assistant_message.payload, records=[RecordOut.model_validate(record) for record in records], created_at=assistant_message.created_at)), message="AI 账单已同步" if (assistant_message.payload or {}).get("status") == "ready" else "AI 需要补充信息")
