@@ -6,7 +6,7 @@
 
 - 接口前缀：/api/v1/auth/scan；响应使用项目统一的 code、message、data 结构。
 - app_key 必填，是业务标识，不是微信 AppID。先查询 apps 列表；仅允许已启用应用。客户端不能通过 app_key 获得该应用的角色或资源权限。
-- 应用列表包含已启用的 admin_web；后台应用确认和兑换时都要求超级管理员。所有应用确认和兑换均要求账号正常且已绑定手机号。
+- 统一管理后台固定使用 admin_web，无需在登录前选择业务。确认和兑换时均要求超级管理员，或持有已启用业务的有效管理角色；当前支持 (hope_aurakey, aurakey_admin)。角色停用、删除或业务停用后不再允许凭该角色登录。所有应用确认和兑换均要求账号正常且已绑定手机号。
 - 默认有效期 300 秒，从创建时开始计算；已扫码、重复确认和轮询均不延长。PC 按 poll_interval_seconds（当前为 2 秒）轮询。
 - transaction_id 是公开事务标识，可以放进二维码；poll_token 是发起端秘密，只在创建时返回，必须留在 PC，不能放进 URL、二维码或日志。后端仅保存其 SHA-256 摘要。
 - exchange_code 是短期一次性兑换码，不是 Access Token。它仅通过携带正确 X-Scan-Token 的轮询接口返回，不向手机 info/scanned/confirm 接口返回。
@@ -32,9 +32,11 @@ confirm/cancel 不需要请求体；授权用户从有效的 Bearer Token 读取
 
 GET /api/v1/auth/scan/apps 的 data 是列表，仅包含 app_key 和 name，不返回内部模块路径、微信 AppID 或凭据。应用下线后不再出现在列表中；等待中的会话也不能再授权或兑换。
 
-PC 选取一个 app_key 后发起 POST /api/v1/auth/scan/sessions，例如：
+统一管理后台直接发起 POST /api/v1/auth/scan/sessions，无需展示应用选择器：
 
-    {"app_key": "hope_aurakey"}
+    {"app_key": "admin_web"}
+
+独立业务客户端仍使用自己的 app_key，不改变现有业务登录范围。
 
 成功 data 包含：
 
@@ -88,11 +90,11 @@ PC 调用 GET /sessions/{transaction_id}，必须携带：
 
 兑换请求仍携带 X-Scan-Token。不需要手机端 Token，也不要把手机 Token 复制给 PC。
 
-成功 data 包含 access_token、refresh_token、token_type、app_scope、user；app_scope 来自该会话 app_key，user 含 phone、needs_phone_binding 和当前应用有效角色。PC 使用这些新凭据建立自己的登录状态，并自行跳转。
+成功 data 包含 access_token、refresh_token、token_type、app_scope、user；app_scope 来自该会话 app_key。业务登录的 user.roles 仅含当前应用有效角色；admin_web 返回所有已启用业务的有效管理角色，并保留各自真实 scope/code。PC 使用这些新凭据建立登录状态，根据 is_superuser 和 (scope, code) 展示有权访问的目录。
 
 - 后端重新检查应用、账号状态、手机号、后台权限和 token_version。
 - Redis 原子地把 CONFIRMED 改为 CONSUMED，并清除兑换码；并发兑换最多一个成功。
-- 新 Token 仅适用于会话指定业务；A Token 访问 B 路由被拒绝。app_key 不自动授予角色；业务接口继续执行角色和资源归属校验。
+- 普通业务 Token 仅适用于会话指定业务，A Token 访问 B 路由仍被拒绝。admin_web 仅能进入服务器显式标记的管理路由，并继续检查目标业务管理角色；不能进入普通用户端业务接口。系统管理接口仍仅允许超级管理员。app_key 不自动授予角色或升级普通业务 Token。
 - 如果已消费后签发失败，或成功响应在网络中丢失，必须重新扫码。不回滚到 CONFIRMED，不提供幂等兑换宽限窗口。
 
 ## 状态及错误处理

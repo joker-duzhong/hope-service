@@ -6,7 +6,7 @@ from typing import AsyncGenerator, Callable
 from fastapi import HTTPException, Depends, status
 
 from core.apps_config import REGISTERED_APPS
-from core.auth_scope import current_app_key as _current_app_key
+from core.auth_scope import current_admin_app, current_app_key as _current_app_key
 from core.users.models import User
 from core.users.dependencies import get_current_user
 
@@ -22,6 +22,23 @@ def bind_app_key(app_key: str) -> Callable[[], AsyncGenerator[None, None]]:
             yield
         finally:
             _current_app_key.reset(token)
+
+    return _bind
+
+
+def bind_admin_app(app_key: str) -> Callable[[], AsyncGenerator[None, None]]:
+    """仅在业务管理路由内允许统一后台凭据，保留原业务上下文。"""
+    if app_key not in REGISTERED_APPS:
+        raise ValueError(f"未知应用配置: {app_key}")
+
+    async def _bind() -> AsyncGenerator[None, None]:
+        if _current_app_key.get() != app_key:
+            raise HTTPException(500, "管理接口未绑定正确的应用上下文")
+        token = current_admin_app.set(app_key)
+        try:
+            yield
+        finally:
+            current_admin_app.reset(token)
 
     return _bind
 

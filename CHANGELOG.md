@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-09-27 Ledger Mate 管理后台应用目录
+
+- 新增 `GET /api/v1/admin/apps`，返回业务应用的 `key`、`name` 和 `is_active`，供管理端同步目录下架状态。
+
+## 2026-09-27 修复 Ledger Mate 分类模板迁移编号超长
+
+- 将 0020 迁移编号从 `0020_ledger_mate_category_templates` 缩短为 `0020_ledger_mate_cat_templates`，修复写入 `alembic_version.version_num VARCHAR(32)` 时因原编号为 35 字符而失败的问题；保留迁移文件名、上游依赖和业务表操作。
+- 新增全迁移链编号长度回归检查，防止后续迁移再次超过 32 字符限制。
+- 验证：修复前长度检查复现 0020 失败，修复后 21 项通过；`alembic heads` 确认唯一最新版本为 `0020_ledger_mate_cat_templates`。使用 `--noconftest` 跳过自动连接数据库的 fixture，未执行真实数据库迁移；在 `.gitignore` 中放行新回归测试。
+
+## 2026-09-27 统一管理后台登录与角色目录
+
+- 管理后台统一使用 `admin_web` 扫码或手机验证码登录，允许超级管理员及持有有效 AuraKey 管理角色的用户进入；登录与用户资料返回已启用业务的有效管理角色，供前端按真实 `(scope, code)` 展示目录。
+- 仅显式标记的 AuraKey 管理路由接受统一后台 Token，并继续校验目标业务的管理角色；系统管理仍仅限超管，普通业务 Token 保持跨应用隔离，后台 Token 无法进入用户端业务接口。
+- 复用登录、扫码确认/兑换、访问和刷新时的准入校验；新增隔离回归覆盖角色伪装、禁用/删除/撤销、跨应用拒绝、请求上下文清理及多业务管理角色资料。未改变停用应用配置，未连接真实短信、Redis 或数据库。
+- 同步扫码及统一身份接入文档；新增 `tests/test_admin_login.py`，更新 AuraKey 管理会话与扫码权限回归。
+
 ## 2026-09-26 Ledger Mate AI Failure Diagnostics
 
 - 账伴 AI 消息发送失败时区分配置、超时、连接失败、上游 HTTP 错误、无效 JSON、异常响应结构和空回复；通过现有 `code/message/data` 响应展示具体原因，上游错误说明先脱敏再展示。
@@ -152,3 +169,4 @@
 - Student CSV exports query all authorized students, not only the first 100.
 - Dashboard queries actual high-risk alerts, pending todos, latest exam and recent work records.
 - Changes are confined to the Teacher Logbook module, its tests and this log. No common or core files modified.
+

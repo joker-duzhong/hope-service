@@ -57,11 +57,12 @@ async def api(monkeypatch, identity_user):
         ("hope_aurakey", False, None, False, 403),
         ("hope_aurakey", False, "admin_web", True, 403),
         ("hope_aurakey", False, "hope_aurakey", False, 403),
-        ("admin_web", True, None, False, 403),
+        ("admin_web", True, None, False, 200),
+        ("admin_web", False, "hope_aurakey", True, 200),
         ("passport", True, None, False, 403),
     ],
 )
-async def test_admin_session_requires_business_scope_and_live_permission(api, identity_user, scope, superuser, role_scope, active_role, expected):
+async def test_admin_session_requires_supported_scope_and_live_permission(api, identity_user, scope, superuser, role_scope, active_role, expected):
     identity_user.is_superuser = superuser
     if role_scope:
         identity_user.roles = [SimpleNamespace(

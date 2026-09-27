@@ -15,7 +15,7 @@ from core.sms import normalize_phone, verify_sms_code
 from core.storage.services import StorageService
 from core.users.models import User, UserIdentity
 from core.users.schemas import LoginResponse, UserAvatarResponse, UserResponse
-from core.auth_scope import PASSPORT_SCOPE, validate_scope
+from core.auth_scope import ADMIN_SCOPE, PASSPORT_SCOPE, is_admin_role, validate_scope
 
 class UserService:
     """用户服务：CRUD 与认证逻辑"""
@@ -310,8 +310,12 @@ class UserService:
     async def build_scoped_user_response(db: AsyncSession, user: User, app_scope: str) -> UserResponse:
         data = await UserService.build_user_response(db, user)
         data.openid = None
-        active_role_ids = {role.id for role in user.roles if role.is_active and not role.is_deleted}
-        data.roles = [role for role in data.roles if role.scope == app_scope and role.id in active_role_ids]
+        if app_scope == ADMIN_SCOPE:
+            active_role_ids = {role.id for role in user.roles if is_admin_role(role)}
+        else:
+            active_role_ids = {role.id for role in user.roles
+                               if role.is_active and not role.is_deleted and role.scope == app_scope}
+        data.roles = [role for role in data.roles if role.id in active_role_ids]
         return data
 
     @staticmethod

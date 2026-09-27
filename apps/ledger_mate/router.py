@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.ledger_mate.admin_router import router as admin_router
 from apps.ledger_mate.schemas import AiChatResponse, AiConfirmRequest, AiMessageCreate, AiMessageOut, AiSessionCreate, AiSessionOut, CategoryCreate, CategoryOut, PaymentMethodCreate, PaymentMethodOut, RecordCreate, RecordOut, RecordUpdate, StatisticsOut
 from apps.ledger_mate.services import LedgerMateService
 from apps.ledger_mate.dates import resolve_range
@@ -110,3 +111,7 @@ async def list_ai_messages(session_id: uuid.UUID, limit: int = Query(100, ge=1, 
 async def chat_ai(session_id: uuid.UUID, data: AiMessageCreate, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     session, user_message, assistant_message, records = await LedgerMateService.chat_with_ai(db, current_user.id, session_id, data)
     return ResponseModel(data=AiChatResponse(session=AiSessionOut.model_validate(session), user_message=await _ai_message_out(db, current_user.id, user_message), assistant_message=AiMessageOut(id=assistant_message.id, role="assistant", content=assistant_message.content, payload=assistant_message.payload, records=[RecordOut.model_validate(record) for record in records], created_at=assistant_message.created_at)), message="AI 账单已同步" if (assistant_message.payload or {}).get("status") == "ready" else "AI 需要补充信息")
+
+
+# 管理端分类模板复用同一业务前缀，由 admin_router 自己绑定管理上下文和角色权限。
+router.include_router(admin_router)

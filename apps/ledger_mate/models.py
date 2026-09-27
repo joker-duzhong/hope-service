@@ -25,10 +25,27 @@ class LedgerMateCategory(CoreModel):
     user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), index=True)
     record_type: Mapped[str] = mapped_column(String(10), index=True)  # income / expense
     name: Mapped[str] = mapped_column(String(30))
-    icon: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    # 兼容旧版 emoji，同时允许保存对象存储返回的图标 URL。
+    icon: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class LedgerMateCategoryTemplate(CoreModel):
+    """账伴全局分类模板，由管理后台维护并同步到用户分类。"""
+
+    __tablename__ = "ledger_mate_category_templates"
+    __table_args__ = (
+        UniqueConstraint("record_type", "name", name="uq_ledger_mate_category_template"),
+    )
+
+    record_type: Mapped[str] = mapped_column(String(10), index=True)
+    name: Mapped[str] = mapped_column(String(30))
+    # 既支持 emoji/图标名，也支持七牛等对象存储的完整 URL。
+    icon: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class LedgerMatePaymentMethod(CoreModel):

@@ -95,3 +95,5 @@ tests/*
 !tests/test_storage_soft_delete.py
 !tests/test_identity_login.py
 !tests/test_identity_postgres.py
+!tests/test_alembic_revisions.py
+!tests/test_admin_login.py

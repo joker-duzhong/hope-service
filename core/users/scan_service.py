@@ -11,6 +11,7 @@ from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.apps_config import AppConfig, REGISTERED_APPS
+from core.auth_scope import validate_scope
 from core.redis_client import redis_client
 from core.security import create_token_pair
 from core.users.models import User
@@ -118,8 +119,7 @@ async def _replace(raw: str, session: StoredScanSession) -> bool:
 def _check_user(user: User, app_key: str, require_phone: bool = True) -> None:
     _app(app_key)
     UserService.ensure_login_allowed(user)
-    if app_key == "admin_web" and not user.is_superuser:
-        raise HTTPException(403, "该应用仅允许超级管理员登录")
+    validate_scope(app_key, user)
     if require_phone and not user.phone:
         raise HTTPException(403, "请先绑定手机号，再确认扫码登录")
 

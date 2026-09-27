@@ -10,6 +10,16 @@ from pydantic import BaseModel, Field
 from core.users.schemas import RoleInfo
 
 
+# ==================== 应用目录模型 ====================
+
+class AdminAppResponse(BaseModel):
+    """管理后台应用目录条目"""
+
+    key: str
+    name: str
+    is_active: bool
+
+
 # ==================== 管理后台用户模型 ====================
 
 class AdminUserListItem(BaseModel):

@@ -9,7 +9,7 @@
 - 同一个授权中心公众号供 A/B 共用时，其已绑定用户扫描 A/B 都免去重复手机验证。不能为每个业务随意更换公众号 AppID 后仍假定 OpenID 相同。
 - 小程序初次出现的新身份必须验证手机号。即使同属一个微信开放平台，也不把客户端 UnionID 当成免验证依据。
 - 不创建通用的“应用用户副本”或自动授予角色。业务表以统一 `User.id` 关联，已有业务资料仍由各业务的首次访问初始化逻辑负责；例如 `GaokaoService.get_or_create_persona`、`AurakeyService.get_or_create_user_asset`。同一应用 PC/小程序使用相同业务 API 和用户 ID，才访问同一份业务数据；前端缓存仍需刷新，不包含实时推送机制。
-- A/B 的业务资料和角色互相隔离；手机号等基础资料属于平台共享信息。登录响应 `user.roles` 仅含当前应用有效且未删除的角色，`openid` 不暴露其他应用的身份。
+- A/B 的业务资料和角色互相隔离；手机号等基础资料属于平台共享信息。业务登录响应 `user.roles` 仅含当前应用有效且未删除的角色；统一后台 `admin_web` 则返回所有已启用业务的有效管理角色，保留真实 `scope/code`。`openid` 不暴露其他应用的身份。
 
 ## 部署配置
 
@@ -84,7 +84,7 @@ PC 手机号登录请求改为 `POST /auth/phone/login`：`{phone, code, app_key
 - H5 公共公众号登录签发 `app_scope=passport`，仅该范围可以确认或取消扫码请求。
 - PC 扫码兑换签发会话内目标 `app_key` 范围的 Token；小程序签发其后端映射范围的 Token；PC 手机号登录签发已校验目标范围。
 - Access/Refresh Token 和 Redis refresh 会话都保存范围，刷新不能改变范围。A 的 Token 访问 B 路由返回 403；伪造 Header `app` 不会改变路由范围。
-- 应用角色仍需单独授权，普通用户首次登录不会变成会员或管理员。管理员统一使用扫码或手机验证码登录；旧 `POST /auth/login` 返回 410，不再接收密码、查询账号或签发凭据。平台后台可通过手机验证码或扫码申请 `admin_web` 范围，仍仅允许超级管理员；AuraKey 管理后台使用 `hope_aurakey`，不能跨范围使用 Token。
+- 应用角色仍需单独授权，普通用户首次登录不会变成会员或管理员。管理员统一使用扫码或手机验证码登录；旧 `POST /auth/login` 返回 410，不再接收密码、查询账号或签发凭据。统一管理后台可通过手机验证码或扫码申请 `admin_web` 范围，允许超级管理员或已登记业务管理角色；AuraKey 管理路由仍校验 `hope_aurakey` 下的 `aurakey_admin`，不能跨范围使用普通业务 Token。
 - 公共 `/auth/me` 返回当前凭据范围内的基础用户信息。各业务仍须执行资源归属检查；本次不宣称审计并修复了所有支付、存储等公共接口的业务权限。
 
 ### AuraKey 三端接入
@@ -135,3 +135,11 @@ Redis 票据先消费，数据库再提交，二者不声称构成分布式事�
 真实数据库测试仅接受 `PASSPORT_TEST_DATABASE_URL` 指向本机名为 `passport_identity_test` 的一次性 PostgreSQL；未提供时跳过。测试只创建并清理随机测试 schema，不应提供现有业务数据库连接。
 
 发布前仍需真机验证公众号网页授权资格与域名、小程序手机号能力、SMS、两个环境的 HTTPS/CORS 和应用端兑换。关闭身份/扫码响应缓存，对 OAuth 查询参数、Authorization、微信 code、票据、短信和 Token 做日志脱敏。内置协议仍为草案，运营资料与审阅不可由技术测试替代。
+
+## 统一管理后台登录
+
+- 管理后台登录固定传 `app_key=admin_web`，扫码与手机验证码入口共用后台准入校验；前端无需选择 AuraKey 等业务。普通业务客户端仍使用各自的应用范围。
+- 准入条件为超级管理员，或持有显式登记的有效业务管理角色；当前登记 `(hope_aurakey, aurakey_admin)`。不依据角色后缀推断权限，普通会员、同名但不同 scope 的角色、停用或删除角色均不授予后台权限，已停用的时空图书馆保持停用。
+- `admin_web` 登录及 `/auth/me` 返回全部已启用业务的有效管理角色；前端以 `is_superuser` 和 `(scope, code)` 决定目录。新增管理业务时须同步登记明确的管理角色并标记该业务的管理路由。
+- 统一后台 Token 仅在服务器通过 `bind_admin_app` 显式标记的管理路由跨应用使用。AuraKey `/aurakey/admin/*` 仍检查 `hope_aurakey` 下的 `aurakey_admin`，系统 `/admin/*` 仍仅允许超级管理员。`/aurakey/admin/session` 继续返回当前 AuraKey 范围资料，统一后台应以 `/auth/me` 刷新完整后台目录角色。
+- 普通业务 Token 和 Passport Token 不能借此跨应用；统一后台 Token 不能进入用户端业务接口。客户端 Header、URL 或 app_key 不会改变路由权限。扫码确认、兑换、短信登录、Token 访问和刷新均重新检查当前后台准入资格；权限撤销后已有后台 Token 也会失效。

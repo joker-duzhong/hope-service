@@ -33,6 +33,16 @@ class TestUser(BaseModel):
 sys.modules["core.database"].get_db = placeholder_database
 dependencies = types.ModuleType("core.users.dependencies")
 dependencies.get_current_user = placeholder_dependency
+
+
+def placeholder_role_dependency(*_roles):
+    async def check_role():
+        return None
+
+    return check_role
+
+
+dependencies.require_roles = placeholder_role_dependency
 user_models = types.ModuleType("core.users.models")
 user_models.User = TestUser
 sys.modules.update({"core.users.dependencies": dependencies, "core.users.models": user_models})

@@ -12,7 +12,7 @@ from core.database import get_db
 from core.security import decode_token
 from core.users.models import User
 from core.users.services import UserService
-from core.auth_scope import validate_access_scope, validate_scope
+from core.auth_scope import ADMIN_SCOPE, current_admin_app, validate_access_scope, validate_scope
 
 security = HTTPBearer()
 security_optional = HTTPBearer(auto_error=False)
@@ -103,7 +103,7 @@ async def get_current_superuser(
 def require_roles(*role_codes: str) -> Callable:
     """
     角色权限依赖工厂，用于需要特定角色才能访问的接口。
-    同时匹配当前凭据的应用 scope 和角色 code。
+    同时匹配目标应用 scope 和角色 code，统一后台仅采用显式管理路由的 scope。
 
     用法::
 
@@ -115,8 +115,11 @@ def require_roles(*role_codes: str) -> Callable:
     async def _checker(request: Request, current_user: User = Depends(get_current_user)) -> User:
         if current_user.is_superuser:
             return current_user
+        role_scope = request.state.auth_scope
+        if role_scope == ADMIN_SCOPE and current_admin_app.get() is not None:
+            role_scope = current_admin_app.get()
         user_role_codes = {role.code for role in current_user.roles
-                           if role.is_active and not role.is_deleted and role.scope == request.state.auth_scope}
+                           if role.is_active and not role.is_deleted and role.scope == role_scope}
         if not user_role_codes.intersection(set(role_codes)):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

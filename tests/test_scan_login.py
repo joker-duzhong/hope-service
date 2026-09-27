@@ -294,7 +294,7 @@ async def test_disabled_app_rejected_at_confirmation_and_exchange(store, user, d
     token_factory.assert_not_awaited()
 
 
-async def test_admin_app_requires_superuser_at_confirmation_and_exchange(store, user, database, token_factory):
+async def test_admin_app_revalidates_management_permission_at_confirmation_and_exchange(store, user, database, token_factory):
     created = await scan_service.create_session("admin_web")
     await scan_service.transition(created.transaction_id, "scanned")
     with pytest.raises(HTTPException) as error:

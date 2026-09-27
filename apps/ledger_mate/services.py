@@ -12,9 +12,9 @@ from sqlalchemy import case, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.ledger_mate.models import LedgerMateAiMessage, LedgerMateAiRecordReference, LedgerMateAiSession, LedgerMateBook, LedgerMateCategory, LedgerMateOperationLog, LedgerMatePaymentMethod, LedgerMateRecord
+from apps.ledger_mate.models import LedgerMateAiMessage, LedgerMateAiRecordReference, LedgerMateAiSession, LedgerMateBook, LedgerMateCategory, LedgerMateCategoryTemplate, LedgerMateOperationLog, LedgerMatePaymentMethod, LedgerMateRecord
 from apps.ledger_mate.prompts import build_accounting_parser_prompt
-from apps.ledger_mate.schemas import AiConfirmRequest, AiMessageCreate, AiParseResult, AiSessionCreate, CategoryCreate, PaymentMethodCreate, RecordCreate, RecordUpdate
+from apps.ledger_mate.schemas import AiConfirmRequest, AiMessageCreate, AiParseResult, AiSessionCreate, CategoryCreate, CategoryTemplateCreate, CategoryTemplateUpdate, PaymentMethodCreate, RecordCreate, RecordUpdate
 from apps.ledger_mate.dates import SHANGHAI, local_datetime
 from core.llm.engine import generate_chat
 from core.llm.errors import ChatGenerationError
@@ -192,8 +192,32 @@ class LedgerMateService:
             raise
 
     @staticmethod
+    async def ensure_category_templates(db: AsyncSession, *, commit: bool = True) -> None:
+        """确保开发环境及旧数据库也有可管理的默认分类模板。"""
+        template_values = [
+            {
+                "record_type": record_type,
+                "name": name,
+                "sort_order": index,
+                "is_enabled": True,
+            }
+            for record_type, names in DEFAULT_CATEGORIES.items()
+            for index, name in enumerate(names)
+        ]
+        await db.execute(
+            pg_insert(LedgerMateCategoryTemplate)
+            .values(template_values)
+            .on_conflict_do_nothing(constraint="uq_ledger_mate_category_template")
+        )
+        if commit:
+            await db.commit()
+        else:
+            await db.flush()
+
+    @staticmethod
     async def ensure_defaults(db: AsyncSession, user_id: uuid.UUID, *, commit: bool = True) -> None:
         """原子初始化用户的默认数据，可安全应对并发首屏请求。"""
+        await LedgerMateService.ensure_category_templates(db, commit=False)
         await db.execute(
             pg_insert(LedgerMateBook)
             .values(user_id=user_id)
@@ -215,6 +239,8 @@ class LedgerMateService:
             .values(category_values)
             .on_conflict_do_nothing(constraint="uq_ledger_mate_category")
         )
+        await db.flush()
+        await LedgerMateService.sync_category_templates(db, user_id)
         await db.execute(
             pg_insert(LedgerMatePaymentMethod)
             .values([
@@ -227,6 +253,144 @@ class LedgerMateService:
             await db.commit()
         else:
             await db.flush()
+
+    @staticmethod
+    async def sync_category_templates(db: AsyncSession, user_id: uuid.UUID):
+        """将全局模板同步到当前用户，保留已有分类 UUID 及历史账单引用。"""
+        templates = (
+            await db.scalars(
+                select(LedgerMateCategoryTemplate).order_by(
+                    LedgerMateCategoryTemplate.record_type,
+                    LedgerMateCategoryTemplate.sort_order,
+                    LedgerMateCategoryTemplate.created_at,
+                )
+            )
+        ).all()
+        if not templates:
+            return
+        categories = (
+            await db.scalars(
+                select(LedgerMateCategory).where(
+                    LedgerMateCategory.user_id == user_id,
+                    LedgerMateCategory.is_deleted == False,
+                )
+            )
+        ).all()
+        category_map = {(item.record_type, item.name): item for item in categories}
+        active_template_keys = {
+            (item.record_type, item.name)
+            for item in templates
+            if not item.is_deleted
+        }
+        # 模板改名或删除时停用旧系统分类，保留其 UUID 供历史账单继续引用。
+        for category in categories:
+            if category.is_system and (category.record_type, category.name) not in active_template_keys:
+                category.is_enabled = False
+        new_categories = []
+        for template in templates:
+            key = (template.record_type, template.name)
+            category = category_map.get(key)
+            if category is None:
+                if template.is_deleted:
+                    continue
+                new_categories.append(
+                    {
+                        "user_id": user_id,
+                        "record_type": template.record_type,
+                        "name": template.name,
+                        "icon": template.icon,
+                        "sort_order": template.sort_order,
+                        "is_enabled": template.is_enabled,
+                        "is_system": True,
+                    }
+                )
+                continue
+            # 模板删除只停用用户分类，避免破坏既有账单的 category_id。
+            desired_enabled = template.is_enabled and not template.is_deleted
+            category.icon = template.icon
+            category.sort_order = template.sort_order
+            category.is_enabled = desired_enabled
+            category.is_system = True
+        if new_categories:
+            await db.execute(
+                pg_insert(LedgerMateCategory)
+                .values(new_categories)
+                .on_conflict_do_nothing(constraint="uq_ledger_mate_category")
+            )
+
+    @staticmethod
+    async def list_category_templates(db: AsyncSession, *, include_deleted: bool = False):
+        await LedgerMateService.ensure_category_templates(db)
+        stmt = select(LedgerMateCategoryTemplate)
+        if not include_deleted:
+            stmt = stmt.where(LedgerMateCategoryTemplate.is_deleted == False)
+        return (
+            await db.scalars(
+                stmt.order_by(
+                    LedgerMateCategoryTemplate.record_type,
+                    LedgerMateCategoryTemplate.sort_order,
+                    LedgerMateCategoryTemplate.created_at,
+                )
+            )
+        ).all()
+
+    @staticmethod
+    async def create_category_template(db: AsyncSession, data: CategoryTemplateCreate):
+        exists = await db.scalar(
+            select(LedgerMateCategoryTemplate.id).where(
+                LedgerMateCategoryTemplate.record_type == data.record_type,
+                LedgerMateCategoryTemplate.name == data.name,
+            )
+        )
+        if exists:
+            raise HTTPException(400, "同类型分类名称不可重复")
+        template = LedgerMateCategoryTemplate(**data.model_dump())
+        db.add(template)
+        await db.commit()
+        await db.refresh(template)
+        return template
+
+    @staticmethod
+    async def update_category_template(db: AsyncSession, template_id: uuid.UUID, data: CategoryTemplateUpdate):
+        template = await db.scalar(
+            select(LedgerMateCategoryTemplate).where(
+                LedgerMateCategoryTemplate.id == template_id,
+                LedgerMateCategoryTemplate.is_deleted == False,
+            )
+        )
+        if not template:
+            raise HTTPException(404, "分类模板不存在")
+        changes = data.model_dump(exclude_unset=True)
+        record_type = changes.get("record_type", template.record_type)
+        name = changes.get("name", template.name)
+        duplicate = await db.scalar(
+            select(LedgerMateCategoryTemplate.id).where(
+                LedgerMateCategoryTemplate.record_type == record_type,
+                LedgerMateCategoryTemplate.name == name,
+                LedgerMateCategoryTemplate.id != template_id,
+            )
+        )
+        if duplicate:
+            raise HTTPException(400, "同类型分类名称不可重复")
+        for key, value in changes.items():
+            setattr(template, key, value)
+        await db.commit()
+        await db.refresh(template)
+        return template
+
+    @staticmethod
+    async def delete_category_template(db: AsyncSession, template_id: uuid.UUID):
+        template = await db.scalar(
+            select(LedgerMateCategoryTemplate).where(
+                LedgerMateCategoryTemplate.id == template_id,
+                LedgerMateCategoryTemplate.is_deleted == False,
+            )
+        )
+        if not template:
+            raise HTTPException(404, "分类模板不存在")
+        template.is_deleted = True
+        template.is_enabled = False
+        await db.commit()
 
     @staticmethod
     async def categories(db: AsyncSession, user_id: uuid.UUID, include_disabled: bool = False, *, initialize: bool = True):

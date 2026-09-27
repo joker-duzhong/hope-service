@@ -14,7 +14,7 @@ DateOnly = Annotated[date, BeforeValidator(date_only)]
 class CategoryCreate(BaseModel):
     record_type: RecordType
     name: str = Field(min_length=1, max_length=30)
-    icon: Optional[str] = Field(None, max_length=50)
+    icon: Optional[str] = Field(None, max_length=500)
 
     @field_validator("name", mode="before")
     @classmethod
@@ -25,8 +25,42 @@ class CategoryCreate(BaseModel):
 class CategoryOut(CategoryCreate):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
+    sort_order: int
     is_enabled: bool
     is_system: bool
+
+
+class CategoryTemplateCreate(BaseModel):
+    record_type: RecordType
+    name: str = Field(min_length=1, max_length=30)
+    icon: Optional[str] = Field(None, max_length=500)
+    sort_order: int = Field(default=0, ge=0, le=1_000_000)
+    is_enabled: bool = True
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def trim_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class CategoryTemplateUpdate(BaseModel):
+    record_type: Optional[RecordType] = None
+    name: Optional[str] = Field(None, min_length=1, max_length=30)
+    icon: Optional[str] = Field(None, max_length=500)
+    sort_order: Optional[int] = Field(None, ge=0, le=1_000_000)
+    is_enabled: Optional[bool] = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def trim_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class CategoryTemplateOut(CategoryTemplateCreate):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
 
 
 class PaymentMethodCreate(BaseModel):

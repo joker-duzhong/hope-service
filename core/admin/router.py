@@ -1,6 +1,6 @@
 """
 管理后台路由
-所有接口均需要超级管理员权限（is_superuser=True）
+用户与角色管理接口需要超级管理员权限；应用目录接口允许已登录的管理后台账号访问。
 """
 import math
 
@@ -10,19 +10,44 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.admin.schemas import (
+    AdminAppResponse,
     AdminAssignRolesRequest,
     AdminFreezeRequest,
     AdminUserDetail,
     AdminUserListItem,
 )
 from core.admin.services import AdminUserService, RoleService
+from core.apps_config import REGISTERED_APPS
 from core.database import get_db
 from core.response import PaginatedData, PaginatedResponse, ResponseModel
 from core.roles.schemas import RoleCreate, RoleResponse, RoleUpdate
-from core.users.dependencies import get_current_superuser
+from core.users.dependencies import get_current_superuser, get_current_user
 from core.users.models import User
 
 router = APIRouter(prefix="/admin", tags=["管理后台"])
+
+
+# ==================== 应用目录 ====================
+
+@router.get("/apps", response_model=ResponseModel[list[AdminAppResponse]])
+async def list_apps(
+    _: User = Depends(get_current_user),
+):
+    """获取管理后台可见的业务应用目录及启用状态。
+
+    路由由 ``main`` 绑定到 ``admin_web``，``get_current_user`` 会校验统一后台
+    登录凭据及管理权限；应用启用状态直接读取后端注册表。
+    """
+    apps = [
+        AdminAppResponse(
+            key=app.key,
+            name=app.name,
+            is_active=app.is_active,
+        )
+        for app in REGISTERED_APPS.values()
+        if app.key != "admin_web"
+    ]
+    return ResponseModel(data=apps)
 
 
 # ==================== 用户管理 ====================

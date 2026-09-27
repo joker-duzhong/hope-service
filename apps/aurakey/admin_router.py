@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from core.database import get_db
+from core.dependencies import bind_admin_app
 from core.users.models import User
 from core.users.dependencies import require_roles
 from core.users.schemas import UserResponse
@@ -29,7 +30,10 @@ from apps.aurakey.models import (
 from apps.aurakey.admin_services import AurakeyAdminService
 from apps.aurakey.services import AurakeyService
 
-router = APIRouter(prefix="/admin", tags=["AuraKey B端管理"])
+router = APIRouter(
+    prefix="/admin", tags=["AuraKey B端管理"],
+    dependencies=[Depends(bind_admin_app("hope_aurakey"))],
+)
 
 
 @router.get("/session", response_model=ResponseModel[UserResponse], summary="校验 AuraKey 管理会话")
