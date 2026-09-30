@@ -251,3 +251,12 @@ class AiChatResponse(BaseModel):
     session: AiSessionOut
     user_message: AiMessageOut
     assistant_message: AiMessageOut
+
+
+class AiRequestOut(BaseModel):
+    status: Literal["queued", "processing", "completed", "failed"]
+    client_message_id: str
+    session: AiSessionOut
+    user_message: AiMessageOut
+    assistant_message: Optional[AiMessageOut] = None
+    error_message: Optional[str] = None

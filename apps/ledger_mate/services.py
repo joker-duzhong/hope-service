@@ -74,6 +74,8 @@ class LedgerMateService:
         pending = []
         for message in reversed(history):
             payload = message.payload or {}
+            if payload.get("request_status") == "failed":
+                continue
             if message.role == "assistant" and (payload.get("status") == "ready" or payload.get("auto_saved")):
                 break
             pending.append({"role": message.role, "content": message.content, "payload": payload})
@@ -110,6 +112,52 @@ class LedgerMateService:
         return parsed
 
     @staticmethod
+    async def _parse_ai_input(content, history, categories, methods, now, session_id):
+        context = {
+            "current_date": now.date().isoformat(), "current_time": now.isoformat(), "timezone": "Asia/Shanghai",
+            "categories": [{"id": str(item.id), "record_type": item.record_type, "name": item.name} for item in categories],
+            "payment_methods": [{"id": str(item.id), "name": item.name, "is_default": item.is_default} for item in methods],
+            "history": LedgerMateService._pending_history(history), "user_input": content,
+        }
+        try:
+            raw = await generate_chat(
+                [
+                    {"role": "system", "content": build_accounting_parser_prompt(context)},
+                    {"role": "user", "content": f"用户原文：{content}\n\n请按系统规则只返回合法 JSON。"},
+                ],
+                response_format={"type": "json_object"},
+                diagnostic_sensitive_values=(content, *(item["content"] for item in context["history"])),
+            )
+        except ChatGenerationError as exc:
+            logger.warning("AI 记账调用失败 session_id=%s diagnostics=%s", session_id, json.dumps(exc.diagnostics, ensure_ascii=True, sort_keys=True))
+            raise HTTPException(502, str(exc)) from None
+        except Exception as exc:
+            logger.error("AI 记账调用异常 session_id=%s exception_type=%s", session_id, type(exc).__name__)
+            raise HTTPException(502, "记账助手暂时没有回应，请稍后重试这条消息") from None
+        try:
+            return LedgerMateService._prepare_parsed(AiParseResult.model_validate(json.loads(raw)), categories, methods)
+        except (TypeError, ValueError):
+            raise HTTPException(502, "AI 返回的记账结构无效，请重试") from None
+
+    @staticmethod
+    async def _save_ai_result(db, user_id, session, user_message, parsed, client_message_id):
+        created_records = []
+        request_key = hashlib.sha256(f"{user_id}:{session.id}:{client_message_id}".encode("utf-8")).hexdigest()
+        if parsed.status == "ready":
+            for index, draft in enumerate(parsed.records):
+                values = draft.model_dump(exclude={"category_name", "occurred_at"})
+                record = await LedgerMateService.create_record(db, user_id, RecordCreate(**values, idempotency_key=f"ai:{request_key}:{index}"), source="ai", commit=False, initialize=False)
+                created_records.append(record)
+        payload = parsed.model_dump(mode="json")
+        payload.update({"reply_to": str(user_message.id), "client_message_id": client_message_id, "auto_saved": parsed.status == "ready"})
+        content = (parsed.playful_text or f"已记下 {len(created_records)} 笔账。") if created_records else "\n".join(parsed.questions)
+        assistant = await LedgerMateService._save_message(db, user_id, session.id, "assistant", content, payload)
+        for record in created_records:
+            db.add(LedgerMateAiRecordReference(user_id=user_id, session_id=session.id, message_id=assistant.id, record_id=record.id))
+        session.updated_at = datetime.now(SHANGHAI)
+        return assistant, created_records
+
+    @staticmethod
     async def chat_with_ai(db: AsyncSession, user_id: uuid.UUID, session_id: uuid.UUID, data: AiMessageCreate):
         await LedgerMateService.get_ai_session(db, user_id, session_id)
         await LedgerMateService.ensure_defaults(db, user_id)
@@ -138,53 +186,21 @@ class LedgerMateService:
                 records = await LedgerMateService._message_records(db, user_id, assistant.id)
                 await db.commit()
                 return session, existing, assistant, records
+            pending = await db.scalar(select(LedgerMateAiMessage.id).where(
+                LedgerMateAiMessage.user_id == user_id,
+                LedgerMateAiMessage.session_id == session_id,
+                LedgerMateAiMessage.role == "user",
+                LedgerMateAiMessage.payload["request_status"].as_string().in_(["queued", "processing"]),
+                LedgerMateAiMessage.is_deleted == False,
+            ).limit(1))
+            if pending:
+                raise HTTPException(409, "此会话还有消息处理中，请等待结果后再发送")
             history = await LedgerMateService.get_ai_messages(db, user_id, session_id, limit=20)
             categories = await LedgerMateService.categories(db, user_id, initialize=False)
             methods = await LedgerMateService.methods(db, user_id, initialize=False)
-            now = datetime.now(SHANGHAI)
-            context = {
-                "current_date": now.date().isoformat(), "current_time": now.isoformat(), "timezone": "Asia/Shanghai",
-                "categories": [{"id": str(item.id), "record_type": item.record_type, "name": item.name} for item in categories],
-                "payment_methods": [{"id": str(item.id), "name": item.name, "is_default": item.is_default} for item in methods],
-                "history": LedgerMateService._pending_history(history), "user_input": data.content,
-            }
-            try:
-                raw = await generate_chat(
-                    [
-                        {"role": "system", "content": build_accounting_parser_prompt(context)},
-                        {
-                            "role": "user",
-                            "content": f"用户原文：{data.content}\n\n请按系统规则只返回合法 JSON。",
-                        },
-                    ],
-                    response_format={"type": "json_object"},
-                    diagnostic_sensitive_values=(data.content, *(item["content"] for item in context["history"])),
-                )
-            except ChatGenerationError as exc:
-                logger.warning("AI 记账调用失败 session_id=%s diagnostics=%s", session_id, json.dumps(exc.diagnostics, ensure_ascii=True, sort_keys=True))
-                raise HTTPException(502, str(exc)) from None
-            except Exception as exc:
-                logger.error("AI 记账调用异常 session_id=%s exception_type=%s", session_id, type(exc).__name__)
-                raise HTTPException(502, "记账助手暂时没有回应，请稍后重试这条消息") from None
-            try:
-                parsed = LedgerMateService._prepare_parsed(AiParseResult.model_validate(json.loads(raw)), categories, methods)
-            except (TypeError, ValueError):
-                raise HTTPException(502, "AI 返回的记账结构无效，请重试") from None
+            parsed = await LedgerMateService._parse_ai_input(data.content, history, categories, methods, datetime.now(SHANGHAI), session_id)
             user_message = await LedgerMateService._save_message(db, user_id, session_id, "user", data.content, {"client_message_id": data.client_message_id})
-            created_records = []
-            request_key = hashlib.sha256(f"{user_id}:{session_id}:{data.client_message_id}".encode("utf-8")).hexdigest()
-            if parsed.status == "ready":
-                for index, draft in enumerate(parsed.records):
-                    values = draft.model_dump(exclude={"category_name", "occurred_at"})
-                    record = await LedgerMateService.create_record(db, user_id, RecordCreate(**values, idempotency_key=f"ai:{request_key}:{index}"), source="ai", commit=False, initialize=False)
-                    created_records.append(record)
-            payload = parsed.model_dump(mode="json")
-            payload.update({"reply_to": str(user_message.id), "client_message_id": data.client_message_id, "auto_saved": parsed.status == "ready"})
-            content = (parsed.playful_text or f"已记下 {len(created_records)} 笔账。") if created_records else "\n".join(parsed.questions)
-            assistant = await LedgerMateService._save_message(db, user_id, session_id, "assistant", content, payload)
-            for record in created_records:
-                db.add(LedgerMateAiRecordReference(user_id=user_id, session_id=session_id, message_id=assistant.id, record_id=record.id))
-            session.updated_at = datetime.now(SHANGHAI)
+            assistant, created_records = await LedgerMateService._save_ai_result(db, user_id, session, user_message, parsed, data.client_message_id)
             await db.commit()
             return session, user_message, assistant, created_records
         except BaseException:

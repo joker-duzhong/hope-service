@@ -3,12 +3,14 @@ import uuid
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.ledger_mate.admin_router import router as admin_router
-from apps.ledger_mate.schemas import AiChatResponse, AiConfirmRequest, AiMessageCreate, AiMessageOut, AiSessionCreate, AiSessionOut, CategoryCreate, CategoryOut, PaymentMethodCreate, PaymentMethodOut, RecordCreate, RecordOut, RecordUpdate, StatisticsOut
+from apps.ledger_mate.ai_requests import AiRequestService
+from apps.ledger_mate.schemas import AiChatResponse, AiConfirmRequest, AiMessageCreate, AiMessageOut, AiRequestOut, AiSessionCreate, AiSessionOut, CategoryCreate, CategoryOut, PaymentMethodCreate, PaymentMethodOut, RecordCreate, RecordOut, RecordUpdate, StatisticsOut
 from apps.ledger_mate.services import LedgerMateService
+from apps.ledger_mate.tasks import enqueue_ai_request
 from apps.ledger_mate.dates import resolve_range
 from apps.ledger_mate.schemas import DateOnly
 from core.database import get_db
@@ -21,7 +23,19 @@ router = APIRouter()
 
 async def _ai_message_out(db: AsyncSession, user_id: uuid.UUID, message) -> AiMessageOut:
     records = await LedgerMateService._message_records(db, user_id, message.id)
-    return AiMessageOut(id=message.id, role=message.role, content=message.content, payload=message.payload, records=[RecordOut.model_validate(record) for record in records], created_at=message.created_at)
+    payload = {key: value for key, value in message.payload.items() if key not in ("lease_token", "lease_expires_at")} if message.payload else None
+    return AiMessageOut(id=message.id, role=message.role, content=message.content, payload=payload, records=[RecordOut.model_validate(record) for record in records], created_at=message.created_at)
+
+
+async def _ai_request_out(db: AsyncSession, user_id: uuid.UUID, state) -> AiRequestOut:
+    return AiRequestOut(
+        status=state.status,
+        client_message_id=state.user_message.payload["client_message_id"],
+        session=AiSessionOut.model_validate(state.session),
+        user_message=await _ai_message_out(db, user_id, state.user_message),
+        assistant_message=await _ai_message_out(db, user_id, state.assistant_message) if state.assistant_message else None,
+        error_message=state.error_message,
+    )
 
 
 @router.get("/categories", response_model=ResponseModel[list[CategoryOut]])
@@ -105,6 +119,26 @@ async def list_ai_sessions(current_user: User = Depends(get_current_user), db: A
 async def list_ai_messages(session_id: uuid.UUID, limit: int = Query(100, ge=1, le=100), current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     messages = await LedgerMateService.get_ai_messages(db, current_user.id, session_id, limit)
     return ResponseModel(data=[await _ai_message_out(db, current_user.id, message) for message in messages])
+
+
+@router.post("/ai/sessions/{session_id}/requests", response_model=ResponseModel[AiRequestOut], status_code=202)
+async def accept_ai_request(session_id: uuid.UUID, data: AiMessageCreate, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    state = await AiRequestService.accept(db, current_user.id, session_id, data)
+    if state.status == "queued":
+        background_tasks.add_task(enqueue_ai_request, str(state.user_message.id))
+    return ResponseModel(data=await _ai_request_out(db, current_user.id, state), message="消息已接收")
+
+
+@router.get("/ai/sessions/{session_id}/requests/{client_message_id}", response_model=ResponseModel[AiRequestOut])
+async def get_ai_request(session_id: uuid.UUID, client_message_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    state = await AiRequestService.get(db, current_user.id, session_id, client_message_id)
+    return ResponseModel(data=await _ai_request_out(db, current_user.id, state))
+
+
+@router.get("/ai/requests/pending", response_model=ResponseModel[list[AiRequestOut]])
+async def list_pending_ai_requests(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    states = await AiRequestService.list_pending(db, current_user.id)
+    return ResponseModel(data=[await _ai_request_out(db, current_user.id, state) for state in states])
 
 
 @router.post("/ai/sessions/{session_id}/messages", response_model=ResponseModel[AiChatResponse])

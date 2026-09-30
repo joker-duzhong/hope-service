@@ -60,6 +60,7 @@ REGISTERED_APPS: Dict[str, AppConfig] = {
         name="Hope 账伴",
         created_at="2026-08-27",
         router_modules=[RouterConfig(module="apps.ledger_mate.router", prefix="/ledger-mate", tags=["账伴"])],
+        task_modules=["apps.ledger_mate.tasks"],
     ),
 
     # 下面的应用暂时下线，后续可能会重新上线

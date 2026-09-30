@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-30 Ledger Mate 消息后台处理与重启恢复
+
+- 记账请求先持久保存用户消息及处理状态，再交给独立 Celery Worker 处理；客户端离开页面或退出程序后，回复和账单仍由服务端保存，并提供请求状态和待处理请求查询。
+- 请求使用持久消息编号投递，处理采用原子抢占、租约和有界重试；同一请求重复提交或重复投递不会重复入账。Beat 每分钟补投漏发请求、到期重试及过期租约。
+- 注册账伴任务模块，任务使用独立的 NullPool 数据库会话，并对处理任务启用延后确认和 Worker 丢失重投；日志仅记录消息编号和错误类型，不记录原文及连接详情。
+- 部署需同步更新 API、Celery Worker 与 Beat，启用现有 Redis 队列；状态保存在现有消息 payload，无需新增数据库迁移。前端重新打开时恢复结果，停留前台时定时同步完成状态。
+
+## 2026-09-28 修复 DEBUG 自动建表导致的迁移版本漂移
+
+- 新增 `repair_migration_state.py`，针对实际表已由 `create_all()` 创建、Alembic 仍停留在 `0015_aurakey_gallery_edit` 的数据库，默认执行只读核验，显式 `--apply` 才执行修复。
+- 从固定的 0016–0020 迁移生成预期结构，核对字段类型及时区、主键、唯一约束、外键和索引；仅补齐已确认的 38 个默认值、分类图标字段扩容、两个 AI 复合索引及缺失的默认分类模板。保留已有模板、软删除/禁用状态、等价索引和更严格的审计时间非空约束。
+- 修复、复核和精确校准版本至 `0020_ledger_mate_cat_templates` 在同一 PostgreSQL 事务内完成，并设置锁等待和语句超时；未知结构差异、模板 UUID 冲突或复核失败会中止。新增 `migration_repair_test.py` 回归覆盖；历史迁移脚本保持原样。
+- 验证：`.venv/Scripts/python.exe -X utf8 -B -m pytest -p no:cacheprovider migration_repair_test.py tests/test_alembic_revisions.py -q --noconftest`，55 项通过。独立临时 PostgreSQL 15 中 6 项集成场景通过，覆盖只读零写入、41 条结构修复、旧模板状态保留、重复执行、异常结构拒绝及版本更新失败后的 DDL/模板插入整体回滚；临时容器和凭据已清理，未操作线上数据库。UTF-8、Python 3.11 语法和差异空白检查通过。
+
 ## 2026-09-27 Ledger Mate 管理后台应用目录
 
 - 新增 `GET /api/v1/admin/apps`，返回业务应用的 `key`、`name` 和 `is_active`，供管理端同步目录下架状态。

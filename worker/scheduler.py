@@ -10,6 +10,11 @@ from core.apps_config import REGISTERED_APPS
 from worker.celery_app import celery_app
 
 celery_app.conf.beat_schedule = {
+    "ledger_mate_recover_ai_requests": {
+        "task": "apps.ledger_mate.tasks.recover_ai_requests",
+        # 已落库但漏投、重试到期或处理租约过期的请求，每分钟补投。
+        "schedule": crontab(minute="*/1"),
+    },
     # ==================== 业务定时任务 ====================
     # Trade Copilot 飞书通知任务临时停用；接口与非通知类缓存任务保持可用。
     # "trade_copilot_monitor_positions": {
@@ -87,6 +92,7 @@ celery_app.conf.beat_schedule = {
 }
 
 BEAT_APP_KEYS = {
+    "ledger_mate_recover_ai_requests": "hope_ledger_mate",
     "trade_copilot_market_thermometer": "hope_trade_copilot",
     "trade_copilot_sync_stock_info": "hope_trade_copilot",
     "nest_talk_detect_bargain": "hope_nest_talk",

@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from apps.ledger_mate import services
+from apps.ledger_mate.ai_requests import AiRequestService
 from core.llm.errors import ChatGenerationError
 
 
@@ -155,3 +156,61 @@ async def test_http_ai_failure_preserves_envelope_and_safe_message(ledger_db, mo
     assert response.status_code == 502
     assert response.json() == {"code": 502, "message": expected_message, "data": None}
     assert "mock-private-provider-detail" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_http_async_accept_status_history_and_pending_contract(ledger_db, monkeypatch):
+    h = ledger_db
+    dispatched = []
+    monkeypatch.setattr(routes, "enqueue_ai_request", lambda message_id: dispatched.append(message_id))
+    llm = AsyncMock(return_value=json.dumps({"status": "ready", "records": [{"record_type": "expense", "amount_cent": 2800, "category_id": str(h.expense.id), "occurred_date": "2026-09-30"}], "questions": []}))
+    monkeypatch.setattr(services, "generate_chat", llm)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=test_app(h)), base_url="http://test") as client:
+        path = f"/ledger-mate/ai/sessions/{h.session_id}/requests"
+        body = {"content": "午餐 28 元", "client_message_id": "http-background"}
+        response = await client.post(path, json=body)
+        assert response.status_code == 202
+        accepted = response.json()["data"]
+        assert accepted["status"] == "queued"
+        assert accepted["client_message_id"] == body["client_message_id"]
+        assert accepted["assistant_message"] is None and accepted["error_message"] is None
+        assert dispatched == [accepted["user_message"]["id"]]
+        llm.assert_not_awaited()
+        queued = await client.get(path + "/http-background")
+        assert queued.json()["data"]["status"] == "queued"
+        pending = await client.get("/ledger-mate/ai/requests/pending")
+        assert pending.status_code == 200 and len(pending.json()["data"]) == 1
+        assert (await client.get(path + "/missing")).status_code == 404
+        conflict = await client.post(path, json={**body, "content": "晚餐 99 元"})
+        assert conflict.status_code == 409
+        assert await AiRequestService.process(h.db, UUID(accepted["user_message"]["id"])) == "completed"
+        finished = await client.get(path + "/http-background")
+        result = finished.json()["data"]
+        assert result["status"] == "completed"
+        assert result["assistant_message"]["records"][0]["amount_cent"] == 2800
+        assert (await client.get("/ledger-mate/ai/requests/pending")).json()["data"] == []
+        retry = await client.post(path, json=body)
+        assert retry.status_code == 202 and retry.json()["data"]["status"] == "completed"
+        assert len(dispatched) == 1 and llm.await_count == 1
+        history = await client.get(f"/ledger-mate/ai/sessions/{h.session_id}/messages")
+        assert len(history.json()["data"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_http_background_status_hides_internal_lease_and_enforces_owner(ledger_db, monkeypatch):
+    h = ledger_db
+    monkeypatch.setattr(routes, "enqueue_ai_request", lambda message_id: False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=test_app(h)), base_url="http://test") as client:
+        path = f"/ledger-mate/ai/sessions/{h.session_id}/requests"
+        response = await client.post(path, json={"content": "午餐 28", "client_message_id": "lost-dispatch"})
+        assert response.status_code == 202
+        message_id = UUID(response.json()["data"]["user_message"]["id"])
+        assert await AiRequestService.recover(h.db) == [message_id]
+        state = await AiRequestService.get(h.db, h.user, h.session_id, "lost-dispatch")
+        state.user_message.payload = {**state.user_message.payload, "request_status": "processing", "lease_token": "internal-token", "lease_expires_at": "2030-01-01T00:00:00+08:00"}
+        await h.db.commit()
+        status = await client.get(path + "/lost-dispatch")
+        assert status.json()["data"]["status"] == "processing"
+        assert "lease_token" not in status.text and "lease_expires_at" not in status.text
+        foreign = await client.get("/ledger-mate/ai/sessions/00000000-0000-0000-0000-000000000000/requests/lost-dispatch")
+        assert foreign.status_code == 404
