@@ -3,8 +3,12 @@ import uuid
 import json
 import hashlib
 import logging
+import csv
+import io
+import re
 from collections import defaultdict
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional
 
 from fastapi import HTTPException
@@ -12,9 +16,9 @@ from sqlalchemy import case, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.ledger_mate.models import LedgerMateAiMessage, LedgerMateAiRecordReference, LedgerMateAiSession, LedgerMateBook, LedgerMateCategory, LedgerMateCategoryTemplate, LedgerMateOperationLog, LedgerMatePaymentMethod, LedgerMateRecord
+from apps.ledger_mate.models import LedgerMateAiMessage, LedgerMateAiRecordReference, LedgerMateAiSession, LedgerMateBook, LedgerMateCategory, LedgerMateCategoryTemplate, LedgerMateImportBatch, LedgerMateOperationLog, LedgerMatePaymentMethod, LedgerMateRecord
 from apps.ledger_mate.prompts import build_accounting_parser_prompt
-from apps.ledger_mate.schemas import AiConfirmRequest, AiMessageCreate, AiParseResult, AiSessionCreate, CategoryCreate, CategoryTemplateCreate, CategoryTemplateUpdate, PaymentMethodCreate, RecordCreate, RecordUpdate
+from apps.ledger_mate.schemas import AiConfirmRequest, AiMessageCreate, AiParseResult, AiSessionCreate, CategoryCreate, CategoryTemplateCreate, CategoryTemplateUpdate, ImportConfirmRequest, ImportPreviewRequest, PaymentMethodCreate, RecordCreate, RecordUpdate
 from apps.ledger_mate.dates import SHANGHAI, local_datetime
 from core.llm.engine import generate_chat
 from core.llm.errors import ChatGenerationError
@@ -462,7 +466,7 @@ class LedgerMateService:
             raise HTTPException(400, "支付方式不存在或已停用")
 
     @staticmethod
-    async def create_record(db: AsyncSession, user_id: uuid.UUID, data: RecordCreate, source: str = "manual", *, commit: bool = True, initialize: bool = True):
+    async def create_record(db: AsyncSession, user_id: uuid.UUID, data: RecordCreate, source: str = "manual", *, commit: bool = True, initialize: bool = True, import_batch_id: Optional[uuid.UUID] = None):
         if initialize:
             await LedgerMateService.ensure_defaults(db, user_id, commit=commit)
         if data.idempotency_key:
@@ -479,13 +483,344 @@ class LedgerMateService:
         book = await db.scalar(select(LedgerMateBook).where(LedgerMateBook.user_id == user_id, LedgerMateBook.is_deleted == False))
         if not book:
             raise HTTPException(400, "账本尚未准备好，请重试")
-        record = LedgerMateRecord(user_id=user_id, book_id=book.id, source=source, **data.model_dump(exclude={"occurred_date"}))
+        record = LedgerMateRecord(user_id=user_id, book_id=book.id, source=source, import_batch_id=import_batch_id, **data.model_dump(exclude={"occurred_date"}))
         db.add(record); await db.flush()
         db.add(LedgerMateOperationLog(user_id=user_id, record_id=record.id, action="create", after_data={"amount_cent": record.amount_cent}))
         if commit:
             await db.commit()
             await db.refresh(record)
         return record
+
+    @staticmethod
+    def _import_value(row: dict, *names):
+        normalized = {str(key).strip().lower(): value for key, value in row.items() if key is not None}
+        for name in names:
+            value = normalized.get(name)
+            if value is not None and str(value).strip() != "":
+                return value
+        return None
+
+    @staticmethod
+    def _import_amount(value, *, amount_cent=False) -> int:
+        if value is None or isinstance(value, bool):
+            raise ValueError("金额不能为空")
+        text = str(value).strip().replace(",", "")
+        if not text:
+            raise ValueError("金额不能为空")
+        try:
+            amount = Decimal(text)
+        except (InvalidOperation, ValueError):
+            raise ValueError("金额必须是数字") from None
+        if not amount.is_finite() or amount <= 0:
+            raise ValueError("金额必须大于 0")
+        if amount_cent:
+            if amount != amount.to_integral_value():
+                raise ValueError("amount_cent 必须是整数")
+            cents = int(amount)
+        else:
+            cents_decimal = (amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            if amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) != amount:
+                raise ValueError("金额最多保留两位小数")
+            cents = int(cents_decimal)
+        if cents > 100_000_000:
+            raise ValueError("金额超出上限")
+        return cents
+
+    @staticmethod
+    def _import_date(value) -> date:
+        if value is None or not str(value).strip():
+            raise ValueError("日期不能为空")
+        try:
+            parsed = date.fromisoformat(str(value).strip())
+        except ValueError:
+            raise ValueError("日期必须是 YYYY-MM-DD") from None
+        return parsed
+
+    @staticmethod
+    def _import_uuid(value, label: str):
+        try:
+            return uuid.UUID(str(value).strip())
+        except (ValueError, AttributeError, TypeError):
+            raise ValueError(f"{label}编号无效") from None
+
+    @staticmethod
+    def _import_raw_rows(content: str, file_name: str):
+        text = content.lstrip("\ufeff")
+        looks_json = file_name.lower().endswith(".json") or text.lstrip().startswith(("[", "{"))
+        if looks_json:
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                raise HTTPException(400, "JSON 文件格式无效") from None
+            if isinstance(payload, dict):
+                payload = payload.get("records", payload.get("data"))
+            if not isinstance(payload, list):
+                raise HTTPException(400, "JSON 文件必须是账单数组或包含 records 数组")
+            if not payload:
+                raise HTTPException(400, "导入文件没有账单记录")
+            return payload, 1
+        reader = csv.DictReader(io.StringIO(text, newline=""))
+        if not reader.fieldnames:
+            raise HTTPException(400, "CSV 文件缺少表头")
+        rows = list(reader)
+        if not rows:
+            raise HTTPException(400, "导入文件没有账单记录")
+        return rows, 2
+
+    @staticmethod
+    async def _normalize_import_rows(db: AsyncSession, user_id: uuid.UUID, content: str, file_name: str):
+        categories = await LedgerMateService.categories(db, user_id, initialize=False)
+        methods = await LedgerMateService.methods(db, user_id, initialize=False)
+        raw_rows, first_row_number = LedgerMateService._import_raw_rows(content, file_name)
+        category_by_id = {item.id: item for item in categories}
+        category_by_name = {(item.record_type, item.name.strip()): item for item in categories}
+        method_by_id = {item.id: item for item in methods}
+        method_by_name = {item.name.strip(): item for item in methods}
+        existing_rows = (await db.execute(select(LedgerMateRecord, LedgerMateCategory.name, LedgerMatePaymentMethod.name).outerjoin(LedgerMateCategory, LedgerMateCategory.id == LedgerMateRecord.category_id).outerjoin(LedgerMatePaymentMethod, LedgerMatePaymentMethod.id == LedgerMateRecord.payment_method_id).where(LedgerMateRecord.user_id == user_id, LedgerMateRecord.is_deleted == False))).all()
+        existing_fingerprints = set()
+        for existing, category_name, method_name in existing_rows:
+            category_keys = {str(existing.category_id)}
+            if category_name:
+                category_keys.add(f"name:{category_name.strip()}")
+            method_keys = {None, str(existing.payment_method_id)} if existing.payment_method_id else {None}
+            if method_name:
+                method_keys.add(f"name:{method_name.strip()}")
+            note_keys = {existing.note or ""}
+            stripped_note = re.sub(r" ?\[(?:账本|二级分类):.*?\]", "", existing.note or "").strip()
+            note_keys.add(stripped_note)
+            for category_key in category_keys:
+                for method_key in method_keys:
+                    for note_key in note_keys:
+                        existing_fingerprints.add((existing.record_type, existing.amount_cent, local_datetime(existing.occurred_at).date().isoformat(), category_key, method_key, note_key or None))
+        rows = []
+        fingerprints = set()
+        for offset, raw in enumerate(raw_rows):
+            row_number = first_row_number + offset
+            row = {"row_number": row_number, "record_type": None, "amount_cent": None, "occurred_date": None, "category_name": None, "category_id": None, "ledger_name": None, "secondary_category": None, "payment_method_name": None, "payment_method_id": None, "note": None, "errors": [], "warnings": [], "duplicate": False}
+            errors = row["errors"]
+            if not isinstance(raw, dict):
+                errors.append("每一行必须是对象")
+                rows.append(row)
+                continue
+            raw_type = LedgerMateService._import_value(raw, "record_type", "type", "收支类型", "类型")
+            type_aliases = {"收入": "income", "支出": "expense", "income": "income", "expense": "expense"}
+            row["record_type"] = type_aliases.get(str(raw_type).strip().lower()) if raw_type is not None else None
+            if row["record_type"] is None:
+                errors.append("收支类型必须是 income 或 expense")
+            raw_amount = LedgerMateService._import_value(raw, "amount", "金额")
+            raw_amount_cent = LedgerMateService._import_value(raw, "amount_cent")
+            try:
+                row["amount_cent"] = LedgerMateService._import_amount(raw_amount_cent if raw_amount_cent is not None else raw_amount, amount_cent=raw_amount_cent is not None)
+            except ValueError as exc:
+                errors.append(str(exc))
+            raw_date = LedgerMateService._import_value(raw, "occurred_date", "date", "日期", "时间", "发生日期")
+            try:
+                row["occurred_date"] = LedgerMateService._import_date(raw_date).isoformat()
+            except ValueError as exc:
+                errors.append(str(exc))
+            row["ledger_name"] = str(LedgerMateService._import_value(raw, "book", "ledger", "账本") or "").strip() or None
+            row["secondary_category"] = str(LedgerMateService._import_value(raw, "subcategory", "secondary_category", "二级分类") or "").strip() or None
+            raw_category = LedgerMateService._import_value(raw, "category_id")
+            raw_category_name = LedgerMateService._import_value(raw, "category", "category_name", "分类")
+            if raw_category is not None:
+                try:
+                    category_id = LedgerMateService._import_uuid(raw_category, "分类")
+                    category = category_by_id.get(category_id)
+                    if not category or category.record_type != row["record_type"]:
+                        raise ValueError("分类不存在、已停用或与收支类型不匹配")
+                    row["category_id"] = str(category.id)
+                    row["category_name"] = category.name
+                except ValueError as exc:
+                    errors.append(str(exc))
+            elif raw_category_name is not None:
+                category_name = str(raw_category_name).strip()
+                if len(category_name) > 30:
+                    errors.append("分类名称不能超过 30 个字符")
+                category = category_by_name.get((row["record_type"], category_name)) if row["record_type"] else None
+                if not category:
+                    row["category_name"] = category_name
+                    row["warnings"].append("确认时将创建此分类")
+                else:
+                    row["category_id"] = str(category.id)
+                    row["category_name"] = category.name
+            else:
+                errors.append("分类不能为空")
+            raw_method = LedgerMateService._import_value(raw, "payment_method_id")
+            raw_method_name = LedgerMateService._import_value(raw, "payment_method", "payment_method_name", "account", "账户", "支付方式")
+            if raw_method is not None:
+                try:
+                    method_id = LedgerMateService._import_uuid(raw_method, "支付方式")
+                    method = method_by_id.get(method_id)
+                    if not method:
+                        raise ValueError("支付方式不存在或已停用")
+                    row["payment_method_id"] = str(method.id)
+                    row["payment_method_name"] = method.name
+                except ValueError as exc:
+                    errors.append(str(exc))
+            elif raw_method_name is not None:
+                method_name = str(raw_method_name).strip()
+                if len(method_name) > 30:
+                    errors.append("支付方式名称不能超过 30 个字符")
+                method = method_by_name.get(method_name)
+                if not method:
+                    row["payment_method_name"] = method_name
+                    row["warnings"].append("确认时将创建此支付方式")
+                else:
+                    row["payment_method_id"] = str(method.id)
+                    row["payment_method_name"] = method.name
+            raw_note = LedgerMateService._import_value(raw, "note", "remark", "备注")
+            if raw_note is not None:
+                row["note"] = str(raw_note).strip() or None
+                if row["note"] and len(row["note"]) > 500:
+                    errors.append("备注不能超过 500 个字符")
+            expanded_note = " ".join(part for part in (row["note"] or "", f"[账本:{row['ledger_name']}]" if row["ledger_name"] else "", f"[二级分类:{row['secondary_category']}]" if row["secondary_category"] else "") if part).strip()
+            if len(expanded_note) > 500 and "备注不能超过 500 个字符" not in errors:
+                errors.append("备注扩展信息超出 500 个字符")
+            if not errors:
+                category_key = row["category_id"] or f"name:{row['category_name']}"
+                method_key = row["payment_method_id"] or (f"name:{row['payment_method_name']}" if row["payment_method_name"] else None)
+                fingerprint = (row["record_type"], row["amount_cent"], row["occurred_date"], category_key, method_key, row["note"])
+                row["duplicate"] = fingerprint in fingerprints or fingerprint in existing_fingerprints
+                fingerprints.add(fingerprint)
+            rows.append(row)
+        return rows
+
+    @staticmethod
+    def _import_summary(batch: LedgerMateImportBatch):
+        rows = batch.rows or []
+        return {
+            "batch_id": batch.id,
+            "file_name": batch.file_name,
+            "total": len(rows),
+            "valid_count": sum(not item.get("errors") and not item.get("duplicate") for item in rows),
+            "error_count": sum(bool(item.get("errors")) for item in rows),
+            "duplicate_count": sum(bool(item.get("duplicate")) for item in rows),
+            "rows": rows,
+        }
+
+    @staticmethod
+    async def preview_import(db: AsyncSession, user_id: uuid.UUID, data: ImportPreviewRequest):
+        await LedgerMateService.ensure_defaults(db, user_id, commit=False)
+        rows = await LedgerMateService._normalize_import_rows(db, user_id, data.content, data.file_name)
+        batch = LedgerMateImportBatch(user_id=user_id, status="preview", file_name=data.file_name, rows=rows)
+        db.add(batch)
+        await db.commit()
+        await db.refresh(batch)
+        return LedgerMateService._import_summary(batch)
+
+    @staticmethod
+    async def _get_or_create_import_category(db: AsyncSession, user_id: uuid.UUID, record_type: str, name: str):
+        category = await db.scalar(select(LedgerMateCategory).where(LedgerMateCategory.user_id == user_id, LedgerMateCategory.record_type == record_type, LedgerMateCategory.name == name, LedgerMateCategory.is_deleted == False))
+        if category:
+            if not category.is_enabled:
+                category.is_enabled = True
+            return category
+        category = LedgerMateCategory(user_id=user_id, record_type=record_type, name=name, is_enabled=True, is_system=False)
+        db.add(category)
+        await db.flush()
+        return category
+
+    @staticmethod
+    async def _get_or_create_import_method(db: AsyncSession, user_id: uuid.UUID, name: str):
+        method = await db.scalar(select(LedgerMatePaymentMethod).where(LedgerMatePaymentMethod.user_id == user_id, LedgerMatePaymentMethod.name == name, LedgerMatePaymentMethod.is_deleted == False))
+        if method:
+            if not method.is_enabled:
+                method.is_enabled = True
+            return method
+        method = LedgerMatePaymentMethod(user_id=user_id, name=name, is_enabled=True, is_default=False)
+        db.add(method)
+        await db.flush()
+        return method
+
+    @staticmethod
+    async def confirm_import(db: AsyncSession, user_id: uuid.UUID, batch_id: uuid.UUID, data: ImportConfirmRequest):
+        batch = await db.scalar(select(LedgerMateImportBatch).where(LedgerMateImportBatch.id == batch_id, LedgerMateImportBatch.user_id == user_id, LedgerMateImportBatch.is_deleted == False))
+        if not batch:
+            raise HTTPException(404, "导入批次不存在")
+        if batch.status == "confirmed":
+            return batch.result
+        if batch.status != "preview":
+            raise HTTPException(409, "导入批次当前状态不可确认")
+        rows = batch.rows or []
+        errors = [item for item in rows if item.get("errors")]
+        duplicate_count = sum(bool(item.get("duplicate")) for item in rows)
+        if errors:
+            raise HTTPException(400, "导入文件存在校验错误，请修正后重新预览")
+        if duplicate_count and not data.skip_duplicates:
+            raise HTTPException(409, "导入文件包含重复账单，请确认 skip_duplicates=true 后重试")
+        try:
+            await LedgerMateService._lock_request(db, user_id, f"import:{batch_id}")
+            record_ids = []
+            skipped_count = 0
+            for row in rows:
+                if row.get("duplicate") and data.skip_duplicates:
+                    skipped_count += 1
+                    continue
+                category_id = uuid.UUID(row["category_id"]) if row.get("category_id") else (await LedgerMateService._get_or_create_import_category(db, user_id, row["record_type"], row["category_name"])).id
+                payment_method_id = uuid.UUID(row["payment_method_id"]) if row.get("payment_method_id") else (await LedgerMateService._get_or_create_import_method(db, user_id, row["payment_method_name"])).id if row.get("payment_method_name") else None
+                note_parts = [row.get("note") or ""]
+                if row.get("ledger_name"):
+                    note_parts.append(f"[账本:{row['ledger_name']}]")
+                if row.get("secondary_category"):
+                    note_parts.append(f"[二级分类:{row['secondary_category']}]")
+                note = " ".join(part for part in note_parts if part).strip() or None
+                record = await LedgerMateService.create_record(
+                    db,
+                    user_id,
+                    RecordCreate(
+                        record_type=row["record_type"],
+                        amount_cent=row["amount_cent"],
+                        category_id=category_id,
+                        payment_method_id=payment_method_id,
+                        occurred_date=row["occurred_date"],
+                        note=note,
+                        idempotency_key=f"import:{batch_id}:{row['row_number']}",
+                    ),
+                    source="import",
+                    commit=False,
+                    initialize=False,
+                    import_batch_id=batch_id,
+                )
+                record_ids.append(record.id)
+            result = {"batch_id": str(batch.id), "status": "confirmed", "total": len(rows), "imported_count": len(record_ids), "skipped_count": skipped_count, "error_count": 0, "duplicate_count": duplicate_count, "record_ids": [str(item) for item in record_ids]}
+            batch.status = "confirmed"
+            batch.result = result
+            await db.commit()
+            return result
+        except BaseException:
+            await db.rollback()
+            raise
+
+    @staticmethod
+    async def export_records(db: AsyncSession, user_id: uuid.UUID, start_at: Optional[datetime], end_at: Optional[datetime], record_type: Optional[str], category_id: Optional[uuid.UUID], keyword: Optional[str], output_format: str):
+        stmt = select(LedgerMateRecord, LedgerMateBook.name, LedgerMateCategory.name, LedgerMatePaymentMethod.name).outerjoin(LedgerMateBook, LedgerMateBook.id == LedgerMateRecord.book_id).outerjoin(LedgerMateCategory, LedgerMateCategory.id == LedgerMateRecord.category_id).outerjoin(LedgerMatePaymentMethod, LedgerMatePaymentMethod.id == LedgerMateRecord.payment_method_id).where(LedgerMateRecord.user_id == user_id, LedgerMateRecord.is_deleted == False)
+        if start_at:
+            stmt = stmt.where(LedgerMateRecord.occurred_at >= start_at)
+        if end_at:
+            stmt = stmt.where(LedgerMateRecord.occurred_at < end_at)
+        if record_type:
+            stmt = stmt.where(LedgerMateRecord.record_type == record_type)
+        if category_id:
+            stmt = stmt.where(LedgerMateRecord.category_id == category_id)
+        if keyword:
+            stmt = stmt.where(LedgerMateRecord.note.ilike(f"%{keyword}%"))
+        rows = (await db.execute(stmt.order_by(LedgerMateRecord.occurred_at.asc(), LedgerMateRecord.id.asc()))).all()
+        values = []
+        for record, book_name, category_name, method_name in rows:
+            note = record.note or ""
+            secondary_match = re.search(r"(?:^| )\[二级分类:(.*?)\]", note)
+            ledger_match = re.search(r"(?:^| )\[账本:(.*?)\]", note)
+            values.append({"date": local_datetime(record.occurred_at).date().isoformat(), "book": ledger_match.group(1) if ledger_match else (book_name or ""), "type": record.record_type, "category": category_name or "未命名分类", "subcategory": secondary_match.group(1) if secondary_match else "", "amount": f"{Decimal(record.amount_cent) / Decimal(100):.2f}", "payment_method": method_name or "", "note": re.sub(r" ?\[(?:账本|二级分类):.*?\]", "", note).strip()})
+        if output_format == "json":
+            content = json.dumps(values, ensure_ascii=False, separators=(",", ":"))
+            return {"file_name": "ledger-mate-export.json", "content": content, "mime_type": "application/json; charset=utf-8", "record_count": len(values)}
+        output = io.StringIO(newline="")
+        fieldnames = ["时间", "账本", "类型", "分类", "二级分类", "金额", "账户", "备注"]
+        csv_values = [{"时间": item["date"], "账本": item["book"], "类型": "收入" if item["type"] == "income" else "支出", "分类": item["category"], "二级分类": item["subcategory"], "金额": item["amount"], "账户": item["payment_method"], "备注": item["note"]} for item in values]
+        writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(csv_values)
+        return {"file_name": "ledger-mate-export.csv", "content": "\ufeff" + output.getvalue(), "mime_type": "text/csv; charset=utf-8", "record_count": len(values)}
 
     @staticmethod
     async def confirm_ai_drafts(db: AsyncSession, user_id: uuid.UUID, data: AiConfirmRequest):

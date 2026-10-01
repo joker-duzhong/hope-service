@@ -179,6 +179,67 @@ class StatisticsOut(BaseModel):
     daily: list[dict]
 
 
+class ImportPreviewRequest(BaseModel):
+    """导入文件内容；CSV/JSON 均以 UTF-8 文本传输。"""
+
+    file_name: str = Field(min_length=1, max_length=255)
+    content: str = Field(min_length=1, max_length=10_000_000)
+
+    @field_validator("file_name", mode="before")
+    @classmethod
+    def trim_file_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class ImportRowOut(BaseModel):
+    row_number: int
+    record_type: Optional[RecordType] = None
+    amount_cent: Optional[int] = None
+    occurred_date: Optional[date] = None
+    category_name: Optional[str] = None
+    category_id: Optional[uuid.UUID] = None
+    ledger_name: Optional[str] = None
+    secondary_category: Optional[str] = None
+    payment_method_name: Optional[str] = None
+    payment_method_id: Optional[uuid.UUID] = None
+    note: Optional[str] = None
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    duplicate: bool = False
+
+
+class ImportPreviewOut(BaseModel):
+    batch_id: uuid.UUID
+    file_name: str
+    total: int
+    valid_count: int
+    error_count: int
+    duplicate_count: int
+    rows: list[ImportRowOut]
+
+
+class ImportConfirmRequest(BaseModel):
+    skip_duplicates: bool = False
+
+
+class ImportConfirmOut(BaseModel):
+    batch_id: uuid.UUID
+    status: Literal["confirmed"]
+    total: int
+    imported_count: int
+    skipped_count: int
+    error_count: int
+    duplicate_count: int
+    record_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class ExportOut(BaseModel):
+    file_name: str
+    content: str
+    mime_type: Literal["text/csv; charset=utf-8", "application/json; charset=utf-8"]
+    record_count: int
+
+
 class AiDraft(RecordDateFields):
     record_type: RecordType
     amount_cent: int = Field(gt=0, le=100_000_000, strict=True)

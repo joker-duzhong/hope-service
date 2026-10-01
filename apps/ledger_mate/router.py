@@ -12,7 +12,7 @@ from apps.ledger_mate.schemas import AiChatResponse, AiConfirmRequest, AiMessage
 from apps.ledger_mate.services import LedgerMateService
 from apps.ledger_mate.tasks import enqueue_ai_request
 from apps.ledger_mate.dates import resolve_range
-from apps.ledger_mate.schemas import DateOnly
+from apps.ledger_mate.schemas import DateOnly, ExportOut, ImportConfirmOut, ImportConfirmRequest, ImportPreviewOut, ImportPreviewRequest
 from core.database import get_db
 from core.response import PaginatedData, PaginatedResponse, ResponseModel
 from core.users.dependencies import get_current_user
@@ -97,6 +97,25 @@ async def statistics(start_at: Optional[datetime] = None, end_at: Optional[datet
         raise HTTPException(400, str(exc)) from None
     data = await LedgerMateService.statistics(db, current_user.id, start_at, end_at)
     return ResponseModel(data=StatisticsOut(start_at=start_at, end_at=end_at, start_date=start_at.date(), end_date=end_at.date(), **data))
+
+
+@router.post("/import/preview", response_model=ResponseModel[ImportPreviewOut])
+async def preview_import(data: ImportPreviewRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    return ResponseModel(data=ImportPreviewOut.model_validate(await LedgerMateService.preview_import(db, current_user.id, data)), message="导入预览已生成")
+
+
+@router.post("/import/{batch_id}/confirm", response_model=ResponseModel[ImportConfirmOut])
+async def confirm_import(batch_id: uuid.UUID, data: ImportConfirmRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    return ResponseModel(data=ImportConfirmOut.model_validate(await LedgerMateService.confirm_import(db, current_user.id, batch_id, data)), message="导入完成")
+
+
+@router.get("/export", response_model=ResponseModel[ExportOut])
+async def export_records(format: str = Query("csv", pattern="^(csv|json)$"), start_at: Optional[datetime] = None, end_at: Optional[datetime] = None, start_date: Optional[DateOnly] = None, end_date: Optional[DateOnly] = None, record_type: Optional[str] = Query(None, pattern="^(income|expense)$"), category_id: Optional[uuid.UUID] = None, keyword: Optional[str] = Query(None, max_length=100), current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    try:
+        start_at, end_at = resolve_range(start_at, end_at, start_date, end_date)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return ResponseModel(data=ExportOut.model_validate(await LedgerMateService.export_records(db, current_user.id, start_at, end_at, record_type, category_id, keyword, format)))
 
 
 @router.post("/ai/confirm", response_model=ResponseModel[list[RecordOut]])
